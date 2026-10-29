@@ -1,0 +1,16 @@
+{
+  "name": "@canopy/desktop-instrumentation",
+  "private": true,
+  "dependencies": {
+    "@canopy/desktop-shared": "workspace:*",
+    "@canopy/protocol": "workspace:*"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./client": "./src/client/index.ts",
+    "./electron/main": "./src/electron/main.ts",
+    "./electron/preload": "./src/electron/preload.ts",
+    "./*": "./src/*"
+  },
+  "license": "MIT"
+}

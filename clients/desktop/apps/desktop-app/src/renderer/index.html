@@ -1,0 +1,19 @@
+<!doctype html>
+<html class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      The initial title and favicon are overwritten by
+      `applyBrandDocumentHead` in `src/main.tsx` before React mounts so the
+      OS window chrome and loading flash show the active brand. This
+      placeholder only matters in the rare case the entry script fails to
+      execute.
+    -->
+    <title>Loading</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./src/main-window-entry.tsx"></script>
+  </body>
+</html>

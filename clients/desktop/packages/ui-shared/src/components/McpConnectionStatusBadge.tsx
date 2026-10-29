@@ -1,0 +1,37 @@
+import type { JSX } from 'react';
+import {
+  mcpConnectionStatusBadgeClass,
+  mcpConnectionStatusLabel,
+  type McpConnectionBadge,
+} from '../lib/mcp-card-display';
+
+export interface McpConnectionStatusBadgeProps {
+  readonly badge: McpConnectionBadge;
+  /** Defaults to the legacy table's ids so existing flows keep their anchors. */
+  readonly dataTestId?: string;
+  readonly providerTestId?: string;
+}
+
+/** Cached connection health for an MCP server, with the provider suffix. */
+export function McpConnectionStatusBadge({
+  badge,
+  dataTestId = 'mcp-server-status-badge',
+  providerTestId = 'mcp-server-status-provider',
+}: McpConnectionStatusBadgeProps): JSX.Element {
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap">
+      <span
+        className={`rounded-full px-2 py-0.5 text-3xs font-medium ${mcpConnectionStatusBadgeClass(badge.status)}`}
+        data-testid={dataTestId}
+        data-status={badge.status}
+      >
+        {mcpConnectionStatusLabel(badge.status)}
+      </span>
+      {badge.isProvider && (
+        <span className="text-3xs fg-secondary" data-testid={providerTestId}>
+          Agent provider
+        </span>
+      )}
+    </span>
+  );
+}

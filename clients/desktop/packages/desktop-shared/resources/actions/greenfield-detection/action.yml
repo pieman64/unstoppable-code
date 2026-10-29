@@ -1,0 +1,40 @@
+name: Greenfield Detection
+description: Detect whether the project is greenfield or existing.
+log_format_hint: agent
+inputs:
+  model:
+    description: Optional Claude model override.
+    required: false
+outputs:
+  is_greenfield:
+    description: Whether the repository appears to be greenfield.
+    value: ${{ steps.emit.outputs.is_greenfield }}
+  rationale:
+    description: Short rationale for the decision.
+    value: ${{ steps.emit.outputs.rationale }}
+  transcript_file:
+    description: Greenfield detection transcript file.
+    value: ${{ steps.detect.outputs.transcript_file }}
+runs:
+  using: composite
+  steps:
+    - id: detect
+      uses: builtin/agent-prompt
+      with:
+        model: ${{ inputs.model }}
+        permission_preset: read_only
+        structured_output_schema: '{"type":"object","properties":{"is_greenfield":{"type":"boolean"},"rationale":{"type":"string"}},"required":["is_greenfield","rationale"]}'
+        prompt: |
+          Determine whether this repository looks like a greenfield project or an existing mature codebase.
+          Return a boolean and a short rationale.
+    - id: emit
+      shell: node
+      run: |
+        const fs = require('node:fs');
+        const parsed = JSON.parse(process.env.RESPONSE_JSON ?? '{}');
+        const isGreenfield = parsed.is_greenfield === true ? 'true' : 'false';
+        const rationale = String(parsed.rationale ?? '').replace(/\r?\n/g, ' ');
+        fs.appendFileSync(process.env.{{BRAND_ENV_PREFIX}}_OUTPUT, `is_greenfield=${isGreenfield}\n`);
+        fs.appendFileSync(process.env.{{BRAND_ENV_PREFIX}}_OUTPUT, `rationale=${rationale}\n`);
+      env:
+        RESPONSE_JSON: ${{ steps.detect.outputs.json_response }}

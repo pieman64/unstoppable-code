@@ -1,0 +1,104 @@
+import type { JSX, RefObject } from 'react';
+import { Button } from './Button';
+import { DialogModal } from './DialogModal';
+import { SharedContainerAcceptSummary } from './SharedContainerAcceptSummary';
+import { REPLAY_BLOCK_CLASS, REPLAY_MASK_CLASS } from '../lib/replay-privacy';
+
+export const SHARED_CONTAINER_INVITATION_ACCEPT_FAILED =
+  "Couldn't accept this share. Try again.";
+
+const TEST_ID = 'shared-container-invitation-dialog';
+
+export interface SharedContainerInvitationDialogProps {
+  title: string;
+  /** Absent while the owner's name has not resolved. */
+  ownerName?: string;
+  /** The owner's organization, named for a share from outside the recipient's. */
+  organizationName?: string;
+  kind: 'code' | 'cowork';
+  accepting: boolean;
+  removing: boolean;
+  /** The last accept failed; the dialog stays open and says so. */
+  acceptFailed: boolean;
+  onAccept: () => void;
+  onRemove: () => void;
+  onCancel: () => void;
+  /** Where focus goes on close once the invitation's row is gone. */
+  restoreFocusRef?: RefObject<HTMLElement | null>;
+}
+
+/**
+ * The decision on a pending share. Opening a share downloads the publisher's
+ * files onto this computer, so the invitation row opens this dialog instead
+ * of the share: it says what is offered and by whom, then accepts or removes.
+ */
+export function SharedContainerInvitationDialog({
+  title,
+  ownerName,
+  organizationName,
+  kind,
+  accepting,
+  removing,
+  acceptFailed,
+  onAccept,
+  onRemove,
+  onCancel,
+  restoreFocusRef,
+}: SharedContainerInvitationDialogProps): JSX.Element {
+  const busy = accepting || removing;
+  // The owner is a person: replay records a box for the name only.
+  const subtitle =
+    ownerName !== undefined ? (
+      <>
+        Shared by <span className={REPLAY_BLOCK_CLASS}>{ownerName}</span>
+        {organizationName ? ` · ${organizationName}` : null}
+      </>
+    ) : undefined;
+  return (
+    <DialogModal
+      title={<span className={REPLAY_MASK_CLASS}>{title}</span>}
+      {...(subtitle ? { subtitle } : {})}
+      maxWidth="md"
+      trapFocus
+      {...(restoreFocusRef ? { restoreFocusRef } : {})}
+      onClose={busy ? (): void => {} : onCancel}
+      closeOnBackdrop={!busy}
+      closeButtonDisabled={busy}
+      dataTestId={TEST_ID}
+    >
+      <div className="space-y-4 px-5 py-4">
+        <p className="text-s fg-primary" data-testid={`${TEST_ID}-kind`}>
+          {kind === 'code' ? 'Code project' : 'Cowork project'}
+        </p>
+        <SharedContainerAcceptSummary
+          testIdPrefix={TEST_ID}
+          error={
+            acceptFailed ? SHARED_CONTAINER_INVITATION_ACCEPT_FAILED : null
+          }
+        />
+      </div>
+      <div className="flex items-center gap-2 border-t px-5 py-3">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onRemove}
+          disabled={busy}
+          data-testid={`${TEST_ID}-remove`}
+        >
+          {removing ? 'Removing…' : 'Remove share'}
+        </Button>
+        <span className="ml-auto flex items-center gap-2">
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={onAccept}
+            disabled={busy}
+            data-testid={`${TEST_ID}-accept`}
+          >
+            {accepting ? 'Opening…' : 'Accept and open'}
+          </Button>
+        </span>
+      </div>
+    </DialogModal>
+  );
+}

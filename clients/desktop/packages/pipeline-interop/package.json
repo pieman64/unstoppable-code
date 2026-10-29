@@ -1,0 +1,15 @@
+{
+  "name": "@canopy/pipeline-interop",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "dependencies": {
+    "@canopy/protocol": "workspace:*",
+    "js-yaml": "^4.1.1"
+  },
+  "license": "MIT"
+}

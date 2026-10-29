@@ -1,0 +1,29 @@
+import { posix, win32 } from 'node:path';
+import { PortalServiceError } from './portal-service-error';
+
+/**
+ * A file-tree path relative to its root, with `/` separators. Shared by the
+ * direct Files reader and the daemon Files route so both refuse the same
+ * input with the same error. `./` normalizes to `.`, which lists the root.
+ */
+export function normalizeFileTreeRelativePath(value: string): string {
+  if (win32.isAbsolute(value) || /^[a-zA-Z]:/.test(value)) {
+    throw new PortalServiceError('invalid_target', 'Path must be relative.');
+  }
+  const normalizedInput = value.replace(/\\/g, '/');
+  if (posix.isAbsolute(normalizedInput)) {
+    throw new PortalServiceError('invalid_target', 'Path must be relative.');
+  }
+  if (normalizedInput.split('/').some((segment) => segment === '..')) {
+    throw new PortalServiceError(
+      'invalid_target',
+      'Path cannot traverse outside the worktree.',
+    );
+  }
+  const normalized = posix.normalize(normalizedInput);
+  if (normalized === '.') {
+    return '';
+  }
+  const segments = normalized.split('/').filter(Boolean);
+  return segments.join('/');
+}

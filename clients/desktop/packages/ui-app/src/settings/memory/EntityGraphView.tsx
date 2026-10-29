@@ -1,0 +1,542 @@
+'use client';
+import { SettingsControlSelect } from '@canopy/ui-shared/components';
+
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ChangeEvent,
+  type FormEvent,
+  type JSX,
+} from 'react';
+import {
+  DelayedLoadingPlaceholder,
+  ErrorBanner,
+  SettingsChartSkeleton,
+  SettingsListSkeleton,
+} from '@canopy/ui-shared/components';
+import { RefreshCw } from '@canopy/ui-shared/icons/AppIcons';
+import type {
+  ExplorerEntityGraph,
+  ExplorerFactDetail,
+  ExplorerGraphNode,
+  ExplorerRetrievalPreview,
+} from '@canopy/protocol/settings/organization-memory';
+import { withPrivacyClass } from '../account/privacy-class';
+import { SETTINGS_LOAD_ERROR_COPY } from '../errors';
+import {
+  useSettingsClient,
+  useSettingsPathname,
+  useSettingsPrivacy,
+  useSettingsRouter,
+  useSettingsSearchParams,
+} from '../host';
+import { fetchMemoryFactsBatch, fetchMemoryGraph } from './api';
+import { FactCard } from './FactCard';
+import { GraphRetrievalPanel } from './GraphRetrievalPanel';
+import { useMemoryErrorCopy } from './memory-error-copy';
+import {
+  countHiddenHighlightEntities,
+  deriveRetrievalHighlight,
+  entityGraphCacheKey,
+  entityGraphFilterSearch,
+  hasActiveEntityGraphFilters,
+  parseEntityGraphFilters,
+  sameEntityGraphFilters,
+  sameIdSet,
+  type EntityGraphFilters,
+  type EntityGraphLiveness,
+} from './graph-helpers';
+
+// Matches MAX_FACT_DETAIL_BATCH on the facts/batch route.
+const MAX_SELECTED_FACTS = 25;
+
+// The graph area fills the space below the page header instead of a fixed
+// 650px band; the floor keeps it usable in short windows. Shared by the graph
+// section, the facts sidebar, and the loading/empty placeholders so the layout
+// doesn't jump between states.
+//
+// `AppSidebarShell` makes its right-hand scrollport a size query container, so
+// `cqh` measures the ACTUAL content region after the optional trial banner and
+// mobile fallback header have taken their space. Viewport units are wrong here:
+// the graph no longer lives directly in the viewport, and using `dvh` can make
+// it overflow the inner scrollport or reserve space for chrome that is not in
+// that region. The offset accounts for this page's own heading, tabs, gaps, and
+// vertical gutters; the floor keeps the canvas usable in a short window.
+const GRAPH_AREA_HEIGHT = 'h-[max(560px,calc(100cqh-9rem))]';
+
+// The canvas force graph needs `window`: it loads in its own chunk and mounts
+// only on the client (the server render and hydration show the loading state).
+const EntityForceGraph = lazy(() =>
+  import('./EntityForceGraph').then((mod) => ({
+    default: mod.EntityForceGraph,
+  })),
+);
+
+/**
+ * Holds the canvas while its chunk loads: the graph silhouette, inset so its
+ * frame sits inside the graph section's border.
+ */
+function GraphLoading(): JSX.Element {
+  return (
+    <div className="flex h-full p-3">
+      <DelayedLoadingPlaceholder>
+        <SettingsChartSkeleton variant="graph" />
+      </DelayedLoadingPlaceholder>
+    </div>
+  );
+}
+
+function subscribeToNothing(): () => void {
+  return () => undefined;
+}
+
+/** `false` on the server and during hydration, `true` once on the client. */
+function useIsClient(): boolean {
+  return useSyncExternalStore(
+    subscribeToNothing,
+    () => true,
+    () => false,
+  );
+}
+
+// Graph payloads are expensive to recompute server-side, so cache them per
+// organization + filter signature for the lifetime of the client session. Tab
+// switches are client-side navigations, which keeps this module (and the
+// cache) alive; the Refresh button invalidates only the current key and full
+// page loads fetch fresh data. The payload still only ever comes from the
+// authz-checked graph API route.
+const graphCache = new Map<string, ExplorerEntityGraph>();
+
+interface EntityGraphViewProps {
+  orgId: string;
+}
+
+export function EntityGraphView({ orgId }: EntityGraphViewProps): JSX.Element {
+  const client = useSettingsClient();
+  const router = useSettingsRouter();
+  const pathname = useSettingsPathname();
+  const searchParams = useSettingsSearchParams();
+  const { blockClassName } = useSettingsPrivacy();
+  const isClient = useIsClient();
+  const errorCopy = useMemoryErrorCopy();
+  // Filters live in the URL search params so they survive reload and are
+  // shareable. They are read once on mount; the URL is then kept in sync with
+  // a router replace, which leaves this component (and its state) mounted.
+  const [filters, setFilters] = useState<EntityGraphFilters>(() =>
+    parseEntityGraphFilters(searchParams),
+  );
+  const [queryInput, setQueryInput] = useState(() => filters.q);
+  const [graph, setGraph] = useState<ExplorerEntityGraph | null>(
+    () => graphCache.get(entityGraphCacheKey(orgId, filters)) ?? null,
+  );
+  const [graphError, setGraphError] = useState<string | null>(null);
+  const [graphLoading, setGraphLoading] = useState(() => graph === null);
+  const [refreshVersion, setRefreshVersion] = useState(0);
+  const [selectionTitle, setSelectionTitle] = useState('Select a node or edge');
+  const [selectedFactIds, setSelectedFactIds] = useState<string[]>([]);
+  const [selectedFacts, setSelectedFacts] = useState<ExplorerFactDetail[]>([]);
+  const [selectedFactsError, setSelectedFactsError] = useState<string | null>(
+    null,
+  );
+  // Bumped by the facts sidebar's Retry to read the same selection again.
+  const [selectedFactsRetry, setSelectedFactsRetry] = useState(0);
+  const [preview, setPreview] = useState<ExplorerRetrievalPreview | null>(null);
+  const graphRequestRef = useRef(0);
+  const selectedFactIdsRef = useRef<string[]>([]);
+
+  useEffect(() => {
+    // Claim a fresh sequence number so any in-flight fetch (earlier filter
+    // change or refresh) is superseded the moment this one starts.
+    const requestId = graphRequestRef.current + 1;
+    graphRequestRef.current = requestId;
+    const key = entityGraphCacheKey(orgId, filters);
+    const load = async (): Promise<void> => {
+      const cached = graphCache.get(key);
+      if (cached !== undefined) {
+        setGraph(cached);
+        setGraphError(null);
+        setGraphLoading(false);
+        return;
+      }
+      setGraphLoading(true);
+      setGraphError(null);
+      try {
+        // Defaults are omitted, matching the shareable URL search.
+        const payload = await fetchMemoryGraph(client, {
+          organizationId: orgId,
+          liveness: filters.liveness === 'live' ? undefined : filters.liveness,
+          from: filters.from.length > 0 ? filters.from : undefined,
+          to: filters.to.length > 0 ? filters.to : undefined,
+          q: filters.q.length > 0 ? filters.q : undefined,
+        });
+        if (graphRequestRef.current !== requestId) return;
+        graphCache.set(key, payload);
+        setGraph(payload);
+        setGraphError(null);
+      } catch (caught) {
+        if (graphRequestRef.current !== requestId) return;
+        setGraphError(errorCopy.loadCopy(caught));
+      } finally {
+        if (graphRequestRef.current === requestId) {
+          setGraphLoading(false);
+        }
+      }
+    };
+    void load();
+  }, [client, errorCopy, orgId, filters, refreshVersion]);
+
+  const applyFilters = useCallback(
+    (next: EntityGraphFilters): void => {
+      setFilters((current) =>
+        sameEntityGraphFilters(current, next) ? current : next,
+      );
+      // URL sync: preserve any unrelated params, replace only ours.
+      const params = new URLSearchParams(searchParams.toString());
+      for (const name of ['liveness', 'from', 'to', 'q']) {
+        params.delete(name);
+      }
+      for (const [name, value] of new URLSearchParams(
+        entityGraphFilterSearch(next),
+      )) {
+        params.set(name, value);
+      }
+      const search = params.toString();
+      router.replace(search.length > 0 ? `${pathname}?${search}` : pathname, {
+        scroll: false,
+      });
+    },
+    [pathname, router, searchParams],
+  );
+
+  const clearSelection = useCallback((): void => {
+    setSelectionTitle('Select a node or edge');
+    selectedFactIdsRef.current = [];
+    setSelectedFactIds([]);
+    setSelectedFacts([]);
+    setSelectedFactsError(null);
+  }, []);
+
+  const handleRefresh = useCallback((): void => {
+    graphCache.delete(entityGraphCacheKey(orgId, filters));
+    clearSelection();
+    setRefreshVersion((version) => version + 1);
+  }, [orgId, filters, clearSelection]);
+
+  // Re-clicking the same node/edge (same fact-id set) keeps the loaded facts
+  // instead of clearing and refetching the batch.
+  const applySelection = useCallback(
+    (title: string, factIds: readonly string[]): void => {
+      setSelectionTitle(title);
+      if (sameIdSet(selectedFactIdsRef.current, factIds)) {
+        return;
+      }
+      selectedFactIdsRef.current = [...factIds];
+      setSelectedFacts([]);
+      setSelectedFactsError(null);
+      setSelectedFactIds([...factIds]);
+    },
+    [],
+  );
+
+  const handleSelectNode = useCallback(
+    (node: ExplorerGraphNode): void => {
+      applySelection(
+        `${node.canonicalName} · ${node.factCount} facts`,
+        node.factIds,
+      );
+    },
+    [applySelection],
+  );
+
+  const handleSelectEdge = useCallback(
+    (sourceName: string, targetName: string, factIds: string[]): void => {
+      applySelection(`${sourceName} ↔ ${targetName}`, factIds);
+    },
+    [applySelection],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async (): Promise<void> => {
+      const ids = selectedFactIds.slice(0, MAX_SELECTED_FACTS);
+      try {
+        const payload = await fetchMemoryFactsBatch(client, orgId, ids);
+        if (cancelled) return;
+        setSelectedFacts(payload.facts);
+        if (payload.facts.length === 0) {
+          setSelectedFactsError('Unable to load facts');
+        } else if (payload.facts.length < ids.length) {
+          setSelectedFactsError('Some facts could not be loaded');
+        } else {
+          setSelectedFactsError(null);
+        }
+      } catch (caught) {
+        if (cancelled) return;
+        setSelectedFactsError(errorCopy.loadCopy(caught));
+      }
+    };
+    // Clearing stale facts happens in the click handlers (setState in an
+    // effect body triggers cascading renders and is linted against).
+    if (selectedFactIds.length > 0) {
+      void load();
+    }
+    return (): void => {
+      cancelled = true;
+    };
+  }, [client, errorCopy, orgId, selectedFactIds, selectedFactsRetry]);
+
+  const retrySelectedFacts = useCallback((): void => {
+    setSelectedFacts([]);
+    setSelectedFactsError(null);
+    setSelectedFactsRetry((attempt) => attempt + 1);
+  }, []);
+
+  const highlight = useMemo(
+    () => (preview === null ? null : deriveRetrievalHighlight(preview)),
+    [preview],
+  );
+
+  const hiddenEntityCount = useMemo(() => {
+    if (highlight === null || graph === null) return 0;
+    return countHiddenHighlightEntities(
+      highlight,
+      new Set(graph.nodes.map((node) => node.id)),
+    );
+  }, [highlight, graph]);
+
+  const onLivenessChange = (event: ChangeEvent<HTMLSelectElement>): void => {
+    const value = event.target.value;
+    const liveness: EntityGraphLiveness =
+      value === 'superseded' || value === 'all' ? value : 'live';
+    applyFilters({ ...filters, liveness });
+  };
+
+  const submitQuery = (event: FormEvent<HTMLFormElement>): void => {
+    event.preventDefault();
+    applyFilters({ ...filters, q: queryInput.trim() });
+  };
+
+  const onQueryChange = (event: ChangeEvent<HTMLInputElement>): void => {
+    const value = event.target.value;
+    setQueryInput(value);
+    // Clearing the input immediately drops the name filter without requiring
+    // another submit; non-empty edits still wait for one.
+    if (value.trim().length === 0 && filters.q.length > 0) {
+      applyFilters({ ...filters, q: '' });
+    }
+  };
+
+  const filtersActive = hasActiveEntityGraphFilters(filters);
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-xl border bg-card p-4">
+        <form onSubmit={submitQuery} className="flex gap-2">
+          <input
+            type="search"
+            value={queryInput}
+            onChange={onQueryChange}
+            placeholder="Filter entities by name"
+            aria-label="Filter entities by name"
+            className="w-full rounded-lg border bg-base px-3 py-2.5 text-s fg-primary placeholder:fg-tertiary focus:border-line-accent focus:outline-none"
+          />
+          <button
+            type="submit"
+            disabled={graphLoading || queryInput.trim() === filters.q}
+            className="shrink-0 rounded-lg border bg-base px-4 py-2 text-s font-medium fg-primary hover:bg-card disabled:opacity-50"
+          >
+            Filter
+          </button>
+        </form>
+        <div className="mt-3 grid gap-2 sm:grid-cols-3">
+          <SettingsControlSelect
+            value={filters.liveness}
+            onChange={onLivenessChange}
+            fill
+            aria-label="Fact liveness"
+          >
+            <option value="live">Live</option>
+            <option value="superseded">Superseded</option>
+            <option value="all">All</option>
+          </SettingsControlSelect>
+          <input
+            type="date"
+            value={filters.from}
+            onChange={(event) =>
+              applyFilters({ ...filters, from: event.target.value })
+            }
+            className="rounded-lg border bg-base px-3 py-2 text-s fg-primary"
+            aria-label="Facts created from"
+          />
+          <input
+            type="date"
+            value={filters.to}
+            onChange={(event) =>
+              applyFilters({ ...filters, to: event.target.value })
+            }
+            className="rounded-lg border bg-base px-3 py-2 text-s fg-primary"
+            aria-label="Facts created to"
+          />
+        </div>
+      </div>
+
+      <GraphRetrievalPanel
+        orgId={orgId}
+        preview={preview}
+        hiddenEntityCount={hiddenEntityCount}
+        onPreview={setPreview}
+      />
+
+      {/* The graph === null fallback card below already shows the error, so
+          this alert only covers failures while a graph is on screen. */}
+      {graph !== null && (
+        <ErrorBanner className="" error={graphError} onRetry={handleRefresh} />
+      )}
+
+      {graph === null && graphLoading ? (
+        <div className={`flex ${GRAPH_AREA_HEIGHT}`}>
+          <DelayedLoadingPlaceholder>
+            <SettingsChartSkeleton variant="graph" />
+          </DelayedLoadingPlaceholder>
+        </div>
+      ) : graph === null ? (
+        <div
+          className={`flex ${GRAPH_AREA_HEIGHT} items-center justify-center rounded-xl border bg-card`}
+        >
+          <div className="text-center">
+            <h2 role="alert" className="text-base font-semibold fg-primary">
+              {graphError ?? SETTINGS_LOAD_ERROR_COPY}
+            </h2>
+            <button
+              type="button"
+              onClick={handleRefresh}
+              className="mt-4 inline-flex items-center gap-2 rounded-lg border bg-card px-3 py-2 text-s font-medium fg-primary hover:bg-base"
+            >
+              <RefreshCw size={14} />
+              Retry
+            </button>
+          </div>
+        </div>
+      ) : graph.nodes.length === 0 ? (
+        <div className="rounded-xl border border-dashed py-20 text-center">
+          <h2 className="text-base font-semibold fg-primary">
+            {filtersActive ? 'No matching entities' : 'No entities yet'}
+          </h2>
+          <p className="mt-2 text-s fg-secondary">
+            {filtersActive
+              ? 'No entities match the current filters. Adjust or clear them to see the graph.'
+              : 'Run entity backfill to populate the organization graph.'}
+          </p>
+          <button
+            type="button"
+            onClick={handleRefresh}
+            disabled={graphLoading}
+            className="mt-4 inline-flex items-center gap-2 rounded-lg border bg-card px-3 py-2 text-s font-medium fg-primary hover:bg-base disabled:opacity-50"
+          >
+            <RefreshCw size={14} />
+            Refresh
+          </button>
+        </div>
+      ) : (
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(300px,24rem)]">
+          <section
+            className={`relative ${GRAPH_AREA_HEIGHT} overflow-hidden rounded-xl border bg-card`}
+          >
+            <div className="absolute left-4 top-4 z-10 flex flex-wrap items-center gap-3 rounded-lg border bg-card/90 px-3 py-2 text-xs fg-secondary backdrop-blur">
+              <span>
+                <i className="mr-1.5 inline-block h-2.5 w-2.5 rounded-full bg-accent" />
+                Service
+              </span>
+              <span>
+                <i className="mr-1.5 inline-block h-2.5 w-2.5 rounded-full bg-success" />
+                Code
+              </span>
+              <span>
+                <i className="mr-1.5 inline-block h-2.5 w-2.5 rounded-full bg-warning" />
+                Tool
+              </span>
+              {graph.truncated && (
+                <span className="fg-tertiary">
+                  Truncated — showing the most connected activity
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={handleRefresh}
+                disabled={graphLoading}
+                aria-label="Refresh graph"
+                className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 font-medium fg-secondary hover:bg-base hover:fg-primary disabled:opacity-50"
+              >
+                <RefreshCw
+                  size={12}
+                  className={graphLoading ? 'animate-spin' : ''}
+                />
+                Refresh
+              </button>
+            </div>
+            {/* The canvas paints entity names. */}
+            <div className={withPrivacyClass('h-full w-full', blockClassName)}>
+              {isClient ? (
+                <Suspense fallback={<GraphLoading />}>
+                  <EntityForceGraph
+                    graph={graph}
+                    onSelectNode={handleSelectNode}
+                    onSelectEdge={handleSelectEdge}
+                    highlight={highlight}
+                  />
+                </Suspense>
+              ) : (
+                <GraphLoading />
+              )}
+            </div>
+          </section>
+          <aside
+            className={`${GRAPH_AREA_HEIGHT} overflow-y-auto rounded-xl border bg-card p-4`}
+          >
+            <h2
+              className={withPrivacyClass(
+                'text-base font-semibold fg-primary',
+                blockClassName,
+              )}
+            >
+              {selectionTitle}
+            </h2>
+            {selectedFactIds.length === 0 ? (
+              <p className="mt-2 text-s fg-secondary">
+                Click an entity or connection to inspect its facts. Drag to
+                rearrange, scroll to zoom, hover to highlight neighbors.
+              </p>
+            ) : selectedFactsError !== null && selectedFacts.length === 0 ? (
+              <ErrorBanner
+                className="mt-4"
+                error={selectedFactsError}
+                onRetry={retrySelectedFacts}
+              />
+            ) : selectedFacts.length === 0 ? (
+              <DelayedLoadingPlaceholder className="mt-4">
+                <SettingsListSkeleton rows={2} />
+              </DelayedLoadingPlaceholder>
+            ) : (
+              <div className="mt-4 space-y-3">
+                {selectedFactsError !== null && (
+                  <p className="rounded-lg bg-warning-subtle px-3 py-2 text-s fg-warning">
+                    {selectedFactsError}
+                  </p>
+                )}
+                {selectedFacts.map((fact) => (
+                  <FactCard key={fact.id} fact={fact} />
+                ))}
+              </div>
+            )}
+          </aside>
+        </div>
+      )}
+    </div>
+  );
+}

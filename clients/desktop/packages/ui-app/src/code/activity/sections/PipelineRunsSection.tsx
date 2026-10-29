@@ -1,0 +1,231 @@
+'use client';
+
+import { useMemo, useState, type JSX } from 'react';
+import type {
+  PortalPipelineRunJob,
+  PortalPipelineRunProjection,
+} from '@canopy/protocol/portal';
+import {
+  CompletedRunsDisclosure,
+  DagProgressBar,
+  StatusBadge,
+  type DagJobMeta,
+  type DagJobStatus,
+  type StatusBadgeVariant,
+} from '@canopy/ui-shared/components';
+import { computeDagTiers } from '@canopy/ui-shared/lib/dag-tiers';
+
+interface RichPipelineRun extends PortalPipelineRunProjection {
+  readonly progress?: { completedSteps: number; totalSteps: number };
+  readonly jobs?: PortalPipelineRunJob[];
+}
+
+export function isActivePipelineStatus(status: string): boolean {
+  return status === 'running' || status === 'queued' || status === 'pending';
+}
+
+export function toDagJobStatus(
+  status: string | undefined,
+): DagJobStatus | undefined {
+  switch (status) {
+    case 'pending':
+    case 'running':
+    case 'restarting':
+    case 'success':
+    case 'failure':
+    case 'paused':
+    case 'cancelled':
+    case 'skipped':
+      return status;
+    case 'queued':
+      return 'pending';
+    case 'completed':
+    case 'succeeded':
+      return 'success';
+    case 'failed':
+    case 'timed_out':
+      return 'failure';
+    default:
+      return undefined;
+  }
+}
+
+function statusVariant(status: string): StatusBadgeVariant {
+  if (status === 'running') return 'active';
+  if (status === 'queued' || status === 'pending') return 'warning';
+  if (status === 'paused') return 'muted';
+  if (status === 'completed' || status === 'success' || status === 'succeeded')
+    return 'success';
+  if (status === 'failed' || status === 'failure') return 'destructive';
+  return 'muted';
+}
+
+function isStepComplete(status: string): boolean {
+  return [
+    'success',
+    'failure',
+    'cancelled',
+    'skipped',
+    'completed',
+    'succeeded',
+    'failed',
+    'timed_out',
+  ].includes(status);
+}
+
+/**
+ * Lay the run's jobs out in dependency tiers so the preview shows the same
+ * concurrency grouping the desktop does — parallel jobs share a dot group,
+ * dependent jobs start a new one (CAN-2511).
+ *
+ * Falls back to a single tier when the desktop projected no `needs` at all
+ * (older host): with no dependency data, claiming everything runs in parallel
+ * would be a guess, and one group is what this rendered before.
+ */
+function buildTiers(jobsList: readonly PortalPipelineRunJob[]): string[][] {
+  const known = new Set(jobsList.map((job) => job.jobId));
+  if (!jobsList.some((job) => job.needs !== undefined)) {
+    return [jobsList.map((job) => job.jobId)];
+  }
+  const graph: Record<string, { needs: string[] }> = {};
+  for (const job of jobsList) {
+    graph[job.jobId] = {
+      // Drop dependencies on jobs absent from this run (e.g. a job that never
+      // expanded); `computeDagTiers` would otherwise treat the missing id as a
+      // depth-0 node and inflate every dependent's tier.
+      needs: (job.needs ?? []).filter(
+        (id) => known.has(id) && id !== job.jobId,
+      ),
+    };
+  }
+  return computeDagTiers(graph).filter((tier) => tier.length > 0);
+}
+
+export function buildDagInputs(
+  jobsList: readonly PortalPipelineRunJob[] | undefined,
+): {
+  tiers: string[][];
+  jobs: Record<string, DagJobMeta>;
+} {
+  if (!jobsList || jobsList.length === 0) return { tiers: [], jobs: {} };
+  const tiers = buildTiers(jobsList);
+  const jobs: Record<string, DagJobMeta> = {};
+  for (const job of jobsList) {
+    const completed = job.steps.filter((step) =>
+      isStepComplete(step.status),
+    ).length;
+    jobs[job.jobId] = {
+      jobId: job.jobId,
+      name: job.name,
+      status: toDagJobStatus(job.status),
+      stepProgress:
+        job.steps.length > 0 ? `${completed}/${job.steps.length}` : undefined,
+    };
+  }
+  return { tiers, jobs };
+}
+
+function PipelineRunRow({
+  run,
+}: {
+  readonly run: RichPipelineRun;
+}): JSX.Element {
+  const active = isActivePipelineStatus(run.status);
+  const { tiers, jobs } = useMemo(() => buildDagInputs(run.jobs), [run.jobs]);
+  const progress = run.progress;
+  return (
+    <div
+      className={
+        active
+          ? 'rounded-lg border bg-fg-primary/[0.03] px-3 py-3'
+          : 'group/pipeline-run relative rounded-lg border bg-fg-primary/[0.015] px-3 py-2.5 transition hover:bg-fg-primary/[0.03]'
+      }
+      data-testid={`pipeline-run-row-${run.localId ?? run.pipelineLocalId ?? run.pipelineName}`}
+    >
+      <div className="flex items-center gap-2">
+        <StatusBadge
+          variant={statusVariant(run.status)}
+          muted={!active}
+          label={run.status || 'unknown'}
+        />
+      </div>
+      <div
+        className={`mt-1 truncate text-xs ${active ? 'font-medium fg-primary/80' : 'fg-secondary'}`}
+      >
+        {run.pipelineName ?? run.pipelineLocalId}
+      </div>
+      {active && progress && progress.totalSteps > 0 && (
+        <div
+          className="mt-1 text-2xs fg-secondary"
+          data-testid={`pipeline-run-progress-${run.localId ?? run.pipelineLocalId}`}
+        >
+          {progress.completedSteps}/{progress.totalSteps} steps complete
+        </div>
+      )}
+      {tiers.length > 0 && (
+        <DagProgressBar tiers={tiers} jobs={jobs} muted={!active} />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Display-only pipeline runs, for hosts whose `pipelines` capability is not
+ * `execute`.
+ *
+ * This deliberately renders NO run controls. It previously drew permanently
+ * disabled Retry / Start over chips with no-op handlers, which promised an
+ * action that could never happen (CAN-2865). A host that can drive runs
+ * supplies the shared `PipelineRunsSectionBody` rows through the panel's
+ * `sectionOverrides` seam instead.
+ */
+export interface PipelineRunsSectionProps {
+  readonly runs: readonly PortalPipelineRunProjection[];
+}
+
+export function PipelineRunsSection({
+  runs,
+}: PipelineRunsSectionProps): JSX.Element {
+  const [completedExpanded, setCompletedExpanded] = useState(false);
+  if (runs.length === 0)
+    return (
+      <p
+        className="text-xs fg-secondary"
+        data-testid="activity-pipeline-runs-empty"
+      >
+        No pipeline runs.
+      </p>
+    );
+  const sorted = [...runs].sort((a, b) =>
+    (b.startedAt ?? '').localeCompare(a.startedAt ?? ''),
+  );
+  const active = sorted.filter((run) => isActivePipelineStatus(run.status));
+  const completed = sorted.filter((run) => !isActivePipelineStatus(run.status));
+  return (
+    <div
+      className="max-h-76 space-y-2 overflow-y-auto"
+      data-testid="activity-pipeline-runs"
+    >
+      {active.map((run) => (
+        <PipelineRunRow
+          key={run.localId ?? `${run.pipelineName}-${run.startedAt ?? ''}`}
+          run={run}
+        />
+      ))}
+      {completed.length > 0 && (
+        <CompletedRunsDisclosure
+          count={completed.length}
+          expanded={completedExpanded}
+          onToggle={(): void => setCompletedExpanded((value) => !value)}
+        >
+          {completed.map((run) => (
+            <PipelineRunRow
+              key={run.localId ?? `${run.pipelineName}-${run.startedAt ?? ''}`}
+              run={run}
+            />
+          ))}
+        </CompletedRunsDisclosure>
+      )}
+    </div>
+  );
+}

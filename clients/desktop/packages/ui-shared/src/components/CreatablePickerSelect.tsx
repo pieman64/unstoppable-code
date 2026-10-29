@@ -1,0 +1,514 @@
+'use client';
+
+import {
+  useId,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type JSX,
+  type ReactNode,
+} from 'react';
+import { ChevronDownMediumIcon, PlusIcon } from '../icons/AppIcons';
+import { FLOATING_MENU_GAP } from './FloatingMenu';
+import {
+  FloatingPickerMenu,
+  PickerMenuList,
+  PickerMenuOption,
+  PickerMenuOptionCheck,
+  PickerMenuOptionContent,
+  PickerMenuOptionDescription,
+  PickerMenuOptionLabel,
+  PickerMenuOptionLeading,
+  PickerMenuOptionTrailing,
+  PickerMenuSearchHeader,
+  PickerMenuSearchInput,
+  PickerMenuSection,
+  PickerMenuState,
+} from './PickerMenu';
+
+export interface CreatablePickerOption {
+  /** Stable value reported to onValueChange (for sidebar groups: the group name). */
+  readonly value: string;
+  readonly label: string;
+  /** 16px leading slot (e.g. a color dot). */
+  readonly leading?: ReactNode;
+  readonly description?: string;
+}
+
+export interface CreatablePickerSelectProps {
+  readonly options: readonly CreatablePickerOption[];
+  /** '' = the empty option; otherwise an option value or a created (unmatched) label. */
+  readonly value: string;
+  readonly onValueChange: (value: string) => void;
+  /** Label of the '' choice, always listed first while the query is blank (e.g. "No group"). */
+  readonly emptyLabel: string;
+  /** Builds the create row's label from normalized text, e.g. (t) => `Create “${t}”`. */
+  readonly createLabel: (text: string) => string;
+  /** Trailing hint on the trigger and on the pinned row when `value` matches no option (e.g. "New group"). */
+  readonly unmatchedValueHint?: string;
+  /** Leading slot for an unmatched value (optional). */
+  readonly unmatchedValueLeading?: ReactNode;
+  /** Finds the option a text matches; default: case-insensitive comparison of trimmed label. Used for both the trigger display of `value` and to decide whether to offer the create row. */
+  readonly findOption?: (
+    options: readonly CreatablePickerOption[],
+    text: string,
+  ) => CreatablePickerOption | undefined;
+  /** Normalizes typed text before matching/creating; default: trim. Blank result → no create row. */
+  readonly normalizeText?: (text: string) => string;
+  readonly searchPlaceholder?: string;
+  readonly emptyListMessage?: string;
+  readonly disabled?: boolean;
+  readonly id?: string;
+  readonly 'aria-label'?: string;
+  readonly 'aria-labelledby'?: string;
+  readonly 'data-testid'?: string;
+  /** Placement only. */
+  readonly className?: string;
+}
+
+type PickerRow =
+  | { readonly type: 'empty' }
+  | { readonly type: 'unmatched' }
+  | {
+      readonly type: 'option';
+      readonly option: CreatablePickerOption;
+      readonly index: number;
+    }
+  | { readonly type: 'create'; readonly text: string };
+
+// Mirrors Field.tsx's FIELD_CLASS so the searchable field keeps the shared
+// text-field edge, neutral focus, 36px form height, and coarse-pointer floor.
+const FIELD_CLASS =
+  'min-h-9 rounded-lg px-3 py-2 pointer-coarse:min-h-11 w-full bg-transparent text-s fg-primary text-wrap placeholder:text-pretty placeholder:fg-tertiary outline-none shadow-field transition-shadow focus-visible:shadow-field-focus disabled:cursor-not-allowed disabled:bg-disabled disabled:fg-disabled';
+
+function defaultFindOption(
+  options: readonly CreatablePickerOption[],
+  text: string,
+): CreatablePickerOption | undefined {
+  const normalizedText = text.trim().toLowerCase();
+  return options.find(
+    (option) => option.label.trim().toLowerCase() === normalizedText,
+  );
+}
+
+function defaultNormalizeText(text: string): string {
+  return text.trim();
+}
+
+/** Case-insensitive, with runs of whitespace treated as one space. */
+function filterKey(text: string): string {
+  return text.trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function sameIgnoringCase(left: string, right: string): boolean {
+  return filterKey(left) === filterKey(right);
+}
+
+function pickerRowId(componentId: string, row: PickerRow): string {
+  switch (row.type) {
+    case 'empty':
+      return `${componentId}-option-empty`;
+    case 'unmatched':
+      return `${componentId}-option-unmatched`;
+    case 'option':
+      return `${componentId}-option-${row.index}`;
+    case 'create':
+      return `${componentId}-option-create`;
+  }
+}
+
+function pickerRowTestId(
+  testId: string | undefined,
+  row: PickerRow,
+): string | undefined {
+  if (testId === undefined) return undefined;
+  switch (row.type) {
+    case 'empty':
+      return `${testId}-option-empty`;
+    case 'unmatched':
+      return `${testId}-option-unmatched`;
+    case 'option':
+      return `${testId}-option-${row.index}`;
+    case 'create':
+      return `${testId}-option-create`;
+  }
+}
+
+function withPlacement(base: string, className: string): string {
+  return className ? `${base} ${className}` : base;
+}
+
+export function CreatablePickerSelect({
+  options,
+  value,
+  onValueChange,
+  emptyLabel,
+  createLabel,
+  unmatchedValueHint,
+  unmatchedValueLeading,
+  findOption = defaultFindOption,
+  normalizeText = defaultNormalizeText,
+  searchPlaceholder = 'Search or create',
+  emptyListMessage = 'No matches',
+  disabled = false,
+  id,
+  'aria-label': ariaLabel,
+  'aria-labelledby': ariaLabelledBy,
+  'data-testid': testId,
+  className = '',
+}: CreatablePickerSelectProps): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const [activeRowId, setActiveRowId] = useState<string | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const componentId = useId();
+  const listboxId = `${componentId}-listbox`;
+
+  const matchedOption = value === '' ? undefined : findOption(options, value);
+  const hasUnmatchedValue = value !== '' && matchedOption === undefined;
+  const queryIsBlank = query.trim().length === 0;
+  const filterText = filterKey(query);
+  const normalizedText = normalizeText(query);
+  const exactOption =
+    normalizedText.trim().length > 0
+      ? findOption(options, normalizedText)
+      : undefined;
+  // The exact match stays listed even when its label differs from the typed
+  // text in ways the substring filter does not ignore.
+  const visibleOptions = options
+    .map((option, index) => ({ option, index }))
+    .filter(
+      ({ option }) =>
+        queryIsBlank ||
+        option === exactOption ||
+        filterKey(option.label).includes(filterText),
+    );
+  const canCreate =
+    normalizedText.trim().length > 0 &&
+    exactOption === undefined &&
+    !(hasUnmatchedValue && sameIgnoringCase(normalizedText, value));
+  const createRow: PickerRow | undefined = canCreate
+    ? { type: 'create', text: normalizedText }
+    : undefined;
+
+  const rows: PickerRow[] = [];
+  if (queryIsBlank) rows.push({ type: 'empty' });
+  if (
+    hasUnmatchedValue &&
+    (queryIsBlank || filterKey(value).includes(filterText))
+  ) {
+    rows.push({ type: 'unmatched' });
+  }
+  for (const { option, index } of visibleOptions) {
+    rows.push({ type: 'option', option, index });
+  }
+  if (createRow) rows.push(createRow);
+
+  // Enter must pick the option the text matches, not an earlier partial match.
+  const exactRow = rows.find(
+    (row) => row.type === 'option' && row.option === exactOption,
+  );
+  const defaultActiveRow =
+    exactRow ??
+    (createRow && visibleOptions.length === 0 ? createRow : rows[0]);
+  const activeRow =
+    rows.find((row) => pickerRowId(componentId, row) === activeRowId) ??
+    defaultActiveRow;
+
+  const closeAndFocusTrigger = (): void => {
+    setOpen(false);
+    triggerRef.current?.focus();
+  };
+
+  const chooseRow = (row: PickerRow): void => {
+    if (row.type === 'empty') {
+      onValueChange('');
+    } else if (row.type === 'unmatched') {
+      onValueChange(value);
+    } else if (row.type === 'option') {
+      onValueChange(row.option.value);
+    } else {
+      onValueChange(row.text);
+    }
+    closeAndFocusTrigger();
+  };
+
+  const handleSearchKeyDown = (
+    event: KeyboardEvent<HTMLInputElement>,
+  ): void => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      closeAndFocusTrigger();
+      return;
+    }
+
+    if (event.key === 'Enter') {
+      if (!activeRow) return;
+      event.preventDefault();
+      event.stopPropagation();
+      chooseRow(activeRow);
+      return;
+    }
+
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+    if (rows.length === 0) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    const currentIndex = activeRow
+      ? rows.findIndex(
+          (row) =>
+            pickerRowId(componentId, row) ===
+            pickerRowId(componentId, activeRow),
+        )
+      : -1;
+    const nextIndex =
+      event.key === 'ArrowDown'
+        ? (currentIndex + 1 + rows.length) % rows.length
+        : currentIndex <= 0
+          ? rows.length - 1
+          : currentIndex - 1;
+    const nextRow = rows[nextIndex];
+    if (!nextRow) return;
+    const nextRowId = pickerRowId(componentId, nextRow);
+    setActiveRowId(nextRowId);
+    // The picker may render in a detached window; resolve rows in its document.
+    (searchRef.current?.ownerDocument ?? document)
+      .getElementById(nextRowId)
+      ?.scrollIntoView?.({ block: 'nearest' });
+  };
+
+  const handleSearchChange = (text: string): void => {
+    setQuery(text);
+    setActiveRowId(null);
+  };
+
+  const renderRow = (row: PickerRow): JSX.Element => {
+    const selected =
+      row.type === 'empty'
+        ? value === ''
+        : row.type === 'unmatched'
+          ? hasUnmatchedValue
+          : row.type === 'option'
+            ? matchedOption?.value === row.option.value
+            : false;
+    const rowId = pickerRowId(componentId, row);
+    const active =
+      activeRow !== undefined && pickerRowId(componentId, activeRow) === rowId;
+    const rowTestId = pickerRowTestId(testId, row);
+
+    if (row.type === 'empty') {
+      return (
+        <PickerMenuOption
+          key={rowId}
+          id={rowId}
+          role="option"
+          aria-selected={selected}
+          selected={selected}
+          active={active}
+          data-testid={rowTestId}
+          onMouseMove={(): void => setActiveRowId(rowId)}
+          onClick={(): void => chooseRow(row)}
+        >
+          <PickerMenuOptionLeading />
+          <PickerMenuOptionContent>
+            <PickerMenuOptionLabel>{emptyLabel}</PickerMenuOptionLabel>
+          </PickerMenuOptionContent>
+          <PickerMenuOptionCheck selected={selected} />
+        </PickerMenuOption>
+      );
+    }
+
+    if (row.type === 'unmatched') {
+      return (
+        <PickerMenuOption
+          key={rowId}
+          id={rowId}
+          role="option"
+          aria-selected={selected}
+          selected={selected}
+          active={active}
+          data-testid={rowTestId}
+          onMouseMove={(): void => setActiveRowId(rowId)}
+          onClick={(): void => chooseRow(row)}
+        >
+          <PickerMenuOptionLeading>
+            {unmatchedValueLeading}
+          </PickerMenuOptionLeading>
+          <PickerMenuOptionContent>
+            <PickerMenuOptionLabel>{value}</PickerMenuOptionLabel>
+          </PickerMenuOptionContent>
+          {unmatchedValueHint ? (
+            <PickerMenuOptionTrailing>
+              {unmatchedValueHint}
+            </PickerMenuOptionTrailing>
+          ) : null}
+          <PickerMenuOptionCheck selected={selected} />
+        </PickerMenuOption>
+      );
+    }
+
+    if (row.type === 'option') {
+      return (
+        <PickerMenuOption
+          key={rowId}
+          id={rowId}
+          role="option"
+          aria-selected={selected}
+          selected={selected}
+          active={active}
+          data-testid={rowTestId}
+          onMouseMove={(): void => setActiveRowId(rowId)}
+          onClick={(): void => chooseRow(row)}
+        >
+          <PickerMenuOptionLeading>
+            {row.option.leading}
+          </PickerMenuOptionLeading>
+          <PickerMenuOptionContent>
+            <PickerMenuOptionLabel>{row.option.label}</PickerMenuOptionLabel>
+            {row.option.description ? (
+              <PickerMenuOptionDescription>
+                {row.option.description}
+              </PickerMenuOptionDescription>
+            ) : null}
+          </PickerMenuOptionContent>
+          <PickerMenuOptionCheck selected={selected} />
+        </PickerMenuOption>
+      );
+    }
+
+    return (
+      <PickerMenuOption
+        key={rowId}
+        id={rowId}
+        role="option"
+        aria-selected={false}
+        selected={false}
+        active={active}
+        tone="accent"
+        data-testid={rowTestId}
+        onMouseMove={(): void => setActiveRowId(rowId)}
+        onClick={(): void => chooseRow(row)}
+      >
+        <PickerMenuOptionLeading tone="accent">
+          <PlusIcon width={16} height={16} />
+        </PickerMenuOptionLeading>
+        <PickerMenuOptionContent>
+          <PickerMenuOptionLabel>{createLabel(row.text)}</PickerMenuOptionLabel>
+        </PickerMenuOptionContent>
+      </PickerMenuOption>
+    );
+  };
+
+  const triggerLeading = matchedOption
+    ? matchedOption.leading
+    : hasUnmatchedValue
+      ? unmatchedValueLeading
+      : undefined;
+  const triggerLabel = matchedOption?.label ?? (value || emptyLabel);
+
+  return (
+    <span className={withPlacement('relative flex w-full', className)}>
+      <button
+        ref={triggerRef}
+        id={id}
+        type="button"
+        role="combobox"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={open ? listboxId : undefined}
+        aria-label={ariaLabel}
+        aria-labelledby={ariaLabelledBy}
+        disabled={disabled}
+        data-testid={testId}
+        onClick={(): void => {
+          if (open) {
+            setOpen(false);
+            return;
+          }
+          setQuery('');
+          setActiveRowId(null);
+          setOpen(true);
+        }}
+        className={`${FIELD_CLASS} flex cursor-pointer items-center pr-9 text-left disabled:cursor-not-allowed`}
+      >
+        {triggerLeading ? (
+          <span
+            aria-hidden="true"
+            className="inline-flex h-4 w-4 shrink-0 items-center justify-center [&>svg]:!h-4 [&>svg]:!w-4"
+          >
+            {triggerLeading}
+          </span>
+        ) : null}
+        <span
+          className={`min-w-0 flex-1 truncate ${value === '' ? 'fg-tertiary' : 'fg-primary'}`}
+        >
+          {triggerLabel}
+        </span>
+        {hasUnmatchedValue && unmatchedValueHint ? (
+          <span className="ml-2 shrink-0 text-2xs fg-tertiary">
+            {unmatchedValueHint}
+          </span>
+        ) : null}
+      </button>
+      <span
+        aria-hidden="true"
+        className="pointer-events-none absolute right-3 top-1/2 flex -translate-y-1/2 fg-tertiary"
+      >
+        <ChevronDownMediumIcon size={16} />
+      </span>
+      <FloatingPickerMenu
+        open={open}
+        onOpenChange={setOpen}
+        anchorRef={triggerRef}
+        returnFocusRef={triggerRef}
+        initialFocusRef={searchRef}
+        placement="bottom-left"
+        gap={FLOATING_MENU_GAP}
+        interaction="manual"
+        role="dialog"
+        aria-label={ariaLabel}
+        aria-labelledby={ariaLabelledBy}
+        maximumWidth="max(20rem, var(--canopy-picker-trigger-width))"
+      >
+        <PickerMenuSearchHeader>
+          <PickerMenuSearchInput
+            ref={searchRef}
+            type="search"
+            value={query}
+            onChange={(event): void =>
+              handleSearchChange(event.currentTarget.value)
+            }
+            onKeyDown={handleSearchKeyDown}
+            placeholder={searchPlaceholder}
+            aria-label={searchPlaceholder}
+            aria-controls={listboxId}
+            aria-activedescendant={
+              activeRow ? pickerRowId(componentId, activeRow) : undefined
+            }
+            data-testid={testId === undefined ? undefined : `${testId}-search`}
+          />
+        </PickerMenuSearchHeader>
+        <PickerMenuList
+          id={listboxId}
+          aria-label={ariaLabel ?? searchPlaceholder}
+        >
+          {rows.length === 0 ? (
+            <PickerMenuState>{emptyListMessage}</PickerMenuState>
+          ) : (
+            <>
+              {rows
+                .filter((row) => row.type !== 'create')
+                .map((row) => renderRow(row))}
+              {createRow ? (
+                <PickerMenuSection>{renderRow(createRow)}</PickerMenuSection>
+              ) : null}
+            </>
+          )}
+        </PickerMenuList>
+      </FloatingPickerMenu>
+    </span>
+  );
+}

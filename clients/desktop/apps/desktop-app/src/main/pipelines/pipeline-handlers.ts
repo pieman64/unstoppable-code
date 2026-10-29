@@ -1,0 +1,4032 @@
+import type { ShareFailure } from '@canopy/protocol/sharing';
+import { runClassifiedShare } from '../sharing/share-operation-result';
+import { isDeepStrictEqual } from 'node:util';
+import { pipelineSpeedError } from './codex-speed';
+import {
+  pipelineContextResources,
+  backgroundExecutionDeniedMessage,
+  backgroundExecutionRetryMessage,
+} from '@canopy/desktop-shared/node/background-execution-context';
+import {
+  accountMayRunIn,
+  authorizeBackgroundExecution,
+  backgroundExecutionContextEnabled,
+  captureBackgroundExecutionContext,
+} from '../services/background-execution-context';
+import {
+  authorizeProjectPipelineRequest,
+  assertStoredPipelineContext,
+  readStoredPipelineContext,
+  recordSharedPipelineInstall,
+  copyPipelineInstallOrigin,
+  filterStoredPipelineContexts,
+  filterProjectPipelineContexts,
+} from './pipeline-install-context';
+import { parseWorkspaceContext } from '@canopy/protocol/workspace-context';
+import type { ResourceContextInput } from '@canopy/desktop-shared/lib/resource-context-policy';
+import {
+  assertPipelineContext,
+  assertPipelineContextSnapshot,
+  pipelineContextSnapshot,
+  pipelineResourceContextEnabled,
+} from './resource-lanes';
+import { authorizePipelineReplay } from './pipeline-replay-authorization';
+import {
+  getManagedCuratedPipeline,
+  listManagedCuratedPipelines,
+  startManagedCuratedPipelineSync,
+  stopManagedCuratedPipelineSync,
+} from './curated-pipeline-catalog';
+import { registerCuratedPipelineHandlers } from './curated-pipeline-handlers';
+import { randomUUID } from 'node:crypto';
+import {
+  access,
+  mkdir,
+  readFile,
+  realpath,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
+import * as path from 'node:path';
+import { app, BrowserWindow } from 'electron';
+import {
+  CANOPY_CLOUD_DISPLAY_NAME,
+  CANOPY_CLOUD_SERVER_ID,
+} from '@canopy/desktop-shared/constants/canopy-cloud';
+import { brandEnvName } from '@canopy/desktop-shared/brand/env';
+import {
+  CanopyCloudClientError,
+  isTransientCanopyCloudFailure,
+} from '../canopy-cloud/client';
+import { PIPELINE_CHANNELS } from '@canopy/desktop-shared/constants/ipc-channels';
+import { registerIpcHandler } from '../ipc/register';
+import { isPathInside } from '../lib/path-safety';
+import { isWorkEntryWorkspace } from '../lib/workspace-registry';
+import { withWorkspaceTargetRuntimeStartReservation } from '../lib/workspace-target-exclusion';
+import { sendToAllWindows } from '../lib/window-send';
+import {
+  logMainProcessError,
+  logMainProcessWarn,
+} from '../lib/main-process-logging';
+import { isUsageInitiationSource } from '@canopy/desktop-shared/lib/turn-utils';
+import * as service from './pipeline-service';
+import {
+  createSharedPipeline,
+  deleteSharedPipeline,
+  getSharedPipeline,
+  getSharedPipelineForExecutionContext,
+  listSharedOrganizations,
+  listSharedPipelines,
+  updateSharedPipeline,
+  publishPipelinePublicShare,
+  revokePipelinePublicShare,
+  listSharedTeams,
+} from './canopy-server-client';
+import { getProjectPipelinesDirCandidates } from './config-paths';
+import type { PreferencesData } from '@canopy/desktop-shared/types';
+import type {
+  ListPipelineCapabilityRefsRequest,
+  ListPipelineCapabilityRefsResponse,
+  ListSharedOrganizationsRequest,
+  ListSharedOrganizationsResponse,
+  ListSharedPipelinesRequest,
+  ListSharedPipelinesResponse,
+  ListSharedTeamsRequest,
+  ListSharedTeamsResponse,
+  LoadModelAliasPreferencesRequest,
+  LoadModelAliasPreferencesResponse,
+  Pipeline,
+  PipelineCapabilityRefsEntry,
+  PipelineCapabilitySummary,
+  PipelineData,
+  PipelineInfo,
+  IPCResult,
+  PipelineExecutionStartResult,
+  PipelineAdvisorSnapshot,
+  PipelineLookupRequest,
+  PipelinePackageAnalyzeRequest,
+  PipelinePackageCancelAnalysisRequest,
+  PipelinePackageCreateSharedRequest,
+  PipelinePackageInstallRecordV1,
+  PipelinePackageInstallRequest,
+  PipelinePackageInstallResult,
+  PipelinePackageReadiness,
+  PipelinePackageReadinessRequest,
+  PipelineSaveInput,
+  ProjectPipelineRequest,
+  ResolvePluginCollectionsRequest,
+  ResolvePluginCollectionsResponse,
+  RetryMatrixJobRequest,
+  CancelMatrixVariantRequest,
+  SaveModelAliasPreferencesRequest,
+  SaveModelAliasPreferencesResponse,
+  SavePluginCollectionPreferencesRequest,
+  SavePluginCollectionPreferencesResponse,
+  SharedPipelineDeleteRequest,
+  SharedPipelineDetail,
+  SharedPipelineGetRequest,
+  SharedPipelinePublicShareInfo,
+  SharedPipelineRequest,
+  SharedPipelineSaveImpact,
+  SharedPipelineSummary,
+  SharedPipelineWriteRequest,
+  StoredPipelineLookupRequest,
+  PipelineExecutionInitiator,
+} from '@canopy/desktop-shared/types/pipeline';
+import type { UsageInitiationSource } from '@canopy/desktop-shared/types';
+import {
+  encodeMatrixIpcErrorMessage,
+  getTriggerTypes,
+} from '@canopy/desktop-shared/types/pipeline';
+import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
+import { buildSharedPipelineId } from '@canopy/desktop-shared/pipelines/shared-pipeline-id';
+import {
+  normalizePipeline,
+  validatePipelineRuntimeIdentifier,
+} from '@canopy/desktop-shared/pipelines/normalize-pipeline';
+import { getDefaultShellTypeForCurrentProcess } from '@canopy/desktop-shared/node/pipelines/default-shell';
+import { listBuiltinActions, resolveAction } from './action-resolver';
+import {
+  beginExecutionPause,
+  cancelPipelineExecution,
+  createPipelineExecutionId,
+  executePipeline,
+  getGlobalExecutionWorkspaceDir,
+  getStepLogFilePath,
+  isKnownOrphanedExecution,
+  isTopLevelGlobalRun,
+  listExecutionSummaries,
+  loadExecutionState,
+  prepareMatrixJobRetryState,
+  prepareMatrixVariantCancellation,
+  rerunPipelineExecution,
+  retryPipelineExecution,
+  retryMatrixJobExecution,
+  MatrixExecutorInactiveError,
+  saveExecutionState,
+  setExecutionHidden,
+  type ExecutePipelineRequestOptions,
+  type ExecutionHandle,
+  type ExecutionEvent,
+  type ExecutionOptions,
+  type ExecutionRuntime,
+  type ExecutionState,
+  type SharedPipelineExecutionSource,
+  type StepLogLocator,
+  type StepLogReadOptions,
+} from '@canopy/desktop-shared/node/pipelines/executor';
+import { readStepLogFile } from '@canopy/desktop-shared/node/pipelines/executor/step-log-positions';
+import { createElectronExecutionRuntime } from './execution-runtime';
+import {
+  discoverProjectPipelines,
+  getCreatedAt,
+  getProjectPipelineId,
+  loadProjectPipelineFromDisk,
+} from './project-pipeline-discovery';
+import { resolveLinearToken } from '../lib/linear-auth';
+import { readPreferencesFile } from '../lib/preferences-store';
+import { resolveWorktreeCwd } from '../lib/resolve-worktree';
+import { validateId } from '../lib/validation';
+import { enqueueKnownPrFastRefresh } from '../lib/github-poller';
+import { buildPipelinePreferenceEnv } from './preference-env';
+import { getObservabilityService } from '../observability';
+import { readTrackedPlanData, updatePlan } from '../services/plans-service';
+import { CURSOR_PLAN_EXECUTION_UNAVAILABLE } from '@canopy/desktop-shared/plan-review';
+import { isCursorPlanExecutionUnavailable } from '@canopy/app-core/client';
+import { assertNotSplitLocked } from '../services/split-lock-service';
+import { buildPipelineBaseBranchEnv } from './worktree-base-branch-env';
+import { readEnvironmentConfig } from '../lib/user-environment-store';
+import { resolveEnvironmentForRuntime } from '@canopy/desktop-shared/lib/user-environment';
+import {
+  deletePipelinePluginCollectionPreferences,
+  loadPipelineModelAliasPreferences,
+  loadPipelinePluginCollectionPreferences,
+  normalizePipelineModelAliasPreferences,
+  normalizePipelinePluginCollectionPreferences,
+  savePipelineModelAliasPreferences,
+  savePipelinePluginCollectionPreferences,
+} from './plugin-collection-store';
+import {
+  deleteUserPipelineLocalMetadata,
+  readPipelineLocalMetadata,
+  recordUserPipelineOwner,
+  setUserPipelineAgentAuthor,
+} from './pipeline-local-metadata-store';
+import {
+  getUserPipelineOwner,
+  isLocalUserPipeline,
+  resolveExecutionOwnerContext,
+  selectedOwnerContext,
+  validatePipelineOwnerTargetsOnSave,
+} from './pipeline-owner-policy';
+import { resolvePipelinePluginCollections } from './plugin-collection-resolver';
+import {
+  buildPipelineDefaultDisplay,
+  collectPipelineCapabilityRefs,
+} from '@canopy/desktop-shared/pipelines/plugin-collections';
+import {
+  loadShareablePluginCatalog,
+  matchShareablePluginRef,
+} from '../plugins/shareable-plugin-resolution';
+import {
+  getActiveExecutionHandle,
+  hasActiveExecution,
+  isExecutionReservedBy,
+  releaseExecutionReservation,
+  reserveExecution,
+  trackExecution,
+  tryReserveExecution,
+} from './pipeline-execution-registry';
+import { retireLedgerPipelineExecutionTree } from '../ledger/pipeline-agent-owners';
+import { getResourceMonitorService } from '../resource-monitor';
+import { createPipelineRunObservers } from './pipeline-run-observers';
+import { getPipelineAdvisorService } from './pipeline-advisor';
+import {
+  listPipelineAdvisorSnapshots,
+  readPipelineAdvisorSnapshot,
+} from './pipeline-advisor-store';
+import {
+  withPipelineCrudTelemetry,
+  withPipelineCrudTelemetrySync,
+} from './instrumentation';
+import { getAppAdvisorWatcherService } from '../app-advisor/watchers';
+import { getCachedClaudeAuthStatusObserved } from '../auth/provider-auth-state';
+import { resumePipelineExecutionFromMain } from './pipeline-resume-service';
+import { getEffectiveClaudeWorkerModePreferences } from '../lib/claude-tui-workers';
+import { recordPipelineUsageEvent } from './pipeline-usage-events';
+import {
+  notePipelineExecutionEvent,
+  withPipelineTransientRetryState,
+} from './transient-error-retry-scheduler';
+import { broadcastPipelineExecutionEvent } from './pipeline-execution-event-broadcaster';
+import { notifyDesktopInventoryChanged } from '../services/desktop-inventory-sync-signals';
+import {
+  recordSharedItemInstall,
+  recordSharedItemLocalUninstall,
+} from '../canopy-cloud/shared-item-subscriptions';
+import {
+  analyzePackageRequest,
+  cancelPackageAnalysis,
+  copyPackageInstall,
+  createPackagedSharedPipeline,
+  getPackageReadiness,
+  installPublicPackageShare,
+  listPackageInstalls,
+  removePackageInstall,
+  resolveInstalledPipelinePackageForExecution,
+  downloadSharedPipelinePackageForExecution,
+  assertSharedPipelineMatchesAutomationInstallPin,
+  SharedPipelinePinMismatchError,
+  updateSharedPipelinePreservingPackage,
+} from './pipeline-package-service';
+import { getSharedPipelineSaveImpact } from './shared-pipeline-save-impact';
+
+export { getSharedPipelineSaveImpact } from './shared-pipeline-save-impact';
+
+export { cancelAllActivePipelineExecutions } from './pipeline-execution-registry';
+
+type ResumePipelineOptions = Partial<
+  Pick<
+    ExecutionOptions,
+    | 'cwd'
+    | 'env'
+    | 'inputs'
+    | 'repoPath'
+    | 'inputAnswers'
+    | 'pauseResponses'
+    | 'statusReasonIds'
+  >
+>;
+
+const activeRerunSources = new Set<string>();
+const activeMatrixRetryJobs = new Set<string>();
+
+async function shouldUsePipelineAgentTerminalMode(
+  preferredMode: 'canopy' | 'terminal',
+): Promise<boolean> {
+  if (preferredMode !== 'terminal') {
+    return false;
+  }
+  const authStatus = await getCachedClaudeAuthStatusObserved(
+    'pipeline-terminal-mode',
+    { forceRefresh: true },
+  );
+  return authStatus.authenticated;
+}
+
+function getEffectivePipelinesMode(
+  preferences: Pick<
+    PreferencesData,
+    'canopyBackgroundProcessesMode' | 'pipelinesMode'
+  >,
+): 'canopy' | 'terminal' {
+  return getEffectiveClaudeWorkerModePreferences(preferences).pipelinesMode;
+}
+
+function buildPipelineSecretEnv(args: {
+  linearToken: string | null | undefined;
+  userSecretEnv?: Record<string, string>;
+}): Record<string, string> | undefined {
+  const secretEnv: Record<string, string> = {
+    ...(args.userSecretEnv ?? {}),
+  };
+  if (args.linearToken) {
+    secretEnv[brandEnvName('LINEAR_API_KEY')] = args.linearToken;
+  }
+  return Object.keys(secretEnv).length > 0 ? secretEnv : undefined;
+}
+
+async function resolvePipelineRuntimeEnv(workspaceId?: string): Promise<{
+  env: Record<string, string>;
+  secretEnv: Record<string, string>;
+}> {
+  try {
+    const { data } = await readEnvironmentConfig();
+    const resolved = resolveEnvironmentForRuntime(data, {
+      runtime: 'pipeline',
+      ...(workspaceId ? { workspaceId } : {}),
+    });
+    return {
+      env: resolved.publicApplied,
+      secretEnv: resolved.secretApplied,
+    };
+  } catch {
+    return { env: {}, secretEnv: {} };
+  }
+}
+
+async function hydrateAdvisorSnapshotPipelineStartedAt(
+  snapshot: PipelineAdvisorSnapshot | null,
+  executionId: string,
+  executionsDir: string,
+): Promise<PipelineAdvisorSnapshot | null> {
+  if (!snapshot || snapshot.executionId !== executionId) {
+    return null;
+  }
+  if (snapshot.pipelineStartedAt) {
+    return snapshot;
+  }
+
+  const active = getActiveExecutionHandle(executionId);
+  const state =
+    active?.getState() ??
+    (await loadExecutionState(executionId, executionsDir));
+  return state?.started_at
+    ? { ...snapshot, pipelineStartedAt: state.started_at }
+    : snapshot;
+}
+
+function createMonitoredElectronExecutionRuntime(
+  getWindow?: () => BrowserWindow | null,
+): ExecutionOptions['runtime'] {
+  const runtime = createElectronExecutionRuntime(getWindow);
+  runtime.resourceMonitor = getResourceMonitorService();
+  return runtime;
+}
+
+const OBSERVER_TERMINAL_STATUSES: ReadonlySet<ExecutionState['status']> =
+  new Set<ExecutionState['status']>(['success', 'failure', 'cancelled']);
+
+/**
+ * Give a started execution its browser projection.
+ *
+ * The renderer has always had an ambient channel (`emitExecutionEvent` fires
+ * for every execution regardless of its source); this is the browser's
+ * equivalent. Attached here rather than at each call site because this helper
+ * is the one seam every start, retry, and replay already passes through.
+ *
+ * Observers attach after the handle exists, so the earliest events can predate
+ * them — `prime` republishes the current state to cover that edge.
+ */
+function attachPipelineRunObservers(handle: ExecutionHandle): void {
+  if (!handle.addObservers) return;
+  const observers = createPipelineRunObservers(handle.id);
+  if (!observers) return;
+  let dispose: (() => void) | undefined;
+  const onEvent: NonNullable<ExecutionOptions['onEvent']> = (event) => {
+    try {
+      observers.onEvent(event);
+    } finally {
+      if (OBSERVER_TERMINAL_STATUSES.has(event.state.status)) {
+        dispose?.();
+        dispose = undefined;
+      }
+    }
+  };
+  dispose = handle.addObservers({
+    onEvent,
+    onStepOutput: observers.onStepOutput,
+  });
+  observers.prime?.(handle.getState());
+}
+
+function trackExecutionWithAdvisor(
+  handle: ExecutionHandle,
+  runtime: ExecutionRuntime,
+  getWindow: () => BrowserWindow | null,
+  onSettled?: () => void,
+  reservationId: string = handle.id,
+): void {
+  trackExecution(handle, onSettled, reservationId);
+  getPipelineAdvisorService().watchExecution({ handle, runtime, getWindow });
+  attachPipelineRunObservers(handle);
+}
+
+type MainProcessExecutePipelineRequestOptions = Omit<
+  ExecutePipelineRequestOptions,
+  'cwd'
+> & {
+  /**
+   * Working directory of a project or directory run. A top-level global run
+   * ignores it and works in its own scratch folder.
+   */
+  cwd?: string;
+  /**
+   * Internal-only preallocated id used by hook-pipeline queue reservations.
+   * Renderer IPC execute requests are sanitized before reaching this type.
+   */
+  executionId?: string;
+  /**
+   * Internal package owned by the automation that launched a bundled local
+   * pipeline. Renderer IPC requests never populate this field.
+   */
+  automationPipelinePackage?: ExecutionOptions['pipelinePackage'];
+  /** Fresh foreground dispatch marker; never accepted from renderer IPC. */
+  allowUnverifiedForegroundChildren?: boolean;
+};
+
+async function setupAppAdvisorPipelineWatchersForExecution(args: {
+  state: ExecutionState;
+  watcherSetups?: ExecutePipelineRequestOptions['appAdvisorPipelineWatchers'];
+  projectId?: string;
+  worktreeId?: string;
+}): Promise<void> {
+  const { state, watcherSetups } = args;
+  if (!watcherSetups || watcherSetups.length === 0) {
+    return;
+  }
+
+  const projectId = state.project_id ?? args.projectId;
+  const worktreeId = state.worktree_id ?? args.worktreeId;
+  if (!projectId || !worktreeId) {
+    throw new Error(
+      'Unable to create selected pipeline watcher: execution is not scoped to a worktree.',
+    );
+  }
+
+  const service = getAppAdvisorWatcherService();
+  for (const setup of watcherSetups) {
+    const result = await service.setup(
+      {
+        watchers: [
+          {
+            trigger: 'worktree_pipeline_completion',
+            target: {
+              kind: 'worktree_pipeline',
+              projectId,
+              worktreeId,
+              executionId: state.id,
+              pipelineId: state.pipeline_id,
+              ...(setup.watcher.terminalStatuses
+                ? { terminalStatuses: setup.watcher.terminalStatuses }
+                : {}),
+            },
+            ...(setup.watcher.label ? { label: setup.watcher.label } : {}),
+            ...(setup.watcher.followUpInstruction
+              ? { followUpInstruction: setup.watcher.followUpInstruction }
+              : {}),
+            ...(setup.watcher.allowDuplicate !== undefined
+              ? { allowDuplicate: setup.watcher.allowDuplicate }
+              : {}),
+          },
+        ],
+      },
+      setup.destination,
+    );
+    if (!result.ok) {
+      throw new Error(
+        `Unable to create selected pipeline watcher: ${result.error}`,
+      );
+    }
+  }
+}
+
+function getErrorCode(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null || !('code' in error)) {
+    return undefined;
+  }
+  const code = error.code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+function formatPipelineExecutionError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isProjectPipelineRequest(
+  request: PipelineLookupRequest,
+): request is ProjectPipelineRequest {
+  return (
+    typeof request === 'object' &&
+    request !== null &&
+    'cwd' in request &&
+    'filePath' in request &&
+    typeof request.id === 'string' &&
+    typeof request.cwd === 'string' &&
+    typeof request.filePath === 'string'
+  );
+}
+
+function isSharedPipelineRequest(
+  request: PipelineLookupRequest,
+): request is SharedPipelineRequest {
+  return (
+    typeof request === 'object' &&
+    request !== null &&
+    'source' in request &&
+    request.source === 'shared' &&
+    'remoteId' in request &&
+    typeof request.remoteId === 'string'
+  );
+}
+
+function toErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function buildSharedPipelinePreferenceLocator(
+  serverId: string,
+  remoteId: string,
+): { type: 'shared'; value: string } {
+  return {
+    type: 'shared',
+    value: `${serverId}:${remoteId}`,
+  };
+}
+
+function buildSharedPipelineInfo(args: {
+  pipeline: SharedPipelineSummary;
+  scopes?: PipelineInfo['scopes'];
+}): PipelineInfo {
+  const { pipeline } = args;
+  return {
+    id: buildSharedPipelineId(CANOPY_CLOUD_SERVER_ID, pipeline.id),
+    name: pipeline.name,
+    filename: '',
+    description: pipeline.description,
+    icon: pipeline.icon,
+    createdAt: pipeline.createdAt,
+    updatedAt: pipeline.updatedAt,
+    triggerTypes: pipeline.triggerTypes,
+    scopes: args.scopes ?? pipeline.scopes ?? ['directory'],
+    source: 'shared',
+    readonly: !pipeline.canUpdate,
+    serverId: CANOPY_CLOUD_SERVER_ID,
+    serverName: CANOPY_CLOUD_DISPLAY_NAME,
+    remoteId: pipeline.id,
+    canUpdate: pipeline.canUpdate,
+    canDelete: pipeline.canDelete,
+    shareScope: pipeline.shareScope ?? 'private',
+    distributionMode: pipeline.distributionMode ?? 'definition_only',
+    ...(pipeline.owner ? { owner: pipeline.owner } : {}),
+  };
+}
+
+function withDefaultSharedPipelineScopes<T extends SharedPipelineSummary>(
+  pipeline: T,
+): T {
+  return {
+    ...pipeline,
+    scopes: pipeline.scopes ?? ['directory'],
+  };
+}
+
+function hydrateSharedPipelineDetailScopes(
+  detail: SharedPipelineDetail,
+): SharedPipelineDetail {
+  try {
+    const normalized = normalizePipeline(
+      parsePipelineText(detail.rawPipeline),
+      {
+        defaultShell: getDefaultShellTypeForCurrentProcess(),
+      },
+    );
+    return { ...detail, scopes: normalized.scope };
+  } catch {
+    return withDefaultSharedPipelineScopes(detail);
+  }
+}
+
+async function loadSharedPipelineData(request: SharedPipelineRequest): Promise<
+  | {
+      success: true;
+      data: PipelineData;
+    }
+  | {
+      success: false;
+      error: string;
+    }
+> {
+  try {
+    const detail = await getSharedPipeline(request.remoteId);
+    const content = parsePipelineText(detail.rawPipeline);
+    const normalized = normalizePipeline(content, {
+      defaultShell: getDefaultShellTypeForCurrentProcess(),
+    });
+    return {
+      success: true,
+      data: {
+        info: buildSharedPipelineInfo({
+          pipeline: detail,
+          scopes: normalized.scope,
+        }),
+        content,
+      },
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: toErrorMessage(error),
+    };
+  }
+}
+
+async function cacheSharedPipelineForExecution(args: {
+  serverId: string;
+  remoteId: string;
+  projectId?: string;
+  installPin?: NonNullable<ExecutionOptions['sharedPipeline']>['installPin'];
+  runtime: ReturnType<typeof createElectronExecutionRuntime>;
+  executionId: string;
+  executionContext?: string;
+}): Promise<{
+  pipeline: Pipeline;
+  owner: unknown;
+  sharedPipelineSource: SharedPipelineExecutionSource;
+  pipelinePackage?: ExecutionOptions['pipelinePackage'];
+}> {
+  const { serverId, remoteId, installPin, runtime, executionId } = args;
+  let detail: SharedPipelineDetail;
+  try {
+    detail = await (args.executionContext !== undefined
+      ? getSharedPipelineForExecutionContext(remoteId)
+      : getSharedPipeline(remoteId));
+  } catch (error) {
+    if (args.executionContext !== undefined) {
+      if (isTransientCanopyCloudFailure(error))
+        throw new Error(backgroundExecutionRetryMessage('run'));
+      if (
+        (error instanceof CanopyCloudClientError &&
+          error.isValidatedServerError &&
+          (error.status === 403 || error.status === 404)) ||
+        (error instanceof Error &&
+          error.message === 'Pipeline unavailable (access-removed)')
+      )
+        throw new Error(backgroundExecutionDeniedMessage('access-removed'));
+    }
+    throw error;
+  }
+  await assertPipelineContext(
+    { owner: detail.owner },
+    args.projectId,
+    args.executionContext,
+  );
+  if (installPin) {
+    assertSharedPipelineMatchesAutomationInstallPin(detail, installPin);
+  }
+  const executionDir = path.join(runtime.executionsDir, executionId);
+  await mkdir(executionDir, { recursive: true });
+  const cachedPipelinePath = path.join(executionDir, 'shared-pipeline.yaml');
+  await writeFile(cachedPipelinePath, detail.rawPipeline, 'utf8');
+
+  return {
+    pipeline: parsePipelineText(detail.rawPipeline),
+    owner: detail.owner ?? { shareScope: detail.shareScope },
+    sharedPipelineSource: {
+      type: 'shared',
+      serverId,
+      serverName: CANOPY_CLOUD_DISPLAY_NAME,
+      remoteId,
+      cachedPipelinePath,
+      fetchedAt: new Date().toISOString(),
+    },
+    ...(detail.distributionMode === 'package' && detail.package?.digest
+      ? {
+          pipelinePackage: await downloadSharedPipelinePackageForExecution({
+            remoteId,
+            rawPipeline: detail.rawPipeline,
+            packageDigest: detail.package.digest,
+          }),
+        }
+      : {}),
+  };
+}
+
+function isCuratedPipelineLookup(
+  request: PipelineLookupRequest,
+): request is StoredPipelineLookupRequest {
+  return (
+    typeof request === 'object' &&
+    request !== null &&
+    'source' in request &&
+    request.source === 'curated' &&
+    'id' in request &&
+    typeof request.id === 'string'
+  );
+}
+
+function isStoredPipelineLookupRequest(
+  request: PipelineLookupRequest,
+): request is StoredPipelineLookupRequest {
+  return (
+    typeof request === 'object' &&
+    request !== null &&
+    'source' in request &&
+    'id' in request &&
+    typeof request.id === 'string' &&
+    (request.source === 'bundled' || request.source === 'user')
+  );
+}
+
+function getPipelineLookupTelemetrySource(
+  request: PipelineLookupRequest,
+): 'bundled' | 'user' | 'project' | 'shared' | 'curated' | 'unknown' {
+  if (isCuratedPipelineLookup(request)) return 'curated';
+  if (isSharedPipelineRequest(request)) {
+    return 'shared';
+  }
+  if (isProjectPipelineRequest(request)) {
+    return 'project';
+  }
+  if (isStoredPipelineLookupRequest(request)) {
+    return request.source;
+  }
+  return 'unknown';
+}
+function isYamlPipelinePath(filePath: string): boolean {
+  const extension = path.extname(filePath).toLowerCase();
+  return extension === '.yaml' || extension === '.yml';
+}
+
+export async function validateProjectPipelineAccess(
+  request: ProjectPipelineRequest,
+): Promise<
+  | { success: true; data: { filePath: string; rootDir: string } }
+  | {
+      success: false;
+      error: string;
+    }
+> {
+  if (!path.isAbsolute(request.cwd)) {
+    return {
+      success: false,
+      error: 'Project pipeline cwd must be absolute',
+    };
+  }
+
+  if (!path.isAbsolute(request.filePath)) {
+    return {
+      success: false,
+      error: 'Project pipeline filePath must be absolute',
+    };
+  }
+
+  const normalizedFilePath = path.resolve(request.filePath);
+  const rootDir = getProjectPipelinesDirCandidates(request.cwd).find(
+    (candidate) => isPathInside(candidate, normalizedFilePath),
+  );
+  if (!rootDir) {
+    return {
+      success: false,
+      error:
+        'Project pipeline filePath must stay inside a project pipelines directory',
+    };
+  }
+
+  if (!isYamlPipelinePath(normalizedFilePath)) {
+    return {
+      success: false,
+      error: 'Project pipeline filePath must be a .yml or .yaml file',
+    };
+  }
+
+  const relativeFilePath = path
+    .relative(rootDir, normalizedFilePath)
+    .split(path.sep)
+    .join('/');
+  const expectedId = getProjectPipelineId(relativeFilePath);
+  if (request.id !== expectedId) {
+    return {
+      success: false,
+      error: 'Project pipeline id does not match filePath',
+    };
+  }
+
+  try {
+    const [resolvedRealPath, resolvedRootDir] = await Promise.all([
+      realpath(normalizedFilePath),
+      realpath(rootDir),
+    ]);
+    if (!isPathInside(resolvedRootDir, resolvedRealPath)) {
+      return {
+        success: false,
+        error:
+          'Project pipeline symlink target must stay inside .canopy/pipelines',
+      };
+    }
+  } catch (error) {
+    if (getErrorCode(error) !== 'ENOENT') {
+      throw error;
+    }
+  }
+
+  return {
+    success: true,
+    data: {
+      filePath: normalizedFilePath,
+      rootDir,
+    },
+  };
+}
+
+async function loadProjectPipelineData(
+  request: ProjectPipelineRequest,
+): Promise<
+  | {
+      success: true;
+      data: PipelineData;
+    }
+  | {
+      success: false;
+      error: string;
+    }
+> {
+  if (pipelineResourceContextEnabled()) {
+    try {
+      await authorizeProjectPipelineRequest(request);
+    } catch (error) {
+      return { success: false, error: toErrorMessage(error) };
+    }
+  }
+  const validated = await validateProjectPipelineAccess(request);
+  if (!validated.success) {
+    return validated;
+  }
+
+  try {
+    const [content, fileStats] = await Promise.all([
+      loadProjectPipelineFromDisk(validated.data.filePath),
+      stat(validated.data.filePath),
+    ]);
+    const relativeFilePath = path
+      .relative(validated.data.rootDir, validated.data.filePath)
+      .split(path.sep)
+      .join('/');
+
+    return {
+      success: true,
+      data: {
+        info: {
+          id: request.id,
+          name: content.name,
+          description: content.description ?? '',
+          icon: content.icon ?? '',
+          filename: relativeFilePath,
+          createdAt: getCreatedAt(fileStats),
+          updatedAt: fileStats.mtime.toISOString(),
+          source: 'project',
+          readonly: true,
+          filePath: validated.data.filePath,
+        },
+        content,
+      },
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/** Keep the fixed definition identity and its provenance in one transaction. */
+async function createScopedPipelineDuplicate(
+  input: PipelineSaveInput,
+  recordOrigin: (
+    id: string,
+    onRollback: (undo: () => Promise<void>) => void,
+  ) => Promise<void>,
+  afterCreate?: (id: string) => Promise<void>,
+): Promise<ReturnType<typeof service.savePipeline>> {
+  const id = randomUUID();
+  let savedId: string | undefined;
+  let undoReceipt: (() => Promise<void>) | undefined;
+  try {
+    await recordOrigin(id, (undo) => {
+      undoReceipt = undo;
+    });
+    const saved = service.savePipeline({ ...input, id }, { id });
+    if (!saved.success || !saved.data)
+      throw new Error(saved.error ?? 'Failed to save the pipeline');
+    savedId = saved.data.id;
+    if (savedId !== id) throw new Error('Pipeline create identity mismatch');
+    await afterCreate?.(id);
+    return saved;
+  } catch (error) {
+    try {
+      if (savedId) {
+        const removed = service.deletePipeline(savedId);
+        if (!removed.success)
+          throw new Error(removed.error ?? 'Failed to roll back pipeline');
+      }
+      await undoReceipt?.();
+    } catch (rollbackError) {
+      return {
+        success: false,
+        error: `${toErrorMessage(error)}; ${toErrorMessage(rollbackError)}`,
+      };
+    }
+    return { success: false, error: toErrorMessage(error) };
+  }
+}
+
+function persistPipelineRemoteMetadata(
+  request: Pick<
+    SharedPipelineWriteRequest,
+    'sourcePipeline' | 'sourcePipelineId' | 'shareScope'
+  >,
+  detail: SharedPipelineDetail,
+):
+  | ReturnType<typeof service.writePipelineRemoteMetadata>
+  | ReturnType<typeof service.writeProjectPipelineRemoteMetadata>
+  | undefined {
+  const remote = {
+    accountId: detail.createdBy.id,
+    remoteId: detail.id,
+    contentHash: detail.contentHash,
+    shareScope: detail.shareScope ?? request.shareScope ?? 'private',
+    sharedAt: detail.updatedAt,
+  };
+  if (request.sourcePipeline?.kind === 'project') {
+    return service.writeProjectPipelineRemoteMetadata(
+      request.sourcePipeline.pipelineFilePath,
+      remote,
+    );
+  }
+  const sourceId =
+    request.sourcePipeline?.kind === 'stored'
+      ? request.sourcePipeline.source === 'user'
+        ? request.sourcePipeline.id
+        : undefined
+      : request.sourcePipelineId;
+  return sourceId
+    ? service.writePipelineRemoteMetadata(sourceId, remote)
+    : undefined;
+}
+
+export function registerPipelineHandlers(): void {
+  registerCuratedPipelineHandlers();
+  app.once('will-quit', stopManagedCuratedPipelineSync);
+  registerIpcHandler(PIPELINE_CHANNELS.LIST, () =>
+    withPipelineCrudTelemetry(
+      { action: 'list', source: 'unknown' },
+      async () => {
+        const local = service.listPipelines();
+        if (!local.success || !local.data) return local;
+        startManagedCuratedPipelineSync();
+        // An unavailable account/catalog must never hide local pipelines.
+        const curated = await listManagedCuratedPipelines().catch(() => []);
+        const rows = [...local.data, ...curated];
+        if (!pipelineResourceContextEnabled())
+          return { success: true, data: rows };
+        return {
+          success: true,
+          data: await filterStoredPipelineContexts(rows),
+        };
+      },
+    ),
+  );
+  registerIpcHandler(PIPELINE_CHANNELS.DISCOVER_PROJECT, (_, cwd: string) => {
+    return withPipelineCrudTelemetry(
+      { action: 'discover', source: 'project', hasProjectContext: true },
+      async () => {
+        if (!path.isAbsolute(cwd)) {
+          return {
+            success: false,
+            error: 'cwd must be an absolute path',
+          };
+        }
+        return discoverProjectPipelines(cwd)
+          .then(async (data) => ({
+            success: true,
+            data: await filterProjectPipelineContexts(data, cwd),
+          }))
+          .catch((error) => ({
+            success: false,
+            error: error instanceof Error ? error.message : String(error),
+          }));
+      },
+    );
+  });
+  registerIpcHandler(
+    PIPELINE_CHANNELS.GET,
+    async (_event, request: PipelineLookupRequest) => {
+      return withPipelineCrudTelemetry(
+        {
+          action: 'get',
+          source: getPipelineLookupTelemetrySource(request),
+          hasPipelineId:
+            typeof request === 'string' ||
+            (typeof request === 'object' &&
+              request !== null &&
+              'id' in request),
+        },
+        async () => {
+          if (pipelineResourceContextEnabled()) {
+            const localId =
+              typeof request === 'string'
+                ? request
+                : 'id' in request
+                  ? request.id
+                  : undefined;
+            if (localId) {
+              try {
+                if (isProjectPipelineRequest(request))
+                  await authorizeProjectPipelineRequest(request);
+                else await assertStoredPipelineContext(localId);
+              } catch (error) {
+                return { success: false, error: toErrorMessage(error) };
+              }
+            }
+          }
+
+          if (
+            isCuratedPipelineLookup(request) ||
+            (typeof request === 'string' && request.startsWith('curated:'))
+          ) {
+            try {
+              return {
+                success: true,
+                data: await getManagedCuratedPipeline(
+                  typeof request === 'string' ? request : request.id,
+                ),
+              };
+            } catch (error) {
+              return { success: false, error: toErrorMessage(error) };
+            }
+          }
+          if (isSharedPipelineRequest(request)) {
+            return loadSharedPipelineData(request);
+          }
+
+          if (!isProjectPipelineRequest(request)) {
+            if (isStoredPipelineLookupRequest(request)) {
+              return service.getStoredPipelineBySource(
+                request.source === 'bundled' ? 'bundled' : 'user',
+                request.id,
+              );
+            }
+            if (typeof request !== 'string') {
+              return {
+                success: false,
+                error: 'Invalid pipeline lookup request',
+              };
+            }
+            return service.getPipeline(request);
+          }
+
+          return loadProjectPipelineData(request);
+        },
+      );
+    },
+  );
+  registerIpcHandler(
+    PIPELINE_CHANNELS.SAVE,
+    async (_, input: PipelineSaveInput) => {
+      if (pipelineResourceContextEnabled() && input.id) {
+        try {
+          await assertStoredPipelineContext(input.id);
+        } catch (error) {
+          return { success: false, error: toErrorMessage(error) };
+        }
+      }
+      // An existing pipeline keeps its owner; a new one takes the selected one.
+      const existingUserPipelineId =
+        input.id && isLocalUserPipeline(input.id) ? input.id : undefined;
+      const ownerContext =
+        existingUserPipelineId !== undefined
+          ? await getUserPipelineOwner(existingUserPipelineId)
+          : await selectedOwnerContext();
+      // Saving in the editor as the user records the owner of a new pipeline
+      // and clears any agent marker.
+      const recordUserSave = (savedId: string): void => {
+        if (existingUserPipelineId === undefined)
+          recordUserPipelineOwner(savedId, ownerContext);
+        setUserPipelineAgentAuthor(savedId, null);
+      };
+      if (pipelineResourceContextEnabled() && input.sourceRemoteId) {
+        const id = input.id ?? randomUUID();
+        const previous = input.id ? service.getPipeline(id) : undefined;
+        const previousRaw = input.id ? service.getPipelineText(id) : undefined;
+        let savedDefinition = false;
+        let savedId = id;
+        let undoReceipt: (() => Promise<void>) | undefined;
+        try {
+          validateId(input.sourceRemoteId, 'sourceRemoteId');
+          const detail = await getSharedPipeline(input.sourceRemoteId);
+          const sharedContent = parsePipelineText(detail.rawPipeline);
+          const ownerRefusal = await validatePipelineOwnerTargetsOnSave(
+            sharedContent,
+            ownerContext,
+          );
+          if (ownerRefusal !== null)
+            return { success: false, error: ownerRefusal };
+          if (
+            input.id &&
+            (!previous?.success ||
+              !previous.data ||
+              !previousRaw?.success ||
+              !previousRaw.data)
+          )
+            throw new Error('Pipeline unavailable (unknown-provenance)');
+          savedDefinition = Boolean(input.id);
+          const result = service.savePipeline(
+            {
+              ...input,
+              id,
+              content: sharedContent,
+              rawContent: detail.rawPipeline,
+            },
+            input.id ? undefined : { id },
+          );
+          if (!result.success || !result.data)
+            throw new Error(result.error ?? 'Failed to save the pipeline');
+          savedDefinition = true;
+          savedId = result.data.id;
+          if (result.data.id !== id)
+            throw new Error('Pipeline create identity mismatch');
+          await recordSharedPipelineInstall(detail, id, (undo) => {
+            undoReceipt = undo;
+          });
+          if (input.id) await removePackageInstall(id);
+          recordSharedItemInstall({
+            kind: 'pipeline',
+            remoteId: detail.id,
+            sourceKind: 'shared',
+            contentHash: detail.contentHash,
+            localId: id,
+          });
+          recordUserSave(id);
+          notifyDesktopInventoryChanged(['pipelines']);
+          return result;
+        } catch (error) {
+          const rollbackErrors: string[] = [];
+          try {
+            if (savedDefinition) {
+              if (previous?.data && previousRaw?.data) {
+                const restored = service.savePipeline({
+                  ...previous.data.info,
+                  content: previous.data.content,
+                  rawContent: previousRaw.data,
+                });
+                if (!restored.success)
+                  throw new Error(
+                    restored.error ?? 'Failed to restore pipeline',
+                  );
+              } else {
+                const removed = service.deletePipeline(savedId);
+                if (!removed.success)
+                  throw new Error(
+                    removed.error ?? 'Failed to roll back pipeline',
+                  );
+              }
+            }
+            await undoReceipt?.();
+          } catch (rollbackError) {
+            rollbackErrors.push(toErrorMessage(rollbackError));
+          }
+          return {
+            success: false,
+            error: [toErrorMessage(error), ...rollbackErrors].join('; '),
+          };
+        }
+      }
+      const ownerRefusal = await validatePipelineOwnerTargetsOnSave(
+        input.content,
+        ownerContext,
+      );
+      if (ownerRefusal !== null) return { success: false, error: ownerRefusal };
+      const result = withPipelineCrudTelemetrySync(
+        {
+          action: input.id ? 'update' : 'create',
+          source: 'user',
+          hasPipelineId: Boolean(input.id),
+        },
+        () => service.savePipeline(input),
+      );
+      if (result.success && result.data) recordUserSave(result.data.id);
+      if (input.id && result.success) void removePackageInstall(input.id);
+      if (result.success && result.data && input.sourceRemoteId) {
+        // Without organization projects the definition comes from the
+        // renderer and no server hash travels with it.
+        recordSharedItemInstall({
+          kind: 'pipeline',
+          remoteId: input.sourceRemoteId,
+          sourceKind: 'shared',
+          contentHash: null,
+          localId: result.data.id,
+        });
+      }
+      if (result.success) notifyDesktopInventoryChanged(['pipelines']);
+      return result;
+    },
+  );
+  registerIpcHandler(PIPELINE_CHANNELS.DELETE, (_, id: string) => {
+    return withPipelineCrudTelemetrySync(
+      { action: 'delete', source: 'user', hasPipelineId: true },
+      () => {
+        const result = service.deletePipeline(id);
+        if (result.success) {
+          deletePipelinePluginCollectionPreferences({
+            type: 'stored',
+            source: 'user',
+            value: id,
+          });
+          deleteUserPipelineLocalMetadata(id);
+          // The subscription ledger names every share this copy came from,
+          // even after a local edit dropped its package record.
+          recordSharedItemLocalUninstall({ kind: 'pipeline', localId: id });
+          void removePackageInstall(id);
+          notifyDesktopInventoryChanged(['pipelines']);
+        }
+        return result;
+      },
+    );
+  });
+  registerIpcHandler(
+    PIPELINE_CHANNELS.DUPLICATE,
+    async (_event, request: PipelineLookupRequest) => {
+      // A copy belongs to the selected owner and carries no agent marker.
+      const copyOwner = await selectedOwnerContext();
+      const duplicated = await withPipelineCrudTelemetry(
+        {
+          action: 'duplicate',
+          source: getPipelineLookupTelemetrySource(request),
+          hasPipelineId: true,
+        },
+        async () => {
+          if (pipelineResourceContextEnabled()) {
+            try {
+              if (isProjectPipelineRequest(request)) {
+                const { owner } =
+                  await authorizeProjectPipelineRequest(request);
+                if (owner.type === 'organization')
+                  throw new Error('Pipeline unavailable (context-mismatch)');
+              } else {
+                const localId =
+                  typeof request === 'string'
+                    ? request
+                    : 'id' in request
+                      ? request.id
+                      : undefined;
+                if (localId?.startsWith('project--'))
+                  throw new Error('Pipeline unavailable (unknown-provenance)');
+                if (localId) await assertStoredPipelineContext(localId);
+              }
+            } catch (error) {
+              return { success: false, error: toErrorMessage(error) };
+            }
+          }
+
+          if (
+            isCuratedPipelineLookup(request) ||
+            (typeof request === 'string' && request.startsWith('curated:'))
+          ) {
+            try {
+              const loaded = await getManagedCuratedPipeline(
+                typeof request === 'string' ? request : request.id,
+              );
+              const content = { ...loaded.content };
+              delete content.readonly;
+              const saved = service.savePipeline({
+                name: `${loaded.content.name} (Copy)`,
+                description: loaded.content.description ?? '',
+                icon: loaded.content.icon ?? '',
+                content,
+              });
+              if (saved.success) notifyDesktopInventoryChanged(['pipelines']);
+              return saved;
+            } catch (error) {
+              return { success: false, error: toErrorMessage(error) };
+            }
+          }
+          if (isSharedPipelineRequest(request)) {
+            try {
+              const detail = await getSharedPipeline(request.remoteId);
+              const content = parsePipelineText(detail.rawPipeline);
+              delete content.readonly;
+              if (pipelineResourceContextEnabled()) {
+                return createScopedPipelineDuplicate(
+                  {
+                    name: `${content.name} (Copy)`,
+                    description: content.description ?? '',
+                    icon: content.icon ?? '',
+                    content,
+                  },
+                  (id, onRollback) =>
+                    recordSharedPipelineInstall(detail, id, onRollback),
+                );
+              }
+              const localId = randomUUID();
+              await recordSharedPipelineInstall(detail, localId);
+              return service.savePipeline({
+                id: localId,
+                name: `${content.name} (Copy)`,
+                description: content.description ?? '',
+                icon: content.icon ?? '',
+                content,
+              });
+            } catch (error) {
+              return {
+                success: false,
+                error: toErrorMessage(error),
+              };
+            }
+          }
+
+          if (!isProjectPipelineRequest(request)) {
+            if (typeof request !== 'string') {
+              return {
+                success: false,
+                error: 'Invalid pipeline lookup request for duplication',
+              };
+            }
+            if (pipelineResourceContextEnabled()) {
+              const loaded = service.getPipeline(request);
+              if (!loaded.success || !loaded.data) return loaded;
+              const content = { ...loaded.data.content };
+              delete content.readonly;
+              return createScopedPipelineDuplicate(
+                {
+                  curatedOrigin: loaded.data.info.curatedOrigin,
+                  name: `${loaded.data.info.name} (Copy)`,
+                  description: loaded.data.info.description,
+                  icon: loaded.data.info.icon,
+                  content,
+                },
+                (id, onRollback) =>
+                  copyPipelineInstallOrigin(request, id, onRollback),
+                (id) => copyPackageInstall(request, id),
+              );
+            }
+            const duplicated = service.duplicatePipeline(request);
+            if (duplicated.success && duplicated.data) {
+              await copyPackageInstall(request, duplicated.data.id);
+            }
+            return duplicated;
+          }
+
+          const loaded = await loadProjectPipelineData(request);
+          if (!loaded.success) {
+            return loaded;
+          }
+
+          return service.savePipeline({
+            name: `${loaded.data.content.name} (Copy)`,
+            description: loaded.data.content.description ?? '',
+            icon: loaded.data.content.icon ?? '',
+            content: loaded.data.content,
+          });
+        },
+      );
+      if (duplicated.success && duplicated.data)
+        recordUserPipelineOwner(
+          'info' in duplicated.data
+            ? duplicated.data.info.id
+            : duplicated.data.id,
+          copyOwner,
+        );
+      return duplicated;
+    },
+  );
+  registerIpcHandler(
+    PIPELINE_CHANNELS.SHARED_LIST,
+    async (
+      _event,
+      request: ListSharedPipelinesRequest,
+    ): Promise<
+      | { success: true; data: ListSharedPipelinesResponse }
+      | { success: false; error: string }
+    > => {
+      return withPipelineCrudTelemetry(
+        {
+          action: 'shared_list',
+          source: 'shared',
+          hasSearchQuery: Boolean(request.q?.trim()),
+          triggerType: request.triggerType,
+        },
+        async () => {
+          try {
+            const response = await listSharedPipelines({
+              limit: request.limit,
+              cursor: request.cursor,
+              q: request.q,
+              triggerType: request.triggerType,
+              createdBy: request.createdBy,
+            });
+            return {
+              success: true,
+              data: {
+                serverId: CANOPY_CLOUD_SERVER_ID,
+                data: response.data.map(withDefaultSharedPipelineScopes),
+                nextCursor: response.nextCursor,
+              },
+            };
+          } catch (error) {
+            return {
+              success: false,
+              error: toErrorMessage(error),
+            };
+          }
+        },
+      );
+    },
+  );
+  registerIpcHandler(
+    PIPELINE_CHANNELS.SHARED_GET,
+    async (
+      _event,
+      request: SharedPipelineGetRequest,
+    ): Promise<
+      | { success: true; data: SharedPipelineDetail }
+      | { success: false; error: string }
+    > => {
+      return withPipelineCrudTelemetry(
+        { action: 'shared_get', source: 'shared', hasPipelineId: true },
+        async () => {
+          try {
+            return {
+              success: true,
+              data: hydrateSharedPipelineDetailScopes(
+                await getSharedPipeline(request.remoteId),
+              ),
+            };
+          } catch (error) {
+            return {
+              success: false,
+              error: toErrorMessage(error),
+            };
+          }
+        },
+      );
+    },
+  );
+  registerIpcHandler(
+    PIPELINE_CHANNELS.SHARED_CREATE,
+    async (
+      _event,
+      request: SharedPipelineWriteRequest,
+    ): Promise<
+      | { success: true; data: SharedPipelineDetail }
+      | { success: false; error: string; failure: ShareFailure }
+    > => {
+      return withPipelineCrudTelemetry(
+        {
+          action: 'shared_create',
+          source: 'shared',
+          shareScope: request.shareScope,
+        },
+        async () => {
+          const outcome = await runClassifiedShare(async () => {
+            if (pipelineResourceContextEnabled() && request.sourcePipelineId)
+              validateId(request.sourcePipelineId, 'sourcePipelineId');
+            const created = await createSharedPipeline({
+              ...(pipelineResourceContextEnabled()
+                ? {
+                    sourcePipeline: request.sourcePipeline,
+                    sourcePipelineId: request.sourcePipelineId,
+                  }
+                : {}),
+              rawPipeline: request.rawPipeline,
+              shareScope: request.shareScope,
+              teamId: request.teamId,
+              organizationId: request.organizationId,
+              distributionMode: request.distributionMode,
+              committedPackageUploadId: request.committedPackageUploadId,
+            });
+            const linked = persistPipelineRemoteMetadata(request, created);
+            if (linked && !linked.success) {
+              await deleteSharedPipeline(created.id);
+              throw new Error(
+                linked.error ?? 'Failed to store pipeline share link.',
+              );
+            }
+            return hydrateSharedPipelineDetailScopes(created);
+          });
+          return outcome.ok
+            ? { success: true, data: outcome.value }
+            : {
+                success: false,
+                error: toErrorMessage(outcome.error),
+                failure: outcome.failure,
+              };
+        },
+      );
+    },
+  );
+  registerIpcHandler(
+    PIPELINE_CHANNELS.ANALYZE_PACKAGE,
+    async (_event, request: PipelinePackageAnalyzeRequest) => {
+      try {
+        return { success: true, data: await analyzePackageRequest(request) };
+      } catch (error) {
+        // The Share dialog shows only this message, so keep the full error
+        // (stack and code) in the main log. The pipeline text is not logged.
+        logMainProcessError(
+          `[pipelines] Package analysis failed for ${request.pipelineId ?? 'an unsaved pipeline'}`,
+          error,
+        );
+        return { success: false, error: toErrorMessage(error) };
+      }
+    },
+  );
+  registerIpcHandler(
+    PIPELINE_CHANNELS.CANCEL_PACKAGE_ANALYSIS,
+    (_event, request: PipelinePackageCancelAnalysisRequest) => {
+      cancelPackageAnalysis(request.analysisId);
+      return { success: true };
+    },
+  );
+  registerIpcHandler(
+    PIPELINE_CHANNELS.SHARED_CREATE_PACKAGED,
+    async (
+      event,
+      request: PipelinePackageCreateSharedRequest,
+    ): Promise<
+      | { success: true; data: SharedPipelineDetail }
+      | { success: false; error: string; failure: ShareFailure }
+    > => {
+      const outcome = await runClassifiedShare(async () => {
+        const created = await createPackagedSharedPipeline(request, () =>
+          BrowserWindow.fromWebContents(event.sender),
+        );
+        const linked = persistPipelineRemoteMetadata(request, created);
+        if (linked && !linked.success) {
+          if (!request.remoteId) await deleteSharedPipeline(created.id);
+          throw new Error(
+            linked.error ?? 'Failed to store pipeline share link.',
+          );
+        }
+        return hydrateSharedPipelineDetailScopes(created);
+      });
+      return outcome.ok
+        ? { success: true, data: outcome.value }
+        : {
+            success: false,
+            error: toErrorMessage(outcome.error),
+            failure: outcome.failure,
+          };
+    },
+  );
+  registerIpcHandler(
+    PIPELINE_CHANNELS.PACKAGE_INSTALLS_LIST,
+    async (): Promise<
+      | { success: true; data: PipelinePackageInstallRecordV1[] }
+      | { success: false; error: string }
+    > => {
+      try {
+        return { success: true, data: await listPackageInstalls() };
+      } catch (error) {
+        return { success: false, error: toErrorMessage(error) };
+      }
+    },
+  );
+  registerIpcHandler(
+    PIPELINE_CHANNELS.INSTALL_PACKAGE_SHARE,
+    async (
+      _event,
+      request: PipelinePackageInstallRequest,
+    ): Promise<
+      | { success: true; data: PipelinePackageInstallResult }
+      | { success: false; error: string }
+    > => {
+      try {
+        return {
+          success: true,
+          data: await installPublicPackageShare(request, () =>
+            BrowserWindow.getFocusedWindow(),
+          ),
+        };
+      } catch (error) {
+        return { success: false, error: toErrorMessage(error) };
+      }
+    },
+  );
+  registerIpcHandler(
+    PIPELINE_CHANNELS.PACKAGE_READINESS,
+    async (
+      _event,
+      request: PipelinePackageReadinessRequest,
+    ): Promise<
+      | { success: true; data: PipelinePackageReadiness }
+      | { success: false; error: string }
+    > => {
+      try {
+        return { success: true, data: await getPackageReadiness(request) };
+      } catch (error) {
+        return { success: false, error: toErrorMessage(error) };
+      }
+    },
+  );
+  registerIpcHandler(
+    PIPELINE_CHANNELS.SHARED_UPDATE_IMPACT,
+    async (
+      _event,
+      remoteId: string,
+    ): Promise<IPCResult<SharedPipelineSaveImpact>> => {
+      try {
+        validateId(remoteId, 'remoteId');
+        return {
+          success: true,
+          data: await getSharedPipelineSaveImpact(remoteId),
+        };
+      } catch (error) {
+        return { success: false, error: toErrorMessage(error) };
+      }
+    },
+  );
+  registerIpcHandler(
+    PIPELINE_CHANNELS.SHARED_UPDATE,
+    async (
+      _event,
+      request: SharedPipelineWriteRequest & { remoteId: string },
+    ): Promise<
+      | { success: true; data: SharedPipelineDetail }
+      | { success: false; error: string; failure: ShareFailure }
+    > => {
+      return withPipelineCrudTelemetry(
+        { action: 'shared_update', source: 'shared', hasPipelineId: true },
+        async () => {
+          const outcome = await runClassifiedShare(async () => {
+            const options = {
+              expectedContentHash: request.expectedContentHash,
+              shareScope: request.shareScope,
+              teamId: request.teamId,
+              organizationId: request.organizationId,
+              distributionMode: request.distributionMode,
+              committedPackageUploadId: request.committedPackageUploadId,
+              revokePublicShare: request.revokePublicShare,
+            };
+            const updated = request.distributionMode
+              ? await updateSharedPipeline(
+                  request.remoteId,
+                  request.rawPipeline,
+                  options,
+                )
+              : await updateSharedPipelinePreservingPackage(
+                  request.remoteId,
+                  request.rawPipeline,
+                  undefined,
+                  options,
+                );
+            const detail = hydrateSharedPipelineDetailScopes(updated);
+            const linked = persistPipelineRemoteMetadata(request, detail);
+            if (linked && !linked.success) {
+              throw new Error(
+                linked.error ?? 'Failed to store pipeline share link.',
+              );
+            }
+            return detail;
+          });
+          return outcome.ok
+            ? { success: true, data: outcome.value }
+            : {
+                success: false,
+                error: toErrorMessage(outcome.error),
+                failure: outcome.failure,
+              };
+        },
+      );
+    },
+  );
+  registerIpcHandler(
+    PIPELINE_CHANNELS.SHARED_DELETE,
+    async (
+      _event,
+      request: SharedPipelineDeleteRequest,
+    ): Promise<{ success: true } | { success: false; error: string }> => {
+      return withPipelineCrudTelemetry(
+        { action: 'shared_delete', source: 'shared', hasPipelineId: true },
+        async () => {
+          try {
+            await deleteSharedPipeline(request.remoteId);
+            const cleared = service.clearPipelineRemoteMetadataByRemoteId(
+              request.remoteId,
+            );
+            const projectCleared =
+              service.clearProjectPipelineRemoteMetadataByRemoteId(
+                request.remoteId,
+              );
+            if (!cleared.success || !projectCleared.success) {
+              throw new Error(
+                cleared.error ??
+                  projectCleared.error ??
+                  'Failed to clear pipeline share link.',
+              );
+            }
+            return { success: true };
+          } catch (error) {
+            return {
+              success: false,
+              error: toErrorMessage(error),
+            };
+          }
+        },
+      );
+    },
+  );
+  registerIpcHandler(
+    PIPELINE_CHANNELS.SHARED_PUBLIC_PUBLISH,
+    async (
+      _event,
+      remoteId: string,
+    ): Promise<
+      | { success: true; data: SharedPipelinePublicShareInfo }
+      | { success: false; error: string }
+    > => {
+      try {
+        validateId(remoteId, 'remoteId');
+        return {
+          success: true,
+          data: await publishPipelinePublicShare(remoteId),
+        };
+      } catch (error) {
+        return { success: false, error: toErrorMessage(error) };
+      }
+    },
+  );
+  registerIpcHandler(
+    PIPELINE_CHANNELS.SHARED_PUBLIC_REVOKE,
+    async (
+      _event,
+      remoteId: string,
+    ): Promise<{ success: true } | { success: false; error: string }> => {
+      try {
+        validateId(remoteId, 'remoteId');
+        await revokePipelinePublicShare(remoteId);
+        return { success: true };
+      } catch (error) {
+        return { success: false, error: toErrorMessage(error) };
+      }
+    },
+  );
+  registerIpcHandler(
+    PIPELINE_CHANNELS.SHARED_ORGANIZATIONS_LIST,
+    async (
+      _event,
+      request: ListSharedOrganizationsRequest,
+    ): Promise<
+      | { success: true; data: ListSharedOrganizationsResponse }
+      | { success: false; error: string }
+    > => {
+      try {
+        const response = await listSharedOrganizations({
+          q: request.q,
+          limit: request.limit,
+        });
+        return {
+          success: true,
+          data: {
+            serverId: CANOPY_CLOUD_SERVER_ID,
+            data: response.data,
+          },
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error: toErrorMessage(error),
+        };
+      }
+    },
+  );
+  registerIpcHandler(
+    PIPELINE_CHANNELS.SHARED_TEAMS_LIST,
+    async (
+      _event,
+      request: ListSharedTeamsRequest,
+    ): Promise<
+      | { success: true; data: ListSharedTeamsResponse }
+      | { success: false; error: string }
+    > => {
+      try {
+        const response = await listSharedTeams({
+          q: request.q,
+          limit: request.limit,
+        });
+        return {
+          success: true,
+          data: {
+            serverId: CANOPY_CLOUD_SERVER_ID,
+            data: response.data,
+          },
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error: toErrorMessage(error),
+        };
+      }
+    },
+  );
+  registerIpcHandler(
+    PIPELINE_CHANNELS.RESOLVE_ACTION,
+    (_, usesRef: string, repoPath?: string) => {
+      try {
+        return {
+          success: true,
+          data: resolveAction(usesRef, repoPath),
+        };
+      } catch (error) {
+        return { success: false, error: String(error) };
+      }
+    },
+  );
+  registerIpcHandler(PIPELINE_CHANNELS.LIST_ACTIONS, () => {
+    try {
+      return {
+        success: true,
+        data: listBuiltinActions(),
+      };
+    } catch (error) {
+      return { success: false, error: String(error) };
+    }
+  });
+  registerIpcHandler(
+    PIPELINE_CHANNELS.RESOLVE_PLUGIN_COLLECTIONS,
+    async (
+      _event,
+      request: ResolvePluginCollectionsRequest,
+    ): Promise<
+      | {
+          success: true;
+          data: ResolvePluginCollectionsResponse;
+        }
+      | { success: false; error: string }
+    > => {
+      try {
+        const pipeline =
+          'yaml' in request.pipeline
+            ? parsePipelineText(request.pipeline.yaml)
+            : request.pipeline;
+        const normalized = normalizePipeline(pipeline, {
+          defaultShell: getDefaultShellTypeForCurrentProcess(),
+        });
+        const storedPreferences = request.pipelinePreferenceLocator
+          ? loadPipelinePluginCollectionPreferences(
+              request.pipelinePreferenceLocator,
+            )
+          : {};
+        const draftPreferences = normalizePipelinePluginCollectionPreferences(
+          request.draftPreferences,
+        );
+        const effectivePreferences = {
+          ...storedPreferences,
+          ...draftPreferences,
+        };
+        const resolution = await resolvePipelinePluginCollections(
+          normalized.plugin_collections,
+          effectivePreferences,
+        );
+        return {
+          success: true,
+          data: {
+            previewItems: resolution.previewItems,
+            effectivePreferences,
+            validation: {
+              hasBlockingErrors: Object.values(resolution.snapshots).some(
+                (snapshot) => snapshot.unresolvedRequiredDefaults.length > 0,
+              ),
+              messages: resolution.messages,
+            },
+          },
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
+  );
+  // Capability summary for every locally readable pipeline (CAN-2382).
+  // Powers the "Related pipelines" sections on skill/plugin detail pages and
+  // the "Related skills and plugins" section on the pipeline detail surface.
+  // Shared Cloud pipelines are deliberately excluded: summarizing them would
+  // require fetching every remote YAML, and unauthorized/unavailable items
+  // must never appear as recommendations.
+  registerIpcHandler(
+    PIPELINE_CHANNELS.LIST_CAPABILITY_REFS,
+    async (
+      _event,
+      request?: ListPipelineCapabilityRefsRequest,
+    ): Promise<
+      | { success: true; data: ListPipelineCapabilityRefsResponse }
+      | { success: false; error: string }
+    > => {
+      try {
+        const catalog = await loadShareablePluginCatalog();
+        const summarize = (content: Pipeline): PipelineCapabilitySummary[] =>
+          collectPipelineCapabilityRefs(content).map((ref) => {
+            const display = buildPipelineDefaultDisplay(ref.defaultRef);
+            const match = matchShareablePluginRef(ref.defaultRef, catalog);
+            return {
+              key: ref.key,
+              kind: ref.kind,
+              required: ref.required,
+              collectionId: ref.collectionId,
+              collectionName: ref.collectionName,
+              displayName: display.title,
+              displaySource: display.subtitle,
+              matchState: match.matchState,
+              ...(match.matchState === 'matched'
+                ? { selection: match.selection }
+                : {}),
+            };
+          });
+
+        const entries: PipelineCapabilityRefsEntry[] = [];
+        const stored = await service.listPipelineCapabilityData();
+        if (!stored.success || !stored.data) {
+          throw new Error(stored.error || 'Failed to load stored pipelines');
+        }
+        for (const data of stored.data) {
+          const info = data.info;
+          if (info.source !== 'bundled' && info.source !== 'user') {
+            continue;
+          }
+          entries.push({
+            id: info.id,
+            source: info.source,
+            name: info.name,
+            icon: info.icon,
+            capabilities: summarize(data.content),
+          });
+        }
+
+        const cwd = request?.cwd;
+        if (typeof cwd === 'string' && path.isAbsolute(cwd)) {
+          // Project discovery is best-effort: a missing or unreadable project
+          // pipelines directory must not fail the stored summaries.
+          try {
+            const projectInfos = await discoverProjectPipelines(cwd);
+            for (const info of projectInfos) {
+              if (!info.filePath) {
+                continue;
+              }
+              const data = await loadProjectPipelineData({
+                id: info.id,
+                cwd,
+                filePath: info.filePath,
+              });
+              if (!data.success || !data.data) {
+                continue;
+              }
+              entries.push({
+                id: info.id,
+                source: 'project',
+                name: info.name,
+                icon: info.icon,
+                filePath: info.filePath,
+                capabilities: summarize(data.data.content),
+              });
+            }
+          } catch {
+            // Ignore project discovery failures.
+          }
+        }
+
+        return { success: true, data: { pipelines: entries } };
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
+  );
+  registerIpcHandler(
+    PIPELINE_CHANNELS.LOAD_MODEL_ALIAS_PREFERENCES,
+    (
+      _event,
+      request: LoadModelAliasPreferencesRequest,
+    ):
+      | {
+          success: true;
+          data: LoadModelAliasPreferencesResponse;
+        }
+      | { success: false; error: string } => {
+      try {
+        const preferences = request.pipelinePreferenceLocator
+          ? loadPipelineModelAliasPreferences(request.pipelinePreferenceLocator)
+          : {};
+        return { success: true, data: { preferences } };
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
+  );
+  registerIpcHandler(
+    PIPELINE_CHANNELS.SAVE_MODEL_ALIAS_PREFERENCES,
+    (
+      _event,
+      request: SaveModelAliasPreferencesRequest,
+    ):
+      | {
+          success: true;
+          data: SaveModelAliasPreferencesResponse;
+        }
+      | { success: false; error: string } => {
+      try {
+        if (!request.pipelinePreferenceLocator) {
+          return {
+            success: true,
+            data: { ok: false, reason: 'missing-locator' },
+          };
+        }
+        const normalizedPreferences = normalizePipelineModelAliasPreferences(
+          request.preferences,
+        );
+        const aliasIds = new Set(
+          (request.aliasIds ?? [])
+            .map((aliasId) => aliasId.trim())
+            .filter(Boolean),
+        );
+        const preferences =
+          aliasIds.size > 0
+            ? Object.fromEntries(
+                Object.entries(normalizedPreferences).filter(([aliasId]) =>
+                  aliasIds.has(aliasId),
+                ),
+              )
+            : normalizedPreferences;
+        savePipelineModelAliasPreferences(
+          request.pipelinePreferenceLocator,
+          preferences,
+        );
+        return { success: true, data: { ok: true } };
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
+  );
+  registerIpcHandler(
+    PIPELINE_CHANNELS.SAVE_PLUGIN_COLLECTION_PREFERENCES,
+    (
+      _event,
+      request: SavePluginCollectionPreferencesRequest,
+    ):
+      | {
+          success: true;
+          data: SavePluginCollectionPreferencesResponse;
+        }
+      | { success: false; error: string } => {
+      try {
+        if (!request.pipelinePreferenceLocator) {
+          return {
+            success: true,
+            data: { ok: false, reason: 'missing-locator' },
+          };
+        }
+        savePipelinePluginCollectionPreferences(
+          request.pipelinePreferenceLocator,
+          normalizePipelinePluginCollectionPreferences(request.preferences),
+        );
+        return { success: true, data: { ok: true } };
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
+  );
+}
+
+async function pathExists(targetPath: string): Promise<boolean> {
+  try {
+    await access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function directoryExists(targetPath: string): Promise<boolean> {
+  try {
+    const stats = await stat(targetPath);
+    return stats.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+async function resolveStoredExecutionCwd(
+  state: ExecutionState,
+): Promise<string> {
+  if (state.target?.scope === 'directory') {
+    if (await directoryExists(state.target.path)) {
+      return state.target.path;
+    }
+    throw new Error(
+      `Directory target path does not exist: ${state.target.path}`,
+    );
+  }
+
+  if (state.target?.scope === 'worktree') {
+    if (await directoryExists(state.target.path)) {
+      return state.target.path;
+    }
+    throw new Error(
+      `Worktree target "${state.target.workspace_id}/${state.target.worktree_id}" no longer exists`,
+    );
+  }
+
+  if (state.project_id && state.worktree_id) {
+    try {
+      const resolvedCwd = resolveWorktreeCwd(
+        state.project_id,
+        state.worktree_id,
+      );
+      if (await pathExists(resolvedCwd)) {
+        return resolvedCwd;
+      }
+    } catch {
+      if (state.scope === 'worktree') {
+        throw new Error(
+          `Worktree target "${state.project_id}/${state.worktree_id}" no longer exists`,
+        );
+      }
+    }
+  }
+
+  return state.cwd;
+}
+
+async function loadExecutionForReplay(
+  executionId: string,
+  runtime = createMonitoredElectronExecutionRuntime(),
+): Promise<{
+  runtime: ExecutionOptions['runtime'];
+  state: ExecutionState;
+}> {
+  const state = await loadExecutionState(executionId, runtime.executionsDir);
+  if (!state) {
+    throw new Error(`Execution "${executionId}" not found`);
+  }
+
+  const speedError = pipelineSpeedError(state.model_config);
+  if (speedError) throw new Error(speedError);
+
+  return { runtime, state };
+}
+
+async function buildReplayBaseBranchEnv(
+  cwd: string,
+  state: Pick<ExecutionState, 'project_id' | 'worktree_id'>,
+): Promise<Record<string, string>> {
+  return buildPipelineBaseBranchEnv({
+    cwd,
+    projectId: state.project_id,
+    worktreeId: state.worktree_id,
+  });
+}
+
+function emitExecutionEvent(
+  getWindow: () => BrowserWindow | null,
+  event: Parameters<NonNullable<ExecutionOptions['onEvent']>>[0],
+): void {
+  notePipelineExecutionEvent(event, getWindow);
+  getObservabilityService().syncPipelineExecutionState(event.state);
+  recordPipelineUsageEvent(event);
+  if (
+    (event.type === 'execution.completed' ||
+      event.type === 'execution.failed') &&
+    (event.state.status === 'success' || event.state.status === 'failure') &&
+    event.state.project_id &&
+    event.state.worktree_id
+  ) {
+    void enqueueKnownPrFastRefresh(
+      event.state.project_id,
+      event.state.worktree_id,
+    ).catch(() => undefined);
+  }
+  if (
+    event.type === 'execution.paused' ||
+    event.state.status === 'success' ||
+    event.state.status === 'failure' ||
+    event.state.status === 'cancelled'
+  ) {
+    void Promise.resolve(
+      getAppAdvisorWatcherService().handlePipelineTerminalEvent(event),
+    ).catch(() => undefined);
+  }
+  void getWindow;
+  broadcastPipelineExecutionEvent(event);
+}
+
+function emitStepOutputEvent(
+  getWindow: () => BrowserWindow | null,
+  event: Parameters<NonNullable<ExecutionOptions['onStepOutput']>>[0],
+): void {
+  getObservabilityService().observePipelineOutput(event);
+  void getWindow;
+  sendToAllWindows(PIPELINE_CHANNELS.STEP_OUTPUT_EVENT, event);
+}
+
+function getCancelExecutionEventType(
+  status: ExecutionState['status'],
+): ExecutionEvent['type'] | null {
+  if (status === 'cancelled') {
+    return 'execution.cancelled';
+  }
+
+  if (status === 'success' || status === 'failure') {
+    return 'execution.updated';
+  }
+
+  return null;
+}
+
+/** The nested pipeline executions an execution started. */
+function nestedPipelineExecutionIds(state: ExecutionState): string[] {
+  const ids = new Set<string>();
+  for (const job of Object.values(state.jobs)) {
+    for (const step of Object.values(job.steps)) {
+      if (step.child_execution_id) ids.add(step.child_execution_id);
+    }
+  }
+  for (const reason of state.status_reasons) {
+    if (reason.source.child_execution_id) {
+      ids.add(reason.source.child_execution_id);
+    }
+  }
+  return Array.from(ids);
+}
+
+export async function cancelPipelineExecutionFromMain(args: {
+  executionId: string;
+  getWindow: () => BrowserWindow | null;
+}): Promise<ExecutionState> {
+  const runtime = createMonitoredElectronExecutionRuntime(args.getWindow);
+  // The paused agents of the execution and of the nested pipelines it
+  // started stop being assignable Ledger owners before the cancellation
+  // starts: each retirement waits for any owner commit already checking one
+  // of them, and later commits find them gone.
+  await retireLedgerPipelineExecutionTree(
+    args.executionId,
+    async (executionId) => {
+      const state = await loadExecutionState(
+        executionId,
+        runtime.executionsDir,
+      );
+      return state === null ? [] : nestedPipelineExecutionIds(state);
+    },
+  );
+  const active = getActiveExecutionHandle(args.executionId);
+  if (active) {
+    // Request the fastest in-process path, but do not let a wedged handle keep
+    // the renderer's Cancel action pending forever. The persisted cancellation
+    // path below also signals the executor and force-finalizes its state after
+    // the bounded cooperative cancellation window when it remains running.
+    void active.cancel().catch(() => undefined);
+  }
+
+  const cancelledState = await cancelPipelineExecution(
+    args.executionId,
+    runtime,
+  );
+  const eventType = getCancelExecutionEventType(cancelledState.status);
+  if (eventType !== null) {
+    emitExecutionEvent(args.getWindow, {
+      executionId: cancelledState.id,
+      type: eventType,
+      state: cancelledState,
+      timestamp: new Date().toISOString(),
+    });
+  }
+  return cancelledState;
+}
+
+// Renderer EXECUTE is also tunneled for Portal remote control, so `portal`
+// stays a foreground usage source here. Its recorded identity is still `user`:
+// `{ kind: 'portal' }` is only the direct Portal `runPipeline` command in main.
+const RENDERER_INITIATION_SOURCES: ReadonlySet<UsageInitiationSource> =
+  new Set<UsageInitiationSource>(['user', 'app_advisor', 'portal']);
+
+function sanitizeRendererExecuteOptions(
+  options: ExecutePipelineRequestOptions,
+): ExecutePipelineRequestOptions {
+  const sanitized: ExecutePipelineRequestOptions = {
+    cwd: options.cwd,
+    pipelineId: options.pipelineId,
+  };
+
+  if (options.env !== undefined) {
+    sanitized.env = options.env;
+  }
+  if (options.inputs !== undefined) {
+    sanitized.inputs = options.inputs;
+  }
+  if (options.repoPath !== undefined) {
+    sanitized.repoPath = options.repoPath;
+  }
+  if (options.scope !== undefined) {
+    sanitized.scope = options.scope;
+  }
+  if (options.target !== undefined) {
+    sanitized.target = options.target;
+  }
+  if (options.eventName !== undefined) {
+    sanitized.eventName = options.eventName;
+  }
+  if (options.eventData !== undefined) {
+    sanitized.eventData = options.eventData;
+  }
+  if (options.modelConfig !== undefined) {
+    sanitized.modelConfig = options.modelConfig;
+  }
+  if (options.projectId !== undefined) {
+    sanitized.projectId = options.projectId;
+  }
+  if (options.worktreeId !== undefined) {
+    sanitized.worktreeId = options.worktreeId;
+  }
+  if (options.chatId !== undefined) {
+    sanitized.chatId = options.chatId;
+  }
+  if (options.planId !== undefined) {
+    sanitized.planId = options.planId;
+  }
+  // The renderer is always a foreground caller; background sources are set
+  // only by main's own trusted callers.
+  if (
+    options.initiationSource !== undefined &&
+    isUsageInitiationSource(options.initiationSource) &&
+    RENDERER_INITIATION_SOURCES.has(options.initiationSource)
+  ) {
+    sanitized.initiationSource = options.initiationSource;
+  }
+  if (options.pipelinePreferenceLocator !== undefined) {
+    sanitized.pipelinePreferenceLocator = options.pipelinePreferenceLocator;
+  }
+  if (options.pluginCollectionPreferences !== undefined) {
+    sanitized.pluginCollectionPreferences = options.pluginCollectionPreferences;
+  }
+  if (options.modelAliasPreferences !== undefined) {
+    sanitized.modelAliasPreferences = options.modelAliasPreferences;
+  }
+  if (options.pipelineFilePath !== undefined) {
+    sanitized.pipelineFilePath = options.pipelineFilePath;
+  }
+  if (options.sharedPipeline !== undefined) {
+    sanitized.sharedPipeline = options.sharedPipeline;
+  }
+  if (options.appAdvisorPipelineWatchers !== undefined) {
+    sanitized.appAdvisorPipelineWatchers = options.appAdvisorPipelineWatchers;
+  }
+  // Identity is recorded from the sanitized usage source only; a renderer
+  // `initiator` or `agentOrigin` is never honored.
+  sanitized.initiator =
+    sanitized.initiationSource === 'app_advisor'
+      ? { kind: 'app_advisor' }
+      : { kind: 'user' };
+
+  return sanitized;
+}
+
+/**
+ * Running a pipeline against a plan (`plan_ready`) counts as implicit approval
+ * of that plan. This is the single main-process choke point every trigger
+ * source funnels through (renderer EXECUTE, Portal/web `runPipeline`, and App
+ * Advisor `pipeline.run`), so approval/sync happens here instead of being
+ * duplicated across scattered renderer call sites.
+ *
+ * `updatePlan` no-ops when the plan id does not exist and only records the
+ * `plan_approved` usage event on the real `pending -> approved` transition, so
+ * re-approval is idempotent. Best-effort: a failure here must never fail the
+ * pipeline run.
+ */
+async function applyImplicitPlanApproval(args: {
+  options: MainProcessExecutePipelineRequestOptions;
+  executionId: string;
+}): Promise<void> {
+  const { options, executionId } = args;
+  const planId = options.planId ?? options.eventData?.plan_ready?.planId;
+  const { projectId, worktreeId } = options;
+  // A run targets a plan when it carries a resolvable plan id AND is either a
+  // `plan_ready`-typed run (desktop renderer + App Advisor convention) or a
+  // Portal/web `runPipeline` call. Portal plan-ready commands now carry the
+  // trigger name as well as `planId`; the source fallback remains for older
+  // Portal commands and other plan-targeted dispatches.
+  const targetsPlan =
+    options.eventName === 'plan_ready' || options.initiationSource === 'portal';
+  if (!targetsPlan || !planId || !projectId || !worktreeId) {
+    return;
+  }
+  const initiationSource =
+    options.initiationSource ??
+    (options.eventName === 'plan_ready' ? 'user' : undefined);
+
+  try {
+    await updatePlan({
+      projectId,
+      worktreeId,
+      planId,
+      reviewStatus: 'approved',
+      approvedAt: new Date().toISOString(),
+      linkedExecutionId: executionId,
+      ...(options.chatId !== undefined ? { chatId: options.chatId } : {}),
+      ...(initiationSource !== undefined ? { initiationSource } : {}),
+    });
+  } catch (error) {
+    // No worktree id is recorded here, honoring the app-diagnostics boundary;
+    // the plan id alone is enough to triage without crossing into worktree
+    // scope. The pipeline run itself already started successfully.
+    getObservabilityService().recordAppDiagnostic({
+      version: 1,
+      timestamp: new Date().toISOString(),
+      kind: 'implicit_plan_approval_failed',
+      reason: `implicit plan approval failed (planId=${planId})`,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+export async function startPipelineExecutionFromMain(args: {
+  pipeline: Pipeline;
+  options: MainProcessExecutePipelineRequestOptions;
+  getWindow: () => BrowserWindow | null;
+  onEvent?: ExecutionOptions['onEvent'];
+  onStepOutput?: ExecutionOptions['onStepOutput'];
+  executionReservationClaimed?: boolean;
+}): Promise<PipelineExecutionStartResult> {
+  const speedError = pipelineSpeedError(args.options.modelConfig);
+  if (speedError) return { success: false, error: speedError };
+  const { projectId, worktreeId } = args.options;
+  const planId =
+    args.options.planId ?? args.options.eventData?.plan_ready?.planId;
+  if (planId && projectId && worktreeId) {
+    const plan = await readTrackedPlanData({ projectId, worktreeId, planId });
+    if (isCursorPlanExecutionUnavailable(plan)) {
+      return { success: false, error: CURSOR_PLAN_EXECUTION_UNAVAILABLE };
+    }
+  }
+  if (projectId && worktreeId) {
+    return withWorkspaceTargetRuntimeStartReservation(
+      projectId,
+      worktreeId,
+      () => startPipelineExecutionFromMainWithStartReservation(args),
+    );
+  }
+  return startPipelineExecutionFromMainWithStartReservation(args);
+}
+
+async function startPipelineExecutionFromMainWithStartReservation(args: {
+  pipeline: Pipeline;
+  options: MainProcessExecutePipelineRequestOptions;
+  getWindow: () => BrowserWindow | null;
+  onEvent?: ExecutionOptions['onEvent'];
+  onStepOutput?: ExecutionOptions['onStepOutput'];
+  executionReservationClaimed?: boolean;
+}): Promise<PipelineExecutionStartResult> {
+  // Cowork and App Advisor runs are always directory-scoped at their
+  // workspace root: without an explicit scope the executor infers `worktree`
+  // from projectId+worktreeId (`inferExecutionScope`), which would route the
+  // cowork `'home'` id or an App Advisor work-entry id into git worktree
+  // target resolution ("Worktree target ... no longer exists"). Forcing here
+  // covers every run source (renderer EXECUTE, portal, agent pipeline.run,
+  // execution chains) at one choke point; projectId/worktreeId stay on the
+  // options so `project_id`/`worktree_id` persist onto ExecutionState for
+  // listing and watchers. Worktree-only pipelines then fail the executor's
+  // own top-level scope gate with a scope error instead of a git one.
+  const { options } = args;
+  if (
+    options.projectId !== undefined &&
+    isWorkEntryWorkspace(options.projectId) &&
+    options.cwd !== undefined
+  ) {
+    return startPipelineExecutionFromMainInternal({
+      ...args,
+      options: {
+        ...options,
+        scope: 'directory',
+        target: { scope: 'directory', path: options.cwd },
+      },
+    });
+  }
+  return startPipelineExecutionFromMainInternal(args);
+}
+
+async function withReplayTargetRuntimeStartReservation<T>(
+  state: ExecutionState,
+  operation: () => Promise<T>,
+): Promise<T> {
+  if (state.project_id && state.worktree_id) {
+    return withWorkspaceTargetRuntimeStartReservation(
+      state.project_id,
+      state.worktree_id,
+      operation,
+    );
+  }
+  return operation();
+}
+
+export async function retryPipelineExecutionFromMain(args: {
+  executionId: string;
+  portalCommandId?: string;
+  getWindow: () => BrowserWindow | null;
+  onEvent?: ExecutionOptions['onEvent'];
+  onStepOutput?: ExecutionOptions['onStepOutput'];
+}): Promise<
+  { success: true; data: ExecutionState } | { success: false; error: string }
+> {
+  const { executionId, getWindow } = args;
+  let releaseResourceGuard: (() => void) | null = null;
+  let ownsExecutionReservation = false;
+  try {
+    const resourceGuard =
+      getResourceMonitorService().reservePipelineExecutionStart();
+    releaseResourceGuard = (): void => resourceGuard.release();
+
+    validateId(executionId, 'executionId');
+    if (hasActiveExecution(executionId)) {
+      throw new Error(`Execution "${executionId}" is already running`);
+    }
+
+    reserveExecution(executionId);
+    ownsExecutionReservation = true;
+    releaseResourceGuard();
+    releaseResourceGuard = null;
+    const { runtime, state } = await loadExecutionForReplay(
+      executionId,
+      createMonitoredElectronExecutionRuntime(getWindow),
+    );
+    return await withReplayTargetRuntimeStartReservation(state, async () => {
+      // Split PR lockdown: `retryPipelineExecution` re-executes directly via
+      // the executor's internal `executeState`, bypassing the guarded
+      // `startPipelineExecutionFromMain` chokepoint entirely, so the
+      // worktree-scoped check must be re-applied at this seam.
+      if (state.scope === 'worktree' && state.project_id && state.worktree_id) {
+        assertNotSplitLocked(
+          state.project_id,
+          state.worktree_id,
+          'retrying a pipeline execution',
+        );
+      }
+      const preferences = await readPreferencesFile();
+      const linearToken = await resolveLinearToken();
+      const cwd = await resolveStoredExecutionCwd(state);
+      const baseBranchEnv = await buildReplayBaseBranchEnv(cwd, state);
+      const pipelineRuntimeEnv = await resolvePipelineRuntimeEnv(
+        state.project_id,
+      );
+      const authorization = await authorizePipelineReplay(state);
+      const handle = await retryPipelineExecution(executionId, {
+        cwd,
+        ...authorization,
+        agentTerminalMode: await shouldUsePipelineAgentTerminalMode(
+          getEffectivePipelinesMode(preferences),
+        ),
+        env: {
+          ...pipelineRuntimeEnv.env,
+          ...(await buildPipelinePreferenceEnv(preferences)),
+          ...baseBranchEnv,
+        },
+        repoPath: state.repo_path,
+        ...(args.portalCommandId
+          ? { portalCommandId: args.portalCommandId }
+          : {}),
+        secretEnv: buildPipelineSecretEnv({
+          linearToken,
+          userSecretEnv: pipelineRuntimeEnv.secretEnv,
+        }),
+        runtime,
+        onEvent: (event) => {
+          emitExecutionEvent(getWindow, event);
+          args.onEvent?.(event);
+        },
+        onStepOutput: (event) => {
+          emitStepOutputEvent(getWindow, event);
+          args.onStepOutput?.(event);
+        },
+      });
+      trackExecutionWithAdvisor(
+        handle,
+        runtime,
+        getWindow,
+        undefined,
+        executionId,
+      );
+      ownsExecutionReservation = false;
+      return {
+        success: true,
+        data: handle.getState(),
+      };
+    });
+  } catch (error) {
+    releaseResourceGuard?.();
+    if (ownsExecutionReservation) {
+      releaseExecutionReservation(executionId);
+    }
+    return { success: false, error: formatPipelineExecutionError(error) };
+  }
+}
+
+export async function retryMatrixJobFromMain(args: {
+  request: RetryMatrixJobRequest;
+  getWindow: () => BrowserWindow | null;
+}): Promise<ExecutionState> {
+  const { request, getWindow } = args;
+  validateId(request.executionId, 'executionId');
+  validatePipelineRuntimeIdentifier(request.jobId, 'jobId');
+  for (const variantJobId of request.variantJobIds ?? []) {
+    validatePipelineRuntimeIdentifier(variantJobId, 'variantJobId');
+  }
+  const retryKey = `${request.executionId}\0${request.jobId}`;
+  if (
+    activeMatrixRetryJobs.has(retryKey) ||
+    hasActiveExecution(request.executionId)
+  ) {
+    throw new Error(
+      encodeMatrixIpcErrorMessage(
+        'matrix/retry-in-progress',
+        `A retry is already in progress for job "${request.jobId}"`,
+      ),
+    );
+  }
+  activeMatrixRetryJobs.add(retryKey);
+  let ownsReservation = false;
+  let releaseResourceGuard: (() => void) | null = null;
+  try {
+    const resourceGuard =
+      getResourceMonitorService().reservePipelineExecutionStart();
+    releaseResourceGuard = (): void => resourceGuard.release();
+    reserveExecution(request.executionId);
+    ownsReservation = true;
+    releaseResourceGuard();
+    releaseResourceGuard = null;
+    const { runtime, state } = await loadExecutionForReplay(
+      request.executionId,
+      createMonitoredElectronExecutionRuntime(getWindow),
+    );
+    return await withReplayTargetRuntimeStartReservation(state, async () => {
+      if (state.scope === 'worktree' && state.project_id && state.worktree_id) {
+        assertNotSplitLocked(
+          state.project_id,
+          state.worktree_id,
+          'retrying a pipeline matrix job',
+        );
+      }
+      prepareMatrixJobRetryState(structuredClone(state), request);
+      const preferences = await readPreferencesFile();
+      const linearToken = await resolveLinearToken();
+      const cwd = await resolveStoredExecutionCwd(state);
+      const baseBranchEnv = await buildReplayBaseBranchEnv(cwd, state);
+      const pipelineRuntimeEnv = await resolvePipelineRuntimeEnv(
+        state.project_id,
+      );
+      const authorization = await authorizePipelineReplay(state);
+      const handle = await retryMatrixJobExecution(request, {
+        cwd,
+        ...authorization,
+        agentTerminalMode: await shouldUsePipelineAgentTerminalMode(
+          getEffectivePipelinesMode(preferences),
+        ),
+        env: {
+          ...pipelineRuntimeEnv.env,
+          ...(await buildPipelinePreferenceEnv(preferences)),
+          ...baseBranchEnv,
+        },
+        repoPath: state.repo_path,
+        secretEnv: buildPipelineSecretEnv({
+          linearToken,
+          userSecretEnv: pipelineRuntimeEnv.secretEnv,
+        }),
+        runtime,
+        onEvent: (event) => emitExecutionEvent(getWindow, event),
+        onStepOutput: (event) => emitStepOutputEvent(getWindow, event),
+      });
+      trackExecutionWithAdvisor(handle, runtime, getWindow, () => {
+        activeMatrixRetryJobs.delete(retryKey);
+      });
+      ownsReservation = false;
+      return handle.getState();
+    });
+  } catch (error) {
+    releaseResourceGuard?.();
+    activeMatrixRetryJobs.delete(retryKey);
+    if (ownsReservation) releaseExecutionReservation(request.executionId);
+    throw error;
+  }
+}
+
+export async function cancelMatrixVariantFromMain(args: {
+  request: CancelMatrixVariantRequest;
+  getWindow: () => BrowserWindow | null;
+}): Promise<ExecutionState> {
+  const { request, getWindow } = args;
+  validateId(request.executionId, 'executionId');
+  validatePipelineRuntimeIdentifier(request.jobId, 'jobId');
+  validatePipelineRuntimeIdentifier(request.variantJobId, 'variantJobId');
+  const active = getActiveExecutionHandle(request.executionId);
+  if (active?.cancelMatrixVariant) {
+    try {
+      return await active.cancelMatrixVariant(
+        request.jobId,
+        request.variantJobId,
+      );
+    } catch (error) {
+      if (!(error instanceof MatrixExecutorInactiveError)) throw error;
+      const latest = active.getState();
+      if (
+        ['success', 'failure', 'cancelled', 'skipped'].includes(
+          latest.jobs[request.variantJobId]?.status ?? '',
+        )
+      ) {
+        return latest;
+      }
+    }
+  }
+  const runtime = createMonitoredElectronExecutionRuntime(getWindow);
+  if (
+    !tryReserveExecution(request.executionId, 'matrix-variant-cancellation')
+  ) {
+    throw new Error(
+      encodeMatrixIpcErrorMessage(
+        'matrix/running-variant-unowned',
+        `Cannot cancel variant "${request.variantJobId}" while execution "${request.executionId}" is settling`,
+      ),
+    );
+  }
+  let cancelled: ExecutionState;
+  try {
+    const state = await loadExecutionState(
+      request.executionId,
+      runtime.executionsDir,
+    );
+    if (!state) throw new Error(`Execution "${request.executionId}" not found`);
+    if (
+      state.owner_pid !== undefined &&
+      state.owner_pid !== process.pid &&
+      !isKnownOrphanedExecution(state)
+    ) {
+      throw new Error(
+        encodeMatrixIpcErrorMessage(
+          'matrix/running-variant-unowned',
+          `Cannot cancel variant "${request.variantJobId}" because execution "${request.executionId}" is owned by another process`,
+        ),
+      );
+    }
+    const variant = state.jobs[request.variantJobId];
+    if (variant?.status === 'running') {
+      throw new Error(
+        encodeMatrixIpcErrorMessage(
+          'matrix/running-variant-unowned',
+          `Cannot cancel running variant "${request.variantJobId}" because its worker is not owned by this process`,
+        ),
+      );
+    }
+    cancelled = prepareMatrixVariantCancellation(
+      structuredClone(state),
+      request,
+    );
+    await saveExecutionState(cancelled, runtime.executionsDir);
+    emitExecutionEvent(getWindow, {
+      executionId: cancelled.id,
+      type: 'execution.updated',
+      state: cancelled,
+      timestamp: new Date().toISOString(),
+    });
+  } finally {
+    releaseExecutionReservation(
+      request.executionId,
+      'matrix-variant-cancellation',
+    );
+  }
+  if (cancelled.status !== 'pending') return cancelled;
+
+  try {
+    const resumed = await resumePipelineExecutionFromMain({
+      executionId: request.executionId,
+      initiationSource: 'automation',
+      getWindow,
+    });
+    return resumed.state;
+  } catch (error) {
+    const resumable = structuredClone(cancelled);
+    resumable.status = 'paused';
+    resumable.completed_at = undefined;
+    beginExecutionPause(resumable);
+    await saveExecutionState(resumable, runtime.executionsDir);
+    emitExecutionEvent(getWindow, {
+      executionId: resumable.id,
+      type: 'execution.updated',
+      state: resumable,
+      timestamp: new Date().toISOString(),
+    });
+    throw error;
+  }
+}
+
+/**
+ * A top-level global run works in its own scratch folder, ignoring any caller
+ * cwd; every other run needs the caller's cwd.
+ */
+function resolveExecutionStartCwd(
+  options: MainProcessExecutePipelineRequestOptions,
+  executionsDir: string,
+  executionId: string,
+): MainProcessExecutePipelineRequestOptions & { cwd: string } {
+  if (
+    isTopLevelGlobalRun({
+      scope: options.scope,
+      parentExecutionId: undefined,
+      projectId: options.projectId,
+      worktreeId: options.worktreeId,
+      target: options.target,
+    })
+  ) {
+    if (options.pipelineFilePath !== undefined)
+      throw new Error(
+        "Project pipelines aren't available in a run with no project",
+      );
+    // A run with no project resolves no project actions or pipelines, so a
+    // caller's project root is dropped along with its cwd.
+    const globalOptions = {
+      ...options,
+      cwd: getGlobalExecutionWorkspaceDir(executionsDir, executionId),
+    };
+    delete globalOptions.repoPath;
+    return globalOptions;
+  }
+  if (options.cwd === undefined)
+    throw new Error('Pipeline unavailable (unsupported-target)');
+  return { ...options, cwd: options.cwd };
+}
+
+/** Who started a run when its trusted caller recorded no initiator. */
+function initiatorFromSource(
+  source: UsageInitiationSource | undefined,
+): PipelineExecutionInitiator {
+  switch (source) {
+    case 'hook':
+      return { kind: 'hook' };
+    case 'portal':
+      return { kind: 'portal' };
+    case 'app_advisor':
+      return { kind: 'app_advisor' };
+    case 'automation':
+      // The automation service always records its own initiator; never
+      // invent an automation id here.
+      logMainProcessWarn(
+        '[pipelines] automation run started without an initiator; recording it as user',
+      );
+      return { kind: 'user' };
+    default:
+      return { kind: 'user' };
+  }
+}
+
+/** Bind caller locators to trusted workspace roots before reading pipeline content. */
+async function resolvePipelineDispatchProject(
+  options: MainProcessExecutePipelineRequestOptions & { cwd: string },
+): Promise<string | undefined> {
+  if (
+    options.scope === 'global' &&
+    !options.projectId &&
+    !options.worktreeId &&
+    (!options.target || options.target.scope === 'global')
+  )
+    return undefined;
+  try {
+    const { readAllSidebarItems } = await import('../lib/sidebar-items');
+    const { getCoworkWorkspaceRootDir } = await import('../lib/paths');
+    const target = options.target;
+    const projectId =
+      options.projectId ??
+      (target?.scope === 'worktree' ? target.workspace_id : undefined);
+    const worktreeId =
+      options.worktreeId ??
+      (target?.scope === 'worktree' ? target.worktree_id : undefined);
+    if (projectId) validateId(projectId, 'projectId');
+    if (worktreeId) validateId(worktreeId, 'worktreeId');
+    if (
+      target?.scope === 'worktree' &&
+      (target.workspace_id !== projectId || target.worktree_id !== worktreeId)
+    )
+      throw new Error('Inconsistent target');
+    const cwd = await realpath(options.cwd);
+    if (
+      target &&
+      target.scope !== 'global' &&
+      (await realpath(target.path)) !== cwd
+    )
+      throw new Error('Inconsistent path');
+    const repoPath = options.repoPath ? await realpath(options.repoPath) : cwd;
+    const projects = new Set<string>();
+    for (const item of (await readAllSidebarItems()).items) {
+      if (projectId && item.id !== projectId) continue;
+      const roots: string[] = [];
+      if (worktreeId) {
+        if (
+          item.type !== 'cowork' &&
+          !isWorkEntryWorkspace(item.id) &&
+          !item.worktrees.some((entry) => entry.id === worktreeId)
+        )
+          continue;
+        roots.push(resolveWorktreeCwd(item.id, worktreeId));
+      } else {
+        if (item.type === 'cowork')
+          roots.push(getCoworkWorkspaceRootDir(item.id));
+        if (item.externalPath) roots.push(item.externalPath);
+        if (item.type === 'single-repo') roots.push(item.repoPath);
+        if (item.type === 'multi-repo') {
+          if (item.sourceRepoPath) roots.push(item.sourceRepoPath);
+          roots.push(...item.repos.map((repo) => repo.repoPath));
+        }
+        if (item.type !== 'cowork')
+          roots.push(
+            ...item.worktrees.map((entry) =>
+              resolveWorktreeCwd(item.id, entry.id),
+            ),
+          );
+      }
+      for (const root of roots) {
+        const canonicalRoot = await realpath(root).catch(() => undefined);
+        if (
+          canonicalRoot &&
+          isPathInside(canonicalRoot, cwd) &&
+          isPathInside(canonicalRoot, repoPath)
+        )
+          projects.add(item.id);
+      }
+    }
+    if (projects.size !== 1) throw new Error('Unresolved target');
+    return Array.from(projects)[0];
+  } catch {
+    throw new Error('Pipeline unavailable (unsupported-target)');
+  }
+}
+
+async function startPipelineExecutionFromMainInternal(args: {
+  pipeline: Pipeline;
+  options: MainProcessExecutePipelineRequestOptions;
+  getWindow: () => BrowserWindow | null;
+  onEvent?: ExecutionOptions['onEvent'];
+  onStepOutput?: ExecutionOptions['onStepOutput'];
+  executionReservationClaimed?: boolean;
+}): Promise<PipelineExecutionStartResult> {
+  let releaseResourceGuard: (() => void) | null = null;
+  const executionId = args.options.executionId ?? createPipelineExecutionId();
+  let releaseStartReservation = false;
+  try {
+    if (args.executionReservationClaimed) {
+      if (!isExecutionReservedBy(executionId, 'pipeline-start')) {
+        throw new Error(`Execution "${executionId}" is already running`);
+      }
+      releaseStartReservation = true;
+    } else {
+      if (!tryReserveExecution(executionId)) {
+        throw new Error(`Execution "${executionId}" is already running`);
+      }
+      releaseStartReservation = true;
+    }
+
+    // Split PR lockdown: refuse a worktree-scoped pipeline start while a split
+    // is in progress for that worktree. Non-worktree scopes and executions
+    // without a resolved worktree target are unaffected.
+    if (
+      args.options.scope === 'worktree' &&
+      args.options.projectId &&
+      args.options.worktreeId
+    ) {
+      assertNotSplitLocked(
+        args.options.projectId,
+        args.options.worktreeId,
+        'running a pipeline',
+      );
+    }
+
+    const resourceGuard =
+      getResourceMonitorService().reservePipelineExecutionStart();
+    releaseResourceGuard = (): void => resourceGuard.release();
+
+    const runtime = createMonitoredElectronExecutionRuntime(args.getWindow);
+    const options = resolveExecutionStartCwd(
+      args.options,
+      runtime.executionsDir,
+      executionId,
+    );
+    const {
+      pipelineFilePath,
+      sharedPipeline,
+      automationPipelinePackage,
+      ...executionOptions
+    } = options;
+    const resourceContextSnapshot = pipelineResourceContextEnabled()
+      ? await pipelineContextSnapshot()
+      : undefined;
+    const capturedExecutionContext = backgroundExecutionContextEnabled()
+      ? await captureBackgroundExecutionContext()
+      : undefined;
+    const capturedContext = capturedExecutionContext
+      ? parseWorkspaceContext(capturedExecutionContext)
+      : null;
+    const foregroundSource =
+      executionOptions.initiationSource === undefined ||
+      executionOptions.initiationSource === 'user' ||
+      executionOptions.initiationSource === 'app_advisor' ||
+      executionOptions.initiationSource === 'portal';
+    const foregroundOrgDispatch =
+      capturedContext?.kind === 'organization' && foregroundSource;
+    const targetProjectId = pipelineResourceContextEnabled()
+      ? await resolvePipelineDispatchProject(options)
+      : options.projectId;
+    let executionResource: ResourceContextInput['resource'] | undefined;
+    if (
+      pipelineResourceContextEnabled() &&
+      args.options.pipelineId &&
+      !sharedPipeline &&
+      !pipelineFilePath
+    ) {
+      await assertStoredPipelineContext(
+        args.options.pipelineId,
+        targetProjectId,
+      );
+      if (
+        foregroundOrgDispatch &&
+        !(
+          executionOptions.pipelinePreferenceLocator?.type === 'stored' &&
+          executionOptions.pipelinePreferenceLocator.source === 'curated'
+        ) &&
+        !args.options.pipelineId.startsWith('curated:')
+      )
+        executionResource = await readStoredPipelineContext(
+          args.options.pipelineId,
+        );
+    }
+    let pipelineContent = args.pipeline;
+    let authorizedPipeline = args.pipeline;
+    let pipelineFileDir: string | undefined;
+    let pipelinePreferenceLocator =
+      executionOptions.pipelinePreferenceLocator ??
+      (pipelineFilePath
+        ? { type: 'file' as const, value: path.resolve(pipelineFilePath) }
+        : undefined);
+    let curatedPipelineSource: ExecutionOptions['curatedPipelineSource'];
+    let curatedPipelinePackage: ExecutionOptions['pipelinePackage'];
+    let sharedPipelineSource: SharedPipelineExecutionSource | undefined;
+    let sharedPipelinePackage: ExecutionOptions['pipelinePackage'];
+
+    const curatedId =
+      pipelinePreferenceLocator?.type === 'stored' &&
+      pipelinePreferenceLocator.source === 'curated'
+        ? pipelinePreferenceLocator.value
+        : executionOptions.pipelineId.startsWith('curated:')
+          ? executionOptions.pipelineId
+          : undefined;
+    if (curatedId) {
+      const managed = await getManagedCuratedPipeline(curatedId);
+      if (
+        pipelinePreferenceLocator?.type === 'stored' &&
+        pipelinePreferenceLocator.source === 'curated' &&
+        pipelinePreferenceLocator.contentHash !== undefined &&
+        pipelinePreferenceLocator.contentHash !==
+          managed.info.curatedContentHash
+      ) {
+        throw new Error(
+          'This curated pipeline changed after you opened it. Reopen the launch dialog to review its updated inputs and try again.',
+        );
+      }
+      if (
+        managed.info.curatedKey &&
+        managed.info.curatedContentHash &&
+        managed.info.curatedRevision &&
+        managed.info.filePath
+      ) {
+        curatedPipelineSource = {
+          key: managed.info.curatedKey,
+          contentHash: managed.info.curatedContentHash,
+          revision: managed.info.curatedRevision,
+          cachedPipelinePath: managed.info.filePath,
+        };
+      }
+      if (
+        !getTriggerTypes(managed.content.on).includes(
+          executionOptions.eventName ?? 'dispatch',
+        )
+      ) {
+        throw new Error(
+          'This curated pipeline no longer supports the selected trigger. Reopen the launch dialog and choose another pipeline.',
+        );
+      }
+      pipelineContent = managed.content;
+      curatedPipelinePackage = managed.pipelinePackage;
+      pipelineFileDir = managed.info.filePath
+        ? path.dirname(managed.info.filePath)
+        : undefined;
+      pipelinePreferenceLocator = {
+        type: 'stored',
+        source: 'curated',
+        value: managed.info.id,
+        ...(managed.info.curatedContentHash
+          ? { contentHash: managed.info.curatedContentHash }
+          : {}),
+      };
+      executionResource = { owner: { type: 'system' } };
+    }
+
+    if (!curatedId && sharedPipeline) {
+      const cachedSharedPipeline = await cacheSharedPipelineForExecution({
+        serverId: sharedPipeline.serverId,
+        remoteId: sharedPipeline.remoteId,
+        installPin: sharedPipeline.installPin,
+        projectId: targetProjectId,
+        runtime,
+        executionId,
+        ...(executionOptions.initiationSource === 'hook' ||
+        executionOptions.initiationSource === 'automation'
+          ? { executionContext: executionOptions.executionContext }
+          : {}),
+      });
+      pipelineContent = cachedSharedPipeline.pipeline;
+      executionResource = { owner: cachedSharedPipeline.owner };
+      if (
+        (executionOptions.initiationSource === 'hook' ||
+          executionOptions.initiationSource === 'automation') &&
+        backgroundExecutionContextEnabled()
+      ) {
+        authorizedPipeline = pipelineContent;
+        const authorizations: Array<
+          NonNullable<ExecutionOptions['childPipelineAuthorizations']>[number]
+        > = [];
+        const decision = await authorizeBackgroundExecution(
+          executionOptions.executionContext,
+          pipelineContextResources(
+            authorizedPipeline,
+            cachedSharedPipeline.owner,
+            {
+              cwd: executionOptions.cwd,
+              repoPath: executionOptions.repoPath,
+              getProjectPipelinesDirCandidates,
+              pipelineId: executionOptions.pipelineId,
+              pipelinePreferenceLocator: buildSharedPipelinePreferenceLocator(
+                sharedPipeline.serverId,
+                sharedPipeline.remoteId,
+              ),
+              pluginCollectionPreferences:
+                executionOptions.pluginCollectionPreferences,
+              modelAliasPreferences: executionOptions.modelAliasPreferences,
+            },
+            sharedPipeline.remoteId,
+          ),
+          {
+            projectId: executionOptions.projectId ?? '',
+            worktreeId: executionOptions.worktreeId,
+          },
+          authorizations,
+        );
+        if (!decision.allow)
+          throw new Error(
+            decision.transient
+              ? backgroundExecutionRetryMessage('run')
+              : backgroundExecutionDeniedMessage(decision.reason, {
+                  ...(decision.subject ? { subject: decision.subject } : {}),
+                }),
+          );
+        executionOptions.childPipelineAuthorizations = authorizations;
+      }
+
+      sharedPipelineSource = cachedSharedPipeline.sharedPipelineSource;
+      sharedPipelinePackage = cachedSharedPipeline.pipelinePackage;
+      pipelinePreferenceLocator = buildSharedPipelinePreferenceLocator(
+        sharedPipeline.serverId,
+        sharedPipeline.remoteId,
+      );
+    }
+
+    if (!curatedId && !sharedPipeline && pipelineFilePath) {
+      if (pipelineResourceContextEnabled()) {
+        const { owner, projectId } = await authorizeProjectPipelineRequest({
+          id: options.pipelineId,
+          cwd: options.repoPath ?? options.cwd,
+          filePath: pipelineFilePath,
+        });
+        if (projectId !== targetProjectId)
+          throw new Error('Pipeline unavailable (unsupported-target)');
+        executionResource = { owner };
+        try {
+          await assertPipelineContext({ owner }, targetProjectId);
+        } catch (error) {
+          // The owner is trusted here; an incompatible execution target is a context mismatch.
+          if (
+            error instanceof Error &&
+            error.message === 'Pipeline unavailable (unsupported-target)'
+          )
+            throw new Error('Pipeline unavailable (context-mismatch)');
+          throw error;
+        }
+      }
+      const rootCwd = options.repoPath ?? options.cwd;
+      const validated = await validateProjectPipelineAccess({
+        id: options.pipelineId,
+        cwd: rootCwd,
+        filePath: pipelineFilePath,
+      }).catch((error: unknown): never => {
+        if (pipelineResourceContextEnabled())
+          throw new Error('Pipeline unavailable (unsupported-target)');
+        throw error;
+      });
+      if (!validated.success) {
+        if (pipelineResourceContextEnabled())
+          throw new Error('Pipeline unavailable (unsupported-target)');
+        return validated;
+      }
+
+      if (pipelineResourceContextEnabled()) {
+        try {
+          const { projectId, worktreeId } = args.options;
+          if (!projectId || !worktreeId) throw new Error('Missing target');
+          validateId(worktreeId, 'worktreeId');
+          const canonicalCwd = resolveWorktreeCwd(projectId, worktreeId);
+          if (
+            !isPathInside(canonicalCwd, validated.data.rootDir) ||
+            !isPathInside(validated.data.rootDir, validated.data.filePath)
+          )
+            throw new Error('Outside target');
+          const [realCwd, realRoot, realFile] = await Promise.all([
+            realpath(canonicalCwd),
+            realpath(validated.data.rootDir),
+            realpath(validated.data.filePath),
+          ]);
+          if (
+            !isPathInside(realCwd, realRoot) ||
+            !isPathInside(realRoot, realFile)
+          )
+            throw new Error('Outside target');
+        } catch {
+          throw new Error('Pipeline unavailable (unsupported-target)');
+        }
+      }
+
+      pipelineContent = await loadProjectPipelineFromDisk(
+        validated.data.filePath,
+      );
+      pipelineFileDir = path.dirname(validated.data.filePath);
+    }
+
+    // Every top-level run records its owner. A foreground run with an
+    // organization owner, selected or derived, is authorized against it the
+    // way a background run is.
+    const authorizeForegroundOrganizationRun = async (
+      ownerContext: string,
+    ): Promise<void> => {
+      const resources = pipelineContextResources(
+        pipelineContent,
+        executionResource?.owner ?? { shareScope: 'private' },
+        {
+          cwd: executionOptions.cwd,
+          repoPath: executionOptions.repoPath,
+          getProjectPipelinesDirCandidates,
+          pipelineId: executionOptions.pipelineId,
+          pipelineFileDir,
+          pipelinePreferenceLocator,
+          pluginCollectionPreferences:
+            executionOptions.pluginCollectionPreferences,
+          modelAliasPreferences: executionOptions.modelAliasPreferences,
+        },
+        sharedPipeline?.remoteId,
+      );
+      if (executionResource?.provenance && resources[0])
+        resources[0].provenance = executionResource.provenance;
+      // Foreground runs may contain a run-pipeline step with its own cwd or
+      // directory target. Those children are resolved at execution time; the
+      // persisted org context makes every replay reauthorize them afresh.
+      const topLevelResources = resources.filter(
+        (resource) => resource.childPipeline === undefined,
+      );
+      const destinationProjectId =
+        executionOptions.projectId ?? targetProjectId;
+      const decision = await authorizeBackgroundExecution(
+        ownerContext,
+        topLevelResources,
+        destinationProjectId
+          ? {
+              projectId: destinationProjectId,
+              worktreeId: executionOptions.worktreeId,
+            }
+          : { scope: 'global' },
+      );
+      if (!decision.allow)
+        throw new Error(
+          decision.transient
+            ? backgroundExecutionRetryMessage('run')
+            : backgroundExecutionDeniedMessage(decision.reason, {
+                ...(decision.subject ? { subject: decision.subject } : {}),
+              }),
+        );
+      executionOptions.allowUnverifiedForegroundChildren = true;
+    };
+    const userPipelineId =
+      !curatedId &&
+      !sharedPipeline &&
+      !pipelineFilePath &&
+      pipelinePreferenceLocator?.type !== 'file' &&
+      !(
+        pipelinePreferenceLocator?.type === 'stored' &&
+        pipelinePreferenceLocator.source !== 'user'
+      ) &&
+      isLocalUserPipeline(executionOptions.pipelineId)
+        ? executionOptions.pipelineId
+        : undefined;
+    const ownerResult = await resolveExecutionOwnerContext({
+      // A foreground dispatch in a selected organization binds to it.
+      explicit:
+        executionOptions.executionContext ??
+        (foregroundOrgDispatch ? capturedExecutionContext : undefined),
+      captured: capturedExecutionContext,
+      scope: executionOptions.scope,
+      parentExecutionId: undefined,
+      projectId: executionOptions.projectId ?? targetProjectId,
+      worktreeId: executionOptions.worktreeId,
+      target: executionOptions.target,
+      userPipelineId,
+    });
+    if ('refusal' in ownerResult) throw new Error(ownerResult.refusal);
+    const ownerContext = parseWorkspaceContext(ownerResult.owner);
+    if (!ownerContext)
+      throw new Error(backgroundExecutionDeniedMessage('unsupported-target'));
+    if (foregroundSource && ownerContext.kind === 'organization') {
+      // The selected context is one the account is in; any other owner is
+      // checked before it is trusted.
+      if (
+        ownerResult.owner !== capturedExecutionContext &&
+        !(await accountMayRunIn(ownerContext))
+      )
+        throw new Error(backgroundExecutionDeniedMessage('access-removed'));
+      await authorizeForegroundOrganizationRun(ownerResult.owner);
+    }
+    executionOptions.executionContext = ownerResult.owner;
+    const initiator =
+      executionOptions.initiator ??
+      initiatorFromSource(executionOptions.initiationSource);
+    executionOptions.initiator = initiator;
+    executionOptions.agentOrigin ??=
+      (initiator.kind === 'agent' || initiator.kind === 'app_advisor'
+        ? initiator.chat
+        : undefined) ??
+      (userPipelineId === undefined
+        ? undefined
+        : readPipelineLocalMetadata({
+            type: 'stored',
+            source: 'user',
+            value: userPipelineId,
+          }).agentAuthor?.chat);
+
+    // Shared definitions are captured and authorized after fetching above. Project
+    // and curated sources can reload here, so refuse any changed definition
+    // before it reaches the executor with the old resource authorizations.
+    if (
+      (executionOptions.initiationSource === 'hook' ||
+        executionOptions.initiationSource === 'automation') &&
+      backgroundExecutionContextEnabled() &&
+      !isDeepStrictEqual(pipelineContent, authorizedPipeline)
+    ) {
+      throw new Error(backgroundExecutionDeniedMessage('unknown-provenance'));
+    }
+
+    const preferences = await readPreferencesFile();
+    const linearToken = await resolveLinearToken();
+    const baseBranchEnv = await buildPipelineBaseBranchEnv({
+      cwd: executionOptions.cwd,
+      projectId: executionOptions.projectId,
+      worktreeId: executionOptions.worktreeId,
+    });
+    const pipelineRuntimeEnv = await resolvePipelineRuntimeEnv(
+      executionOptions.projectId,
+    );
+    const pipelinePackage =
+      !curatedId && !sharedPipeline && !pipelineFilePath
+        ? await resolveInstalledPipelinePackageForExecution(
+            executionOptions.pipelineId,
+          )
+        : undefined;
+    if (resourceContextSnapshot !== undefined)
+      await assertPipelineContextSnapshot(resourceContextSnapshot);
+    const handle = await executePipeline(pipelineContent, {
+      ...executionOptions,
+      pipelinePreferenceLocator,
+      pipelineFileDir,
+      executionId,
+      sharedPipelineSource,
+      curatedPipelineSource,
+      pipelinePackage:
+        automationPipelinePackage ??
+        sharedPipelinePackage ??
+        curatedPipelinePackage ??
+        pipelinePackage,
+      agentTerminalMode: await shouldUsePipelineAgentTerminalMode(
+        getEffectivePipelinesMode(preferences),
+      ),
+      beforeStart: (state) => {
+        // Create the selected pipeline watcher in the background so dispatching
+        // the run (and its modal) is not blocked waiting on watcher setup. The
+        // execution state is persisted to disk before `beforeStart`, so the
+        // setup can resolve the execution; it runs concurrently with the
+        // pipeline and completes well before any non-trivial run finishes.
+        void setupAppAdvisorPipelineWatchersForExecution({
+          state,
+          watcherSetups: executionOptions.appAdvisorPipelineWatchers,
+          projectId: executionOptions.projectId,
+          worktreeId: executionOptions.worktreeId,
+        }).catch(() => undefined);
+      },
+      env: {
+        ...pipelineRuntimeEnv.env,
+        ...(await buildPipelinePreferenceEnv(preferences)),
+        ...baseBranchEnv,
+        ...(executionOptions.env ?? {}),
+      },
+      secretEnv: buildPipelineSecretEnv({
+        linearToken,
+        userSecretEnv: pipelineRuntimeEnv.secretEnv,
+      }),
+      runtime,
+      onEvent: (event) => {
+        emitExecutionEvent(args.getWindow, event);
+        args.onEvent?.(event);
+      },
+      onStepOutput: (event) => {
+        emitStepOutputEvent(args.getWindow, event);
+        args.onStepOutput?.(event);
+      },
+    });
+    trackExecutionWithAdvisor(
+      handle,
+      runtime,
+      args.getWindow,
+      undefined,
+      executionId,
+    );
+    releaseStartReservation = false;
+    await applyImplicitPlanApproval({
+      options: args.options,
+      executionId: handle.getState().id,
+    });
+    return {
+      success: true,
+      data: handle.getState(),
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: formatPipelineExecutionError(error),
+      ...(error instanceof SharedPipelinePinMismatchError
+        ? { errorCode: 'shared_pipeline_changed' as const }
+        : {}),
+    };
+  } finally {
+    releaseResourceGuard?.();
+    if (releaseStartReservation) {
+      releaseExecutionReservation(executionId);
+    }
+  }
+}
+
+export async function rerunPipelineExecutionFromMain(args: {
+  executionId: string;
+  rerunExecutionId?: string;
+  initiationSource?: 'user' | 'automation' | 'portal';
+  getWindow: () => BrowserWindow | null;
+  onEvent?: ExecutionOptions['onEvent'];
+  onStepOutput?: ExecutionOptions['onStepOutput'];
+}): Promise<
+  { success: true; data: ExecutionState } | { success: false; error: string }
+> {
+  const { executionId, getWindow } = args;
+  try {
+    validateId(executionId, 'executionId');
+    if (args.rerunExecutionId) {
+      validateId(args.rerunExecutionId, 'rerunExecutionId');
+      if (args.rerunExecutionId === executionId) {
+        throw new Error('rerunExecutionId must differ from executionId');
+      }
+    }
+  } catch (error) {
+    return { success: false, error: formatPipelineExecutionError(error) };
+  }
+
+  if (activeRerunSources.has(executionId)) {
+    return {
+      success: false,
+      error: `Execution "${executionId}" is already being rerun`,
+    };
+  }
+
+  activeRerunSources.add(executionId);
+  let releaseResourceGuard: (() => void) | null = null;
+  let rerunExecutionId: string | undefined;
+  try {
+    const resourceGuard =
+      getResourceMonitorService().reservePipelineExecutionStart();
+    releaseResourceGuard = (): void => resourceGuard.release();
+
+    const { runtime, state } = await loadExecutionForReplay(
+      executionId,
+      createMonitoredElectronExecutionRuntime(getWindow),
+    );
+    return await withReplayTargetRuntimeStartReservation(state, async () => {
+      // Split PR lockdown: `rerunPipelineExecution` re-executes directly via
+      // the executor's internal `executeState`, bypassing the guarded
+      // `startPipelineExecutionFromMain` chokepoint entirely, so the
+      // worktree-scoped check must be re-applied at this seam.
+      if (state.scope === 'worktree' && state.project_id && state.worktree_id) {
+        assertNotSplitLocked(
+          state.project_id,
+          state.worktree_id,
+          'starting over a pipeline execution',
+        );
+      }
+      const preferences = await readPreferencesFile();
+      const linearToken = await resolveLinearToken();
+      const cwd = await resolveStoredExecutionCwd(state);
+      const baseBranchEnv = await buildReplayBaseBranchEnv(cwd, state);
+      const pipelineRuntimeEnv = await resolvePipelineRuntimeEnv(
+        state.project_id,
+      );
+      const reservedRerunExecutionId = args.rerunExecutionId ?? randomUUID();
+      reserveExecution(reservedRerunExecutionId);
+      rerunExecutionId = reservedRerunExecutionId;
+      const authorization = await authorizePipelineReplay(state);
+      const handle = await rerunPipelineExecution(executionId, {
+        cwd,
+        ...authorization,
+        agentTerminalMode: await shouldUsePipelineAgentTerminalMode(
+          getEffectivePipelinesMode(preferences),
+        ),
+        env: {
+          ...pipelineRuntimeEnv.env,
+          ...(await buildPipelinePreferenceEnv(preferences)),
+          ...baseBranchEnv,
+        },
+        repoPath: state.repo_path,
+        initiationSource: args.initiationSource,
+        executionId: rerunExecutionId,
+        secretEnv: buildPipelineSecretEnv({
+          linearToken,
+          userSecretEnv: pipelineRuntimeEnv.secretEnv,
+        }),
+        runtime,
+        onEvent: (event) => {
+          emitExecutionEvent(getWindow, event);
+          args.onEvent?.(event);
+        },
+        onStepOutput: (event) => {
+          emitStepOutputEvent(getWindow, event);
+          args.onStepOutput?.(event);
+        },
+      });
+      trackExecutionWithAdvisor(
+        handle,
+        runtime,
+        getWindow,
+        () => {
+          activeRerunSources.delete(executionId);
+        },
+        rerunExecutionId,
+      );
+      rerunExecutionId = undefined;
+      return {
+        success: true,
+        data: handle.getState(),
+      };
+    });
+  } catch (error) {
+    activeRerunSources.delete(executionId);
+    if (rerunExecutionId) {
+      releaseExecutionReservation(rerunExecutionId);
+    }
+    return { success: false, error: formatPipelineExecutionError(error) };
+  } finally {
+    releaseResourceGuard?.();
+  }
+}
+
+export function registerExecutionHandlers(
+  getWindow: () => BrowserWindow | null,
+): void {
+  registerIpcHandler(
+    PIPELINE_CHANNELS.EXECUTE,
+    async (
+      _event,
+      pipeline: Pipeline,
+      options: ExecutePipelineRequestOptions,
+    ) => {
+      return startPipelineExecutionFromMain({
+        pipeline,
+        options: sanitizeRendererExecuteOptions(options),
+        getWindow,
+      });
+    },
+  );
+
+  const resumeHandler =
+    (
+      initiationSource: 'user' | 'automation',
+    ): ((
+      _event: unknown,
+      executionId: string,
+      options: ResumePipelineOptions,
+    ) => Promise<
+      | { success: true; data: ExecutionState }
+      | { success: false; error: string }
+    >) =>
+    async (
+      _event: unknown,
+      executionId: string,
+      options: ResumePipelineOptions,
+    ) => {
+      try {
+        validateId(executionId, 'executionId');
+        const result = await resumePipelineExecutionFromMain({
+          executionId,
+          statusReasonIds: options.statusReasonIds,
+          inputAnswers: options.inputAnswers,
+          pauseResponses: options.pauseResponses,
+          inputs: options.inputs,
+          repoPath: options.repoPath,
+          cwd: options.cwd,
+          env: options.env,
+          initiationSource,
+          ...(initiationSource === 'automation'
+            ? { persistInitiationSource: true }
+            : {}),
+          getWindow,
+        });
+        return {
+          success: true,
+          data: result.state,
+        };
+      } catch (error) {
+        return { success: false, error: formatPipelineExecutionError(error) };
+      }
+    };
+  registerIpcHandler(PIPELINE_CHANNELS.RESUME, resumeHandler('user'));
+  registerIpcHandler(
+    PIPELINE_CHANNELS.RESUME_AUTOMATION,
+    resumeHandler('automation'),
+  );
+
+  registerIpcHandler(
+    PIPELINE_CHANNELS.RETRY_EXECUTION,
+    async (_event, executionId: string) =>
+      retryPipelineExecutionFromMain({ executionId, getWindow }),
+  );
+
+  registerIpcHandler(
+    PIPELINE_CHANNELS.RETRY_MATRIX_JOB,
+    async (_event, request: RetryMatrixJobRequest) =>
+      retryMatrixJobFromMain({ request, getWindow }),
+  );
+
+  registerIpcHandler(
+    PIPELINE_CHANNELS.RERUN_EXECUTION,
+    async (_event, executionId: string) =>
+      rerunPipelineExecutionFromMain({ executionId, getWindow }),
+  );
+
+  registerIpcHandler(
+    PIPELINE_CHANNELS.CANCEL_EXECUTION,
+    async (_event, executionId: string) => {
+      try {
+        return {
+          success: true,
+          data: await cancelPipelineExecutionFromMain({
+            executionId,
+            getWindow,
+          }),
+        };
+      } catch (error) {
+        return { success: false, error: String(error) };
+      }
+    },
+  );
+
+  registerIpcHandler(
+    PIPELINE_CHANNELS.CANCEL_MATRIX_VARIANT,
+    async (_event, request: CancelMatrixVariantRequest) =>
+      cancelMatrixVariantFromMain({ request, getWindow }),
+  );
+
+  registerIpcHandler(
+    PIPELINE_CHANNELS.CANCEL_QUEUED_EXECUTION,
+    async (_event, queueId: string) => {
+      try {
+        validateId(queueId, 'queueId');
+        const { cancelQueuedHookPipeline } =
+          await import('../lib/hook-pipeline');
+        cancelQueuedHookPipeline(queueId);
+        return { success: true };
+      } catch (error) {
+        return { success: false, error: String(error) };
+      }
+    },
+  );
+
+  registerIpcHandler(PIPELINE_CHANNELS.LIST_QUEUED_EXECUTIONS, async () => {
+    try {
+      const { listQueuedHookPipelines } = await import('../lib/hook-pipeline');
+      return { success: true, data: listQueuedHookPipelines() };
+    } catch (error) {
+      return { success: false, error: String(error) };
+    }
+  });
+
+  registerIpcHandler(
+    PIPELINE_CHANNELS.GET_EXECUTION,
+    async (_event, executionId: string) => {
+      try {
+        const active = getActiveExecutionHandle(executionId);
+        if (active) {
+          return {
+            success: true,
+            data: withPipelineTransientRetryState(active.getState()),
+          };
+        }
+
+        const state = await loadExecutionState(
+          executionId,
+          createElectronExecutionRuntime().executionsDir,
+        );
+        return {
+          success: true,
+          data: state ? withPipelineTransientRetryState(state) : state,
+        };
+      } catch (error) {
+        return { success: false, error: String(error) };
+      }
+    },
+  );
+
+  registerIpcHandler(PIPELINE_CHANNELS.LIST_EXECUTIONS, async () => {
+    try {
+      return {
+        success: true,
+        data: await listExecutionSummaries(
+          createElectronExecutionRuntime().executionsDir,
+        ),
+      };
+    } catch (error) {
+      return { success: false, error: String(error) };
+    }
+  });
+
+  registerIpcHandler(
+    PIPELINE_CHANNELS.RUN_ADVISOR,
+    async (_event, executionId: string) => {
+      if (typeof executionId !== 'string' || !executionId.trim()) {
+        return { success: false, error: 'executionId is required' };
+      }
+      try {
+        validateId(executionId, 'executionId');
+        return {
+          success: true,
+          data: await getPipelineAdvisorService().runForExistingExecution({
+            executionId,
+            runtime: createElectronExecutionRuntime(),
+            getWindow,
+          }),
+        };
+      } catch (error) {
+        return { success: false, error: toErrorMessage(error) };
+      }
+    },
+  );
+
+  registerIpcHandler(
+    PIPELINE_CHANNELS.GET_ADVISOR,
+    async (_event, executionId: string) => {
+      if (typeof executionId !== 'string' || !executionId.trim()) {
+        return { success: false, error: 'executionId is required' };
+      }
+      try {
+        validateId(executionId, 'executionId');
+        const runtime = createElectronExecutionRuntime();
+        const snapshot = await readPipelineAdvisorSnapshot(
+          runtime.executionsDir,
+          executionId,
+        );
+        return {
+          success: true,
+          data: await hydrateAdvisorSnapshotPipelineStartedAt(
+            snapshot,
+            executionId,
+            runtime.executionsDir,
+          ),
+        };
+      } catch (error) {
+        return { success: false, error: toErrorMessage(error) };
+      }
+    },
+  );
+
+  registerIpcHandler(
+    PIPELINE_CHANNELS.LIST_ADVISORS,
+    async (_event, executionIds?: string[]) => {
+      if (
+        executionIds !== undefined &&
+        (!Array.isArray(executionIds) ||
+          executionIds.some((id) => typeof id !== 'string' || !id.trim()))
+      ) {
+        return {
+          success: false,
+          error: 'executionIds must be an array of non-empty strings',
+        };
+      }
+      try {
+        for (const executionId of executionIds ?? []) {
+          validateId(executionId, 'executionId');
+        }
+        const runtime = createElectronExecutionRuntime();
+        const snapshots = await listPipelineAdvisorSnapshots(
+          runtime.executionsDir,
+          executionIds,
+        );
+        return {
+          success: true,
+          data: (
+            await Promise.all(
+              snapshots.map((snapshot) =>
+                hydrateAdvisorSnapshotPipelineStartedAt(
+                  snapshot,
+                  snapshot.executionId,
+                  runtime.executionsDir,
+                ),
+              ),
+            )
+          ).filter(
+            (snapshot): snapshot is PipelineAdvisorSnapshot =>
+              snapshot !== null,
+          ),
+        };
+      } catch (error) {
+        return { success: false, error: toErrorMessage(error) };
+      }
+    },
+  );
+
+  registerIpcHandler(
+    PIPELINE_CHANNELS.SET_EXECUTION_HIDDEN,
+    async (_event, executionId: string, hidden: boolean) => {
+      if (typeof executionId !== 'string' || !executionId) {
+        return { success: false, error: 'executionId is required' };
+      }
+      if (typeof hidden !== 'boolean') {
+        return { success: false, error: 'hidden must be a boolean' };
+      }
+      try {
+        const state = await setExecutionHidden(
+          executionId,
+          hidden,
+          createElectronExecutionRuntime().executionsDir,
+        );
+        if (!state) {
+          return {
+            success: false,
+            error: `Execution "${executionId}" not found`,
+          };
+        }
+        return { success: true, data: state };
+      } catch (error) {
+        return { success: false, error: String(error) };
+      }
+    },
+  );
+
+  registerIpcHandler(
+    PIPELINE_CHANNELS.READ_REPORT_FILE,
+    async (_event, executionId: string, kind: 'text' | 'json') => {
+      if (!executionId) {
+        return {
+          success: false,
+          error: 'executionId is required',
+        };
+      }
+
+      if (kind !== 'text' && kind !== 'json') {
+        return {
+          success: false,
+          error: `Invalid report kind "${String(kind)}"`,
+        };
+      }
+
+      try {
+        const runtime = createMonitoredElectronExecutionRuntime();
+        const active = getActiveExecutionHandle(executionId);
+        const state =
+          active?.getState() ??
+          (await loadExecutionState(executionId, runtime.executionsDir));
+
+        if (!state) {
+          return {
+            success: false,
+            error: `Execution "${executionId}" not found`,
+          };
+        }
+
+        const filePath =
+          kind === 'text'
+            ? state.report_outputs?.report_file
+            : state.report_outputs?.report_json_file;
+        if (!filePath) {
+          return {
+            success: false,
+            error:
+              kind === 'text'
+                ? 'This execution does not have a text report'
+                : 'This execution does not have a JSON report',
+          };
+        }
+
+        const resolvedPath = path.resolve(filePath);
+        if (!isPathInside(runtime.executionsDir, resolvedPath)) {
+          return { success: false, error: 'Invalid report file path' };
+        }
+
+        return {
+          success: true,
+          data: {
+            content: await readFile(resolvedPath, 'utf8'),
+            filePath: resolvedPath,
+          },
+        };
+      } catch (error) {
+        return { success: false, error: String(error) };
+      }
+    },
+  );
+
+  registerIpcHandler(
+    PIPELINE_CHANNELS.READ_STEP_LOG,
+    async (
+      _event,
+      locator: string | StepLogLocator,
+      options?: StepLogReadOptions,
+    ) => {
+      if (!locator) {
+        return {
+          success: false,
+          error: 'log locator is required',
+        };
+      }
+
+      const runtime = createMonitoredElectronExecutionRuntime();
+      const resolvedPath =
+        typeof locator === 'string'
+          ? path.resolve(locator)
+          : locator.logFilePath
+            ? path.resolve(locator.logFilePath)
+            : getStepLogFilePath(
+                runtime,
+                locator.executionId,
+                locator.jobId,
+                locator.stepId,
+                locator.attempt ?? 0,
+                locator.iteration ?? 1,
+                locator.recovery ?? 0,
+                undefined,
+              );
+
+      if (!isPathInside(runtime.executionsDir, resolvedPath)) {
+        return { success: false, error: 'Invalid log file path' };
+      }
+
+      try {
+        // `lines` stays the default for every existing reader; `text` adds the
+        // byte-exact snapshot the log catch-up reconciliation joins against.
+        const data = await readStepLogFile(resolvedPath, {
+          format: options?.format === 'text' ? 'text' : 'lines',
+        });
+        return { success: true, data };
+      } catch (error) {
+        return { success: false, error: String(error) };
+      }
+    },
+  );
+}

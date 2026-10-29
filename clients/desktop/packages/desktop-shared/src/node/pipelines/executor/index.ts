@@ -1,0 +1,117 @@
+export {
+  beginExecutionPause,
+  endExecutionPause,
+  getExecutionRunDurationMs,
+  resetExecutionPauseClock,
+} from './execution-pause-clock';
+export {
+  clearExecutionCancellation,
+  executionHasBlockers,
+  executionHasNonTerminalWork,
+  findResumePoint,
+  isExecutionCancellationRequested,
+  listExecutionSummaries,
+  listExecutionSummariesWithStates,
+  loadExecutionState,
+  logicalJobIdForPhysicalJob,
+  prepareActiveExecutionResume,
+  prepareExecutionResume,
+  prepareMatrixJobRetryState,
+  prepareMatrixVariantCancellation,
+  prepareRetryState,
+  requestExecutionCancellation,
+  recoverInterruptedState,
+  saveExecutionState,
+  setExecutionHidden,
+} from './execution-state';
+export {
+  buildExpressionContext,
+  cascadeEnv,
+  getNormalizedTriggerInputDefs,
+  inputsToEnv,
+  mergePipelineInputs,
+  parseOutputFile,
+  rehydrateJobContext,
+  resolvePipelineInputs,
+} from './execution-context';
+export type {
+  ExpressionCanopyContext,
+  ExpressionCanopyInitiator,
+} from './execution-context';
+export {
+  evaluateCondition,
+  evaluateExpression,
+  interpolateExpression,
+  referencesMatrixContext,
+  referencesPhysicalJobContext,
+} from './expression-evaluator';
+export { runJob } from './job-runner';
+export {
+  normalizePipeline,
+  resolveStepDefaults,
+  assignStepIds,
+} from './normalize-pipeline';
+export {
+  buildNeedsContext,
+  cancelPipelineExecution,
+  createInitialState,
+  createPipelineExecutionId,
+  executePipeline,
+  findPendingInput,
+  getGlobalExecutionWorkspaceDir,
+  isTopLevelGlobalRun,
+  MatrixExecutorInactiveError,
+  groupJobsByTier,
+  isKnownOrphanedExecution,
+  rerunPipelineExecution,
+  resumePipeline,
+  retryMatrixJobExecution,
+  retryPipelineExecution,
+} from './pipeline-executor';
+export {
+  defaultTargetForExecution,
+  inferExecutionScope,
+  resolvePipelineTarget,
+  validateResolvedExecutionTarget,
+} from './pipeline-target-resolver';
+export { resolveChildPipeline } from './child-pipeline-resolver';
+export { validatePipelineScopes } from './pipeline-scope-validation';
+export { getStepLogFilePath, runStep } from './step-runner';
+export type {
+  CanopyEventData,
+  CanopyEventInput,
+  CanopyReplayEventData,
+  ExecutionEvent,
+  ExecutionHandle,
+  ExecutionLifecycleHooks,
+  ExecutionOptions,
+  ExecutionPlanPersistenceHooks,
+  ExecutionRerunContext,
+  ExecutionRuntime,
+  ExecutionState,
+  ExecutionSummary,
+  ExecutePipelineRequestOptions,
+  ClaudeCompatibleInvocation,
+  PipelineOwnershipPort,
+  PipelineOwnershipWorktreeTarget,
+  ClaudeCompatibleInvocationOptions,
+  IterationSnapshot,
+  JobResult,
+  NormalizedJob,
+  NormalizedPipeline,
+  NormalizedStep,
+  PipelinePluginCollectionResolution,
+  PlanReadyEventData,
+  PlanReadyEventInput,
+  PipelineTriggerSource,
+  ReportOutputs,
+  SharedPipelineExecutionSource,
+  StepPostProcessContext,
+  StepOutputEvent,
+  StepOutputLogPosition,
+  StepConclusion,
+  StepLogLocator,
+  StepLogReadOptions,
+  StepLogReadResult,
+  StepResult,
+} from './types';

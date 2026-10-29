@@ -1,0 +1,65 @@
+import {
+  acquireSettingsBridgeSession,
+  peekSettingsBridgeSession,
+  settingsBridgeCredentials,
+  type SettingsBridgeSession,
+} from '../canopy-cloud/settings-session';
+import {
+  executeSettingsOperation,
+  openSettingsFeedStream,
+} from '../canopy-cloud/settings-client';
+import {
+  isPaymentHandoffAvailable,
+  openStrictAuthenticatedPortalPage,
+} from '../canopy-cloud/authenticated-portal';
+import {
+  getCanopyCloudCredentials,
+  peekCanopyCloudAccountId,
+  subscribeCanopyCloudAccountChanges,
+} from '../lib/canopy-cloud-account-store';
+import {
+  createAccountOrganizationSettingsService,
+  type AccountOrganizationSettingsService,
+} from './account-organization-settings';
+import {
+  createSettingsOrchestratedOperations,
+  createSettingsWriteFollowUps,
+} from './account-organization-settings-orchestration';
+
+let service: AccountOrganizationSettingsService | undefined;
+
+async function currentAccountId(): Promise<string | null> {
+  try {
+    return (await getCanopyCloudCredentials()).account?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** The process-wide hosted settings service, created on first use. */
+export function getAccountOrganizationSettingsService(): AccountOrganizationSettingsService {
+  service ??= createAccountOrganizationSettingsService<SettingsBridgeSession>({
+    acquireSession: acquireSettingsBridgeSession,
+    execute: executeSettingsOperation,
+    openFeedStream: openSettingsFeedStream,
+    credentials: settingsBridgeCredentials,
+    currentAccountId,
+    currentSession: peekSettingsBridgeSession,
+    signedInAccountId: peekCanopyCloudAccountId,
+    subscribeAccountChanges: (listener) =>
+      subscribeCanopyCloudAccountChanges((entry) =>
+        listener(entry?.account?.id ?? null),
+      ),
+    openStrictPortalPage: openStrictAuthenticatedPortalPage,
+    paymentHandoffAvailable: isPaymentHandoffAvailable,
+    resolveOrchestrated: createSettingsOrchestratedOperations(),
+    resolveWriteFollowUp: createSettingsWriteFollowUps(),
+  });
+  return service;
+}
+
+/** Close every window subscription; the bridge lifecycle owns the sessions. */
+export function disposeAccountOrganizationSettingsService(): void {
+  service?.dispose();
+  service = undefined;
+}

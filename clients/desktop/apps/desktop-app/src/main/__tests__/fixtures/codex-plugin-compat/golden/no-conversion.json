@@ -1,0 +1,19 @@
+{
+  "pluginName": "metadata-only-plugin",
+  "category": "Development Tools",
+  "warnings": [],
+  "files": [
+    {
+      "path": "canopy-compatibility.json",
+      "content": "{\n  \"canopyCompatibilityVersion\": 5,\n  \"sourcePluginName\": \"metadata-only-plugin\",\n  \"sourceVersion\": \"3.0.0:mcp-true\",\n  \"sourceLastUpdatedAt\": \"2026-08-26T12:00:00.000Z\"\n}"
+    },
+    {
+      "path": "local/.codex-plugin/plugin.json",
+      "content": "{\n  \"name\": \"metadata-only-plugin\",\n  \"version\": \"3.0.0\",\n  \"description\": \"No convertible members\",\n  \"interface\": {\n    \"displayName\": \"Metadata Only Plugin\",\n    \"shortDescription\": \"No convertible members\",\n    \"category\": \"Development Tools\"\n  }\n}"
+    },
+    {
+      "path": "local/README.md",
+      "content": "# Generated Codex Plugin\n\nThis compatibility projection was generated for `metadata-only-plugin`.\n\n## Projected Skills\n\nNo skills were projected for this plugin.\n\n## Compatibility Notes\n\nNo compatibility notes.\n"
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+name: Complexity Assessor
+description: Assess task complexity before specification work.
+log_format_hint: agent
+inputs:
+  model:
+    description: Optional Claude model override.
+    required: false
+outputs:
+  complexity:
+    description: simple, medium, or complex.
+    value: ${{ steps.emit.outputs.complexity }}
+  rationale:
+    description: Short justification for the selected complexity.
+    value: ${{ steps.emit.outputs.rationale }}
+  transcript_file:
+    description: Complexity assessment transcript file.
+    value: ${{ steps.assess.outputs.transcript_file }}
+runs:
+  using: composite
+  steps:
+    - id: assess
+      uses: builtin/agent-prompt
+      with:
+        model: ${{ inputs.model }}
+        permission_preset: read_only
+        structured_output_schema: '{"type":"object","properties":{"complexity":{"type":"string","enum":["simple","medium","complex"]},"rationale":{"type":"string"}},"required":["complexity","rationale"]}'
+        prompt: |
+          Assess the likely implementation complexity of the current task in this repository.
+          Choose one of: simple, medium, complex.
+          Base the answer on codebase scope, unknowns, coordination cost, and verification burden.
+    - id: emit
+      shell: node
+      run: |
+        const fs = require('node:fs');
+        const parsed = JSON.parse(process.env.RESPONSE_JSON ?? '{}');
+        fs.appendFileSync(process.env.{{BRAND_ENV_PREFIX}}_OUTPUT, `complexity=${parsed.complexity ?? 'medium'}\n`);
+        fs.appendFileSync(process.env.{{BRAND_ENV_PREFIX}}_OUTPUT, `rationale=${String(parsed.rationale ?? '').replace(/\r?\n/g, ' ')}\n`);
+      env:
+        RESPONSE_JSON: ${{ steps.assess.outputs.json_response }}

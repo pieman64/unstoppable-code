@@ -1,0 +1,157 @@
+'use client';
+
+import { useState, type JSX } from 'react';
+import { WORKTREE_UNIT_LABEL } from '@canopy/protocol';
+import { DialogModal, RefreshSpinner } from '@canopy/ui-shared/components';
+import { formatRelativeTime } from '@canopy/ui-shared/lib';
+import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
+
+export interface SummarySectionBodyRepo {
+  readonly name: string;
+  readonly description: string;
+}
+
+export interface SummarySectionBodySummary {
+  readonly title: string;
+  readonly description: string;
+  readonly highlights?: readonly string[];
+  readonly repos?: readonly SummarySectionBodyRepo[];
+  readonly generatedAt?: string;
+  readonly lastFullRefreshAt?: string;
+}
+
+export interface SummarySectionBodyProps {
+  readonly summary?: SummarySectionBodySummary;
+  readonly generating: boolean;
+  readonly refreshEnabled: boolean;
+  readonly onRefresh?: () => void;
+}
+
+export function SummarySectionBody({
+  summary,
+  generating,
+  refreshEnabled,
+  onRefresh,
+}: SummarySectionBodyProps): JSX.Element {
+  const [detailOpen, setDetailOpen] = useState(false);
+
+  if (!summary) {
+    return <></>;
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={(): void => setDetailOpen(true)}
+        className="focus-ring w-full cursor-pointer text-left"
+      >
+        <div className="text-s font-semibold fg-primary">{summary.title}</div>
+        <p
+          className={`${REPLAY_BLOCK_CLASS} mt-1 line-clamp-6 text-xs leading-5 fg-primary/70`}
+        >
+          {summary.description}
+        </p>
+        <span
+          className="mt-2 inline-block text-xs fg-accent transition-colors hover:fg-accent/80"
+          data-testid="summary-details-link"
+        >
+          View more details
+        </span>
+      </button>
+
+      {detailOpen ? (
+        <DialogModal
+          onClose={(): void => setDetailOpen(false)}
+          title={`${WORKTREE_UNIT_LABEL} Summary`}
+          maxWidth="lg"
+        >
+          <div
+            className="space-y-5 overflow-y-auto p-5"
+            data-testid="summary-detail-modal"
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div className="space-y-1">
+                <h3 className="text-m font-semibold fg-primary">
+                  {summary.title}
+                </h3>
+                <p className="text-s fg-secondary">
+                  Last updated {formatRelativeTime(summary.generatedAt)}
+                  {summary.lastFullRefreshAt !== undefined
+                    ? ` · Full refresh ${formatRelativeTime(summary.lastFullRefreshAt)}`
+                    : null}
+                </p>
+              </div>
+              {refreshEnabled && onRefresh ? (
+                <button
+                  type="button"
+                  onClick={onRefresh}
+                  disabled={generating}
+                  className="focus-ring inline-flex items-center gap-2 rounded-lg border bg-base px-3 py-1.5 text-s fg-primary transition hover:bg-secondary disabled:cursor-default disabled:opacity-70"
+                >
+                  <RefreshSpinner spinning={generating} tone="accent" />
+                  {generating ? 'Refreshing…' : 'Refresh'}
+                </button>
+              ) : null}
+            </div>
+
+            <p
+              className={`${REPLAY_BLOCK_CLASS} text-s leading-6 fg-primary/90`}
+            >
+              {summary.description}
+            </p>
+
+            {summary.highlights !== undefined ? (
+              <div className="space-y-3">
+                <h4 className="text-xs font-semibold fg-secondary">
+                  Highlights
+                </h4>
+                <div className={`${REPLAY_BLOCK_CLASS} space-y-2`}>
+                  {summary.highlights.map((highlight, index) => (
+                    <div
+                      key={`highlight-${index}`}
+                      className="flex items-start gap-3 rounded-xl border bg-fg-primary/[0.03] px-3 py-3"
+                    >
+                      <span
+                        className="mt-1 h-2 w-2 rounded-full bg-accent"
+                        data-testid="summary-highlight-dot"
+                      />
+                      <p className="text-s leading-6 fg-primary/90">
+                        {highlight}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            {summary.repos && summary.repos.length > 0 ? (
+              <div className="space-y-3">
+                <h4 className="text-xs font-semibold fg-secondary">
+                  Repository summaries
+                </h4>
+                <div className="space-y-2">
+                  {summary.repos.map((repo) => (
+                    <div
+                      key={repo.name}
+                      className="rounded-xl border bg-fg-primary/[0.03] px-3 py-3"
+                    >
+                      <h5 className="text-s font-semibold fg-primary">
+                        {repo.name}
+                      </h5>
+                      <p
+                        className={`${REPLAY_BLOCK_CLASS} mt-1 text-s leading-6 fg-primary/80`}
+                      >
+                        {repo.description}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </DialogModal>
+      ) : null}
+    </>
+  );
+}

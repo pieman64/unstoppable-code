@@ -1,0 +1,51 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "isolatedModules": true,
+    "jsx": "react-jsx",
+    "types": [
+      "node",
+      "jest"
+    ]
+  },
+  "include": [
+    "apps/desktop-app/src/**/*.ts",
+    "apps/desktop-app/src/**/*.tsx",
+    "packages/protocol/src/**/*.ts",
+    "packages/protocol/src/**/*.tsx",
+    "packages/artifact-crypto/src/**/*.ts",
+    "packages/artifact-crypto/src/**/*.tsx",
+    "packages/plugin-interop/src/**/*.ts",
+    "packages/plugin-interop/src/**/*.tsx",
+    "packages/agent-actions/src/**/*.ts",
+    "packages/agent-actions/src/**/*.tsx",
+    "packages/agent-transcript/src/**/*.ts",
+    "packages/agent-transcript/src/**/*.tsx",
+    "packages/core-runtime/src/**/*.ts",
+    "packages/core-runtime/src/**/*.tsx",
+    "packages/core-platform/src/**/*.ts",
+    "packages/core-platform/src/**/*.tsx",
+    "packages/core-transport/src/**/*.ts",
+    "packages/core-transport/src/**/*.tsx",
+    "packages/core-client/src/**/*.ts",
+    "packages/core-client/src/**/*.tsx",
+    "packages/desktop-shared/src/**/*.ts",
+    "packages/desktop-shared/src/**/*.tsx",
+    "packages/desktop-instrumentation/src/**/*.ts",
+    "packages/desktop-instrumentation/src/**/*.tsx",
+    "packages/ui-shared/src/**/*.ts",
+    "packages/ui-shared/src/**/*.tsx",
+    "packages/ui-rich/src/**/*.ts",
+    "packages/ui-rich/src/**/*.tsx",
+    "packages/app-core/src/**/*.ts",
+    "packages/app-core/src/**/*.tsx",
+    "packages/app-state/src/**/*.ts",
+    "packages/app-state/src/**/*.tsx",
+    "packages/ui-app/src/**/*.ts",
+    "packages/ui-app/src/**/*.tsx",
+    "packages/pipeline-interop/src/**/*.ts",
+    "packages/pipeline-interop/src/**/*.tsx",
+    "packages/mcp-oauth-core/src/**/*.ts",
+    "packages/mcp-oauth-core/src/**/*.tsx"
+  ]
+}

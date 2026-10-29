@@ -1,0 +1,16 @@
+{
+  "fixture": "shadow",
+  "capturedAt": "6f0b031782",
+  "rows": [
+    {"tagName":"input","role":"textbox","inputType":"text","disabled":false,"locator":"page.locator('#slotted-input')","value":"slotted value","checked":false},
+    {"tagName":"input","role":"textbox","inputType":"text","disabled":false,"locator":"page.locator('#unslotted-input')","value":"unslotted value","checked":false},
+    {"tagName":"button","role":"button","inputType":"button","name":"Slotted action","text":"Slotted action","disabled":false,"locator":"page.getByRole('button', { name: 'Slotted action' })"},
+    {"tagName":"x-card","role":"button","name":"Save draft","text":"Save draft","disabled":false,"locator":"page.getByRole('button', { name: 'Save draft' })"}
+  ],
+  "inspect": [
+    {"tagName":"input","role":"textbox","value":"slotted value","attributes":{"id":"slotted-input","value":"slotted value"}},
+    {"tagName":"input","role":"textbox","value":"unslotted value","attributes":{"id":"unslotted-input","value":"unslotted value"}},
+    {"tagName":"button","role":"button","accessibleName":"Slotted action","text":"Slotted action","attributes":{"id":"slotted-button","type":"button"}},
+    {"tagName":"x-card","role":"button","accessibleName":"Save draft","text":"Save draft","attributes":{"id":"closed-host","role":"button"}}
+  ]
+}

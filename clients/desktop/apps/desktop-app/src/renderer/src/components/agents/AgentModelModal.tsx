@@ -1,0 +1,632 @@
+import { type JSX, useId, useMemo, useState } from 'react';
+import {
+  getProviderForModel,
+  isAgentModel,
+} from '@canopy/desktop-shared/types';
+import {
+  AGENT_MODEL_PREFIX,
+  agentModelIdFromSlug,
+  deriveAgentModelSlug,
+  isValidAgentModelSlug,
+  type AgentModelDefinition,
+  type SaveAgentModelRequest,
+} from '@canopy/desktop-shared/types/agent-models';
+import {
+  AGENT_DEFAULT_BASE_MODEL,
+  MAX_SHARED_AGENT_INSTRUCTIONS_BYTES,
+  isAgentDefaultBaseModel,
+} from '@canopy/protocol/agents';
+import { Radio } from '@canopy/ui-shared/components/Choice';
+import type { ChatTabPluginSelections } from '@canopy/desktop-shared/types';
+import { PluginsIcon } from '@canopy/ui-shared/icons';
+import { CloseIcon as AppCatalogCloseIcon } from '@canopy/ui-shared/icons/AppIcons';
+import { DialogModal } from '../shared/DialogModal';
+import { ModelPicker } from '../chat/ModelPicker';
+import { ChatPluginsModal } from '../chat/ChatPluginsModal';
+import { createEmptySelections } from '@/lib/pluginSelections';
+import { extractIpcErrorMessage } from '@/lib/errors';
+
+interface AgentModelModalProps {
+  /** The Agent being edited, or `null` when creating a new one. */
+  agent: AgentModelDefinition | null;
+  /** All existing local Agents, used for duplicate-name validation. */
+  existingAgents: AgentModelDefinition[];
+  onClose: () => void;
+  onSave: (request: SaveAgentModelRequest) => Promise<void>;
+}
+
+interface FieldErrors {
+  name?: string;
+  modelIdSlug?: string;
+  baseModel?: string;
+  instructions?: string;
+}
+
+const NAME_REQUIRED = 'Name is required.';
+const NAME_DUPLICATE = 'An agent with this name already exists.';
+const MODEL_ID_REQUIRED = 'Model ID is required.';
+const MODEL_ID_INVALID =
+  'Model ID can only contain lowercase letters, numbers, and single underscores.';
+const MODEL_ID_DUPLICATE = 'An agent with this model ID already exists.';
+const BASE_MODEL_REQUIRED = 'Choose a base model.';
+const BASE_MODEL_IS_AGENT = 'Base model cannot be another agent.';
+const INSTRUCTIONS_TOO_LONG = 'Instructions are too long.';
+
+function byteLength(value: string): number {
+  // UTF-8 byte length computed without `TextEncoder` (which is not present in
+  // every jsdom test environment). Matches the byte count the shared-Agent
+  // validators use for the instructions limit.
+  let bytes = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.codePointAt(i) ?? 0;
+    if (code <= 0x7f) {
+      bytes += 1;
+    } else if (code <= 0x7ff) {
+      bytes += 2;
+    } else if (code <= 0xffff) {
+      bytes += 3;
+    } else {
+      bytes += 4;
+      // A code point above 0xffff consumed a surrogate pair.
+      i += 1;
+    }
+  }
+  return bytes;
+}
+
+function slugFromAgentModelId(id: string): string {
+  return id.startsWith(AGENT_MODEL_PREFIX)
+    ? id.slice(AGENT_MODEL_PREFIX.length)
+    : id;
+}
+
+function normalizeEditableSlug(value: string): string {
+  return value
+    .trimStart()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+/, '');
+}
+
+/**
+ * Create/edit modal for a custom Agent model.
+ *
+ * The Agent model ID is stable: on create the modal previews the derived
+ * `agent_model_*` id (recomputed live from the name) and on edit it shows the
+ * existing id read-only — renaming never changes it. The base-model picker
+ * (the shared {@link ModelPicker} with `hideAgents`) lists only real provider
+ * models (including Cursor) and never another Agent; the validator also
+ * rejects an Agent base model that only persisted state could produce.
+ */
+export function AgentModelModal({
+  agent,
+  existingAgents,
+  onClose,
+  onSave,
+}: AgentModelModalProps): JSX.Element {
+  const isEdit = agent !== null;
+  const [name, setName] = useState(agent?.name ?? '');
+  const [baseModel, setBaseModel] = useState(agent?.baseModel ?? '');
+  const [instructions, setInstructions] = useState(agent?.instructions ?? '');
+  const [modelIdSlug, setModelIdSlug] = useState(
+    agent ? slugFromAgentModelId(agent.id) : deriveAgentModelSlug(''),
+  );
+  const [modelIdManuallyEdited, setModelIdManuallyEdited] = useState(false);
+  const [pluginSelections, setPluginSelections] =
+    useState<ChatTabPluginSelections>(
+      agent?.pluginSelections ?? createEmptySelections(),
+    );
+  const [pluginsModalOpen, setPluginsModalOpen] = useState(false);
+  const [errors, setErrors] = useState<FieldErrors>({});
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const inheritsDefaultModel = isAgentDefaultBaseModel(baseModel);
+  const baseProvider = baseModel ? getProviderForModel(baseModel) : undefined;
+  const baseModelChoiceName = useId();
+
+  const nameFieldId = useId();
+  const modelIdFieldId = useId();
+  const instructionsFieldId = useId();
+  const modelId = useMemo(
+    () =>
+      isEdit
+        ? (agent?.id ?? '')
+        : agentModelIdFromSlug(modelIdSlug || deriveAgentModelSlug('')),
+    [agent?.id, isEdit, modelIdSlug],
+  );
+
+  const hasPluginSelections =
+    (pluginSelections.collectionIds?.length ?? 0) > 0 ||
+    (pluginSelections.skillRefs?.length ?? 0) > 0 ||
+    (pluginSelections.pluginRefs?.length ?? 0) > 0 ||
+    (pluginSelections.mcpServerRefs?.length ?? 0) > 0 ||
+    (pluginSelections.mcpHttpAuthPreferences?.length ?? 0) > 0;
+
+  // Flattened display chips for the selected plugins, mirroring the hook action
+  // editor's "selected plugins below the control" pattern. Labels are derived
+  // straight from the refs (no catalog lookup) so the list works offline; each
+  // chip removes only its own entry.
+  const pluginChips = useMemo(() => {
+    const chips: {
+      key: string;
+      title: string;
+      subtitle: string;
+      remove: () => void;
+    }[] = [];
+    for (const id of pluginSelections.collectionIds) {
+      chips.push({
+        key: `collection:${id}`,
+        title: id,
+        subtitle: 'Collection',
+        remove: (): void =>
+          setPluginSelections((prev) => ({
+            ...prev,
+            collectionIds: prev.collectionIds.filter((x) => x !== id),
+          })),
+      });
+    }
+    for (const skill of pluginSelections.skillRefs) {
+      chips.push({
+        key: `skill:${skill.sourceId}/${skill.skillName}`,
+        title: skill.skillName,
+        subtitle: 'Skill',
+        remove: (): void =>
+          setPluginSelections((prev) => ({
+            ...prev,
+            skillRefs: prev.skillRefs.filter(
+              (x) =>
+                !(
+                  x.sourceId === skill.sourceId &&
+                  x.skillName === skill.skillName
+                ),
+            ),
+          })),
+      });
+    }
+    for (const plugin of pluginSelections.pluginRefs) {
+      chips.push({
+        key: `plugin:${plugin.marketplaceId}/${plugin.pluginName}`,
+        title: plugin.pluginName,
+        subtitle: 'Plugin',
+        remove: (): void =>
+          setPluginSelections((prev) => ({
+            ...prev,
+            pluginRefs: prev.pluginRefs.filter(
+              (x) =>
+                !(
+                  x.marketplaceId === plugin.marketplaceId &&
+                  x.pluginName === plugin.pluginName
+                ),
+            ),
+          })),
+      });
+    }
+    for (const mcp of pluginSelections.mcpServerRefs ?? []) {
+      chips.push({
+        key: `mcp:${mcp.serverId}/${mcp.configId}`,
+        title: mcp.serverId,
+        subtitle: 'MCP server',
+        remove: (): void =>
+          setPluginSelections((prev) => ({
+            ...prev,
+            mcpServerRefs: (prev.mcpServerRefs ?? []).filter(
+              (x) =>
+                !(x.serverId === mcp.serverId && x.configId === mcp.configId),
+            ),
+          })),
+      });
+    }
+    for (const preference of pluginSelections.mcpHttpAuthPreferences ?? []) {
+      const title =
+        preference.target.kind === 'standalone'
+          ? preference.target.serverId
+          : `${preference.target.pluginName}/${preference.target.serverName}`;
+      chips.push({
+        key:
+          preference.target.kind === 'standalone'
+            ? `auth:${preference.target.serverId}/${preference.target.configId}`
+            : `auth:${preference.target.marketplaceId}/${preference.target.pluginName}/${preference.target.serverName}`,
+        title,
+        subtitle: `MCP auth: ${preference.handler}`,
+        remove: (): void =>
+          setPluginSelections((prev) => ({
+            ...prev,
+            mcpHttpAuthPreferences: (prev.mcpHttpAuthPreferences ?? []).filter(
+              (x) => x !== preference,
+            ),
+          })),
+      });
+    }
+    return chips;
+  }, [pluginSelections]);
+
+  function validate(): FieldErrors {
+    const next: FieldErrors = {};
+    const trimmedName = name.trim();
+    if (trimmedName.length === 0) {
+      next.name = NAME_REQUIRED;
+    } else {
+      const clash = existingAgents.some(
+        (candidate) =>
+          candidate.id !== agent?.id &&
+          candidate.name.trim().toLowerCase() === trimmedName.toLowerCase(),
+      );
+      if (clash) {
+        next.name = NAME_DUPLICATE;
+      }
+    }
+
+    if (!isEdit) {
+      if (modelIdSlug.length === 0) {
+        next.modelIdSlug = MODEL_ID_REQUIRED;
+      } else if (!isValidAgentModelSlug(modelIdSlug)) {
+        next.modelIdSlug = MODEL_ID_INVALID;
+      } else {
+        const candidateId = agentModelIdFromSlug(modelIdSlug);
+        const clash = existingAgents.some(
+          (candidate) => candidate.id === candidateId,
+        );
+        if (clash) {
+          next.modelIdSlug = MODEL_ID_DUPLICATE;
+        }
+      }
+    }
+
+    if (baseModel.length === 0) {
+      next.baseModel = BASE_MODEL_REQUIRED;
+    } else if (isAgentModel(baseModel)) {
+      next.baseModel = BASE_MODEL_IS_AGENT;
+    }
+
+    if (byteLength(instructions) > MAX_SHARED_AGENT_INSTRUCTIONS_BYTES) {
+      next.instructions = INSTRUCTIONS_TOO_LONG;
+    }
+    return next;
+  }
+
+  function handleNameChange(nextName: string): void {
+    setName(nextName);
+    if (!isEdit && !modelIdManuallyEdited) {
+      setModelIdSlug(deriveAgentModelSlug(nextName));
+    }
+  }
+
+  function handleModelIdSlugChange(nextSlug: string): void {
+    setModelIdManuallyEdited(true);
+    setModelIdSlug(normalizeEditableSlug(nextSlug));
+  }
+
+  function handleBaseModelChange(nextModel: string): void {
+    const previousProvider = baseModel ? getProviderForModel(baseModel) : null;
+    const nextProvider = nextModel ? getProviderForModel(nextModel) : null;
+    setBaseModel(nextModel);
+    // The default model's provider is unknown until a chat starts, so plugins
+    // are kept and judged against the resolved route at run time.
+    if (previousProvider && nextProvider && previousProvider !== nextProvider) {
+      setPluginSelections(createEmptySelections());
+    }
+  }
+
+  async function handleSubmit(): Promise<void> {
+    const validation = validate();
+    setErrors(validation);
+    if (Object.keys(validation).length > 0) {
+      return;
+    }
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      const request: SaveAgentModelRequest = {
+        ...(agent ? { id: agent.id } : {}),
+        name: name.trim(),
+        ...(agent ? {} : { modelIdSlug }),
+        baseModel,
+        instructions,
+        pluginSelections,
+      };
+      await onSave(request);
+      onClose();
+    } catch (err: unknown) {
+      setSubmitError(extractIpcErrorMessage(err));
+      setSubmitting(false);
+    }
+  }
+
+  const inputClass =
+    'w-full rounded-lg border bg-base px-3 py-2 text-s fg-primary focus-ring';
+  const helperClass = 'mt-1 text-xs fg-secondary';
+  const errorClass = 'mt-1 text-xs fg-destructive';
+
+  return (
+    <DialogModal
+      onClose={submitting ? (): void => {} : onClose}
+      title={isEdit ? 'Edit agent' : 'New agent'}
+      maxWidth="2xl"
+      closeOnBackdrop={!submitting}
+      dataTestId="agent-model-modal"
+    >
+      <div className="flex flex-col gap-4 px-5 pb-5 pt-4">
+        {/* Name */}
+        <div>
+          <label
+            htmlFor={nameFieldId}
+            className="block text-s font-medium fg-primary"
+          >
+            Name
+          </label>
+          <input
+            id={nameFieldId}
+            type="text"
+            value={name}
+            disabled={submitting}
+            onChange={(e): void => handleNameChange(e.target.value)}
+            data-testid="agent-model-name"
+            className={inputClass}
+          />
+          <p className={helperClass}>
+            Shown in model pickers. The model ID is created when the agent is
+            first saved.
+          </p>
+          {errors.name && (
+            <p
+              className={errorClass}
+              role="alert"
+              data-testid="agent-model-name-error"
+            >
+              {errors.name}
+            </p>
+          )}
+        </div>
+
+        {/* Model ID */}
+        <div>
+          <label
+            htmlFor={modelIdFieldId}
+            className="block text-s font-medium fg-primary"
+          >
+            Model ID
+          </label>
+          {isEdit ? (
+            <input
+              id={modelIdFieldId}
+              type="text"
+              readOnly
+              value={modelId}
+              data-testid="agent-model-id"
+              className={`${inputClass} cursor-default font-mono fg-secondary`}
+            />
+          ) : (
+            <div className="mt-1 flex overflow-hidden rounded-lg border bg-base focus-within:ring-2 focus-within:ring-line-focus focus-within:ring-offset-2 focus-within:ring-offset-base">
+              <span className="select-none border-r bg-secondary px-3 py-2 font-mono text-s fg-secondary">
+                {AGENT_MODEL_PREFIX}
+              </span>
+              <input
+                id={modelIdFieldId}
+                type="text"
+                value={modelIdSlug}
+                disabled={submitting}
+                onChange={(e): void => handleModelIdSlugChange(e.target.value)}
+                data-testid="agent-model-id"
+                className="min-w-0 flex-1 bg-base px-3 py-2 font-mono text-s fg-primary outline-none disabled:opacity-50"
+              />
+            </div>
+          )}
+          <p className={helperClass}>
+            {isEdit
+              ? 'Model IDs cannot be changed after an agent is created.'
+              : 'Used in pipelines and model pickers. It must be unique and can only contain lowercase letters, numbers, and underscores.'}
+          </p>
+          {errors.modelIdSlug && (
+            <p
+              className={errorClass}
+              role="alert"
+              data-testid="agent-model-id-error"
+            >
+              {errors.modelIdSlug}
+            </p>
+          )}
+        </div>
+
+        {/* Base model */}
+        <fieldset>
+          <legend className="block text-s font-medium fg-primary">
+            Base model
+          </legend>
+          <label className="mt-2 flex items-start gap-2">
+            <Radio
+              name={baseModelChoiceName}
+              checked={inheritsDefaultModel}
+              disabled={submitting}
+              onChange={(): void =>
+                handleBaseModelChange(AGENT_DEFAULT_BASE_MODEL)
+              }
+              data-testid="agent-model-base-default"
+              className="mt-0.5"
+            />
+            <span>
+              <span className="block text-s fg-primary">Default model</span>
+              <span className="block text-xs fg-secondary">
+                Each chat uses its default model from Settings when it starts.
+              </span>
+            </span>
+          </label>
+          <label className="mt-2 flex items-start gap-2">
+            <Radio
+              name={baseModelChoiceName}
+              checked={!inheritsDefaultModel}
+              disabled={submitting}
+              onChange={(): void => handleBaseModelChange('')}
+              data-testid="agent-model-base-specific"
+              className="mt-0.5"
+            />
+            <span className="block text-s fg-primary">Specific model</span>
+          </label>
+          {/*
+            Only real provider base models are offered. The Agents group is
+            hidden (`hideAgents`) because a custom Agent cannot use another
+            Agent as its base (isBaseModelSelectableForAgent / the validator
+            enforce this).
+          */}
+          {!inheritsDefaultModel && (
+            <>
+              <div
+                className="ml-6 mt-1 inline-flex rounded-lg border bg-base px-2 py-1"
+                data-testid="agent-model-base-model"
+              >
+                <ModelPicker
+                  currentModel={baseModel}
+                  disabled={submitting}
+                  hideAgents
+                  browserLayout="harnesses"
+                  allowCursor
+                  allowOpenCode
+                  allowCopilot
+                  placeholderLabel="Select a base model…"
+                  onModelChange={handleBaseModelChange}
+                  triggerTooltip="Model this agent is built on"
+                />
+              </div>
+              <p className={`${helperClass} ml-6`}>
+                Choose a provider model, including Cursor. Custom agents cannot
+                be used as a base model.
+              </p>
+            </>
+          )}
+          {errors.baseModel && (
+            <p
+              className={errorClass}
+              role="alert"
+              data-testid="agent-model-base-model-error"
+            >
+              {errors.baseModel}
+            </p>
+          )}
+        </fieldset>
+
+        {/* Instructions */}
+        <div>
+          <label
+            htmlFor={instructionsFieldId}
+            className="block text-s font-medium fg-primary"
+          >
+            Instructions
+          </label>
+          <textarea
+            id={instructionsFieldId}
+            value={instructions}
+            disabled={submitting}
+            rows={5}
+            onChange={(e): void => setInstructions(e.target.value)}
+            placeholder="Add instructions that should be appended to the system prompt whenever this agent is used."
+            data-testid="agent-model-instructions"
+            className={`${inputClass} resize-y`}
+          />
+          {errors.instructions && (
+            <p
+              className={errorClass}
+              role="alert"
+              data-testid="agent-model-instructions-error"
+            >
+              {errors.instructions}
+            </p>
+          )}
+        </div>
+
+        {/* Plugins */}
+        <div>
+          <label className="block text-s font-medium fg-primary">Plugins</label>
+          <p className={`${helperClass} mb-2`}>
+            These plugins are enabled automatically in addition to the chat or
+            pipeline selections.
+          </p>
+          <button
+            type="button"
+            disabled={submitting}
+            onClick={(): void => setPluginsModalOpen(true)}
+            data-testid="agent-model-plugins"
+            className={`flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-2xs transition disabled:cursor-not-allowed disabled:opacity-40 ${
+              hasPluginSelections
+                ? 'bg-info-subtle fg-info'
+                : 'fg-secondary hover:bg-subtle hover:fg-primary disabled:hover:bg-transparent'
+            }`}
+            aria-label="Plugins"
+          >
+            <PluginsIcon width={13} height={13} />
+            <span>Plugins</span>
+          </button>
+
+          {pluginChips.length > 0 ? (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {pluginChips.map((chip) => (
+                <span
+                  key={chip.key}
+                  className="inline-flex items-center gap-1 rounded-md border bg-fg-primary/[0.04] px-2 py-0.5 text-2xs fg-primary"
+                  title={`${chip.title} — ${chip.subtitle}`}
+                >
+                  <span className="font-medium">{chip.title}</span>
+                  <span className="fg-secondary">{chip.subtitle}</span>
+                  <button
+                    type="button"
+                    disabled={submitting}
+                    onClick={chip.remove}
+                    className="focus-ring rounded p-0.5 fg-secondary hover:fg-primary disabled:opacity-50"
+                    aria-label={`Remove ${chip.title}`}
+                  >
+                    <AppCatalogCloseIcon width="10" height="10" />
+                  </button>
+                </span>
+              ))}
+            </div>
+          ) : (
+            <p className="mt-2 text-2xs fg-secondary">
+              No plugins added. This agent uses only the chat or pipeline plugin
+              selections.
+            </p>
+          )}
+        </div>
+
+        {submitError && (
+          <p className="text-s fg-destructive" role="alert">
+            {submitError}
+          </p>
+        )}
+
+        {/* Footer */}
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={submitting}
+            className="focus-ring rounded-lg border px-4 py-2 text-s fg-primary transition-colors hover:bg-secondary disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={(): void => {
+              void handleSubmit();
+            }}
+            disabled={submitting}
+            data-testid="agent-model-submit"
+            className="focus-ring rounded-lg bg-accent px-4 py-2 text-s font-medium fg-emphasis transition-colors hover:bg-accent/90 disabled:opacity-50"
+          >
+            {isEdit ? 'Save changes' : 'Create agent'}
+          </button>
+        </div>
+      </div>
+
+      {pluginsModalOpen && (
+        <ChatPluginsModal
+          initial={pluginSelections}
+          onSave={(selections): void => {
+            setPluginSelections(selections);
+            setPluginsModalOpen(false);
+          }}
+          onClose={(): void => setPluginsModalOpen(false)}
+          effectiveProviderType={baseProvider}
+        />
+      )}
+    </DialogModal>
+  );
+}

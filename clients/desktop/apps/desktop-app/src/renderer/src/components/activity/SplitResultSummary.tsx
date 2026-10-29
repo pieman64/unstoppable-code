@@ -1,0 +1,107 @@
+import { type JSX } from 'react';
+import type { SplitPrMap } from '@canopy/desktop-shared/types/github';
+
+function splitStatusLabel(status: SplitPrMap['status']): string {
+  switch (status) {
+    case 'completed':
+      return 'Split complete';
+    case 'cancelled':
+      return 'Split cancelled';
+    case 'failed':
+      return 'Split failed';
+    default:
+      return 'Split in progress';
+  }
+}
+
+/**
+ * Shared read-only rendering of a persisted `SplitPrMap`: the status badge, the
+ * integration PR link ("supersedes #original"), the original PR link, and the
+ * per-child `[i/N] title` list with base branch + PR links.
+ *
+ * Extracted from the PR-panel `SplitResultView` so the full-panel
+ * `SplitWorkflowView` Finalize finished page renders the identical summary
+ * without duplicating the layout — mirroring how the review panel and progress
+ * checklist are shared between the two surfaces. The action buttons
+ * (Resume/Discard on the panel, Done on the finished page) stay owned by each
+ * caller since they differ.
+ */
+export function SplitResultSummary({ map }: { map: SplitPrMap }): JSX.Element {
+  const childTotal = map.children.length;
+  return (
+    <div className="min-w-0 space-y-2" data-testid="split-result-summary">
+      <span
+        className={`inline-flex rounded-full border px-2 py-0.5 text-3xs font-medium ${
+          map.status === 'completed'
+            ? 'border-fg-success-strong/30 bg-success-subtle fg-success-strong'
+            : 'border-line-attention/40 bg-warning-subtle fg-warning'
+        }`}
+      >
+        {splitStatusLabel(map.status)}
+      </span>
+      {map.integrationPrUrl !== undefined &&
+        map.integrationPrNumber !== undefined && (
+          <p className="break-words text-xs fg-secondary">
+            <a
+              href={map.integrationPrUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="fg-primary/80 transition hover:fg-primary"
+            >
+              Integration PR #{map.integrationPrNumber}
+            </a>{' '}
+            supersedes #{map.originalPrNumber}
+          </p>
+        )}
+      <p className="break-words text-xs fg-secondary">
+        <a
+          href={map.originalPrUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="fg-primary/80 transition hover:fg-primary"
+        >
+          Original PR #{map.originalPrNumber}
+        </a>
+        {map.status === 'completed' ? ' (closed)' : ''}
+      </p>
+      <div className="space-y-1.5">
+        {map.children.map((child) => (
+          // Two-line stacked row so long branch names and PR links wrap within
+          // the card at any width instead of spilling past the border. Both
+          // surfaces (the narrow PR activity card and the wide finalize page)
+          // render the same component, so the layout is driven by the container
+          // rather than a fixed-width right cluster.
+          <div
+            key={child.index}
+            className="min-w-0 text-xs"
+            data-testid="split-result-summary-child"
+          >
+            <div className="flex min-w-0 items-start justify-between gap-2">
+              <span className="min-w-0 break-words fg-primary/80">
+                [{child.index}/{childTotal}] {child.title}
+              </span>
+              {child.prUrl !== undefined && child.prNumber !== undefined && (
+                <a
+                  href={child.prUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="shrink-0 fg-secondary transition hover:fg-primary"
+                >
+                  #{child.prNumber}
+                </a>
+              )}
+            </div>
+            <div className="mt-0.5 flex min-w-0 flex-col gap-0.5 fg-secondary">
+              <span className="min-w-0 break-all">
+                base: {child.baseBranch}
+              </span>
+              <span className="min-w-0 break-all">
+                branch: {child.branchName}
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}

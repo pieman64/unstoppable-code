@@ -1,0 +1,9 @@
+name: builtin-git
+version: 1.0.0
+description: Built-in local Git workflow skills for {{BRAND_DISPLAY_NAME}}.
+author:
+  name: '{{BRAND_DISPLAY_NAME}}'
+category: development
+targets:
+  codex:
+    category: Development

@@ -1,0 +1,52 @@
+packages:
+  - apps/desktop-app
+  - packages/protocol
+  - packages/artifact-crypto
+  - packages/plugin-interop
+  - packages/agent-actions
+  - packages/agent-transcript
+  - packages/core-runtime
+  - packages/core-platform
+  - packages/core-transport
+  - packages/core-client
+  - packages/desktop-shared
+  - packages/desktop-instrumentation
+  - packages/ui-shared
+  - packages/ui-rich
+  - packages/app-core
+  - packages/app-state
+  - packages/ui-app
+  - packages/pipeline-interop
+  - packages/mcp-oauth-core
+nodeLinker: hoisted
+packageImportMethod: clone-or-copy
+verifyDepsBeforeRun: false
+allowBuilds:
+  '@datadog/native-appsec': false
+  '@datadog/native-iast-taint-tracking': false
+  '@datadog/native-metrics': false
+  '@datadog/pprof': false
+  '@firebase/util': false
+  '@prisma/engines': false
+  '@swc/core': false
+  argon2: false
+  core-js: false
+  electron-winstaller: false
+  esbuild: false
+  fallow: false
+  fsevents: false
+  koffi: false
+  node-pty: true
+  prisma: false
+  protobufjs: false
+  sharp: false
+  tree-sitter-cli: false
+  unrs-resolver: false
+patchedDependencies:
+  '@datadog/electron-sdk@0.2.0': patches/@datadog__electron-sdk@0.2.0.patch
+  builder-util-runtime@9.5.1: patches/builder-util-runtime@9.5.1.patch
+permissions:
+  dotenv:
+    skills: false
+  fallow:
+    skills: false

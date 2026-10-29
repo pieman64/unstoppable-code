@@ -1,0 +1,1116 @@
+import { mkdir, readFile, readdir, rm } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import type { BrowserWindow } from 'electron';
+import { isProjectStartPage } from '@canopy/protocol/start-page';
+import {
+  isHookTriggerName,
+  normalizeHookInputMap,
+  type HookInputMap,
+} from '@canopy/desktop-shared/hooks';
+import {
+  normalizeScriptInputMap,
+  type ScriptDefinition,
+  type ScriptInputMap,
+} from '@canopy/desktop-shared/scripts';
+import {
+  getShareablePluginRefKey,
+  type ShareablePluginRef,
+} from '@canopy/desktop-shared/plugin-refs';
+import type {
+  CanopyJsonFile,
+  CanopyJsonRepoEntry,
+  WorkspaceApplySourceRepoAdd,
+  WorkspaceApplySourceChangesRequest,
+  WorkspaceApplySourceChangesResponse,
+  WorkspaceSourceChangesAppliedEvent,
+  WorkspaceConfigFile,
+  WorkspaceRepoData,
+  WorktreeData,
+} from '@canopy/desktop-shared/types';
+import { generateUniqueAnimalName } from './animals';
+import {
+  WORKSPACE_MANIFEST_STORAGE,
+  WORKTREE_LIST_STORAGE,
+  withStorageAdmission,
+} from './w5-storage';
+import {
+  resolveOptionalProjectInstructionFile,
+  writeProjectInstructionFile,
+} from './instruction-files';
+import { readCanopyJson, writeCanopyJson } from './canopy-json';
+import {
+  bestEffortPruneWorktrees,
+  createWorktree,
+  getRepoRootFromWorktree,
+  removeWorktree,
+} from './git';
+import {
+  getWorktreeDataDir,
+  getWorkspaceWorktreeRepoDir,
+  getWorkspaceWorktreeRootRepoDir,
+  getWorkspaceWorktreesRootDir,
+} from './paths';
+import {
+  readWorkspaceConfig,
+  readWorkspaceWorktrees,
+  removeWorkspaceWorktrees,
+  updateWorkspaceConfig,
+  updateWorkspaceWorktrees,
+} from './workspace-persistence';
+import { WorkspaceSourceChangesRefusedError } from './workspace-source-change-refusal';
+import { remoteUrlsMatch } from './repo-url-matcher';
+import { resolveWorkspaceReferenceRepoPath } from './workspace-reference-repo';
+import {
+  repairWorkspaceRootWorktree,
+  validateWorkspaceRootWorktree,
+} from './workspace-source-control';
+import {
+  deletePrTrackingState,
+  getWorkspaceRepoStorageKey,
+} from './github-pr-hook-state';
+import { stopHooksForRepoTarget } from './hook-runner';
+import {
+  resolveWorkspaceWorktreeBranchName,
+  startWorkspaceRepoSetupAndDiscovery,
+  startWorkspaceWorktreePostCreateSetup,
+} from './workspace-worktree-runtime';
+import {
+  detachedWorkCallback,
+  settleAll,
+  trackDetachedWork,
+} from '@canopy/desktop-shared/node/lib/detached-work';
+
+interface TargetWorkspaceContext {
+  worktreeId: string;
+  branchName: string;
+  createdWorktree: boolean;
+  referenceRepoPath: string;
+}
+
+interface NormalizedWorkspaceApplySourceRepoAdd extends WorkspaceApplySourceRepoAdd {
+  repoId: string;
+}
+
+interface NormalizedWorkspaceApplySourceChangesRequest extends Omit<
+  WorkspaceApplySourceChangesRequest,
+  'repoAdds'
+> {
+  repoAdds?: NormalizedWorkspaceApplySourceRepoAdd[];
+}
+
+interface PreparedRepoWorktree {
+  repo: WorkspaceRepoData;
+  repoId: string;
+  manifestUrl: string;
+}
+
+function applyWorkspaceManifestStartPage(
+  manifest: CanopyJsonFile,
+  startPage: WorkspaceApplySourceChangesRequest['startPage'],
+): void {
+  if (startPage === undefined) return;
+  if (startPage === null) {
+    delete manifest.startPage;
+    return;
+  }
+  if (!isProjectStartPage(startPage)) {
+    throw new WorkspaceSourceChangesRefusedError(
+      'invalid-request',
+      'Invalid start page',
+    );
+  }
+  manifest.startPage = startPage;
+}
+
+function slugifyRepoId(name: string): string {
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '');
+}
+
+function createUniqueRepoId(baseId: string, existingIds: Set<string>): string {
+  if (!existingIds.has(baseId)) {
+    return baseId;
+  }
+
+  let suffix = 2;
+  while (existingIds.has(`${baseId}-${suffix}`)) {
+    suffix += 1;
+  }
+  return `${baseId}-${suffix}`;
+}
+
+async function readExistingWorkspaceRepoIds(
+  workspaceId: string,
+  config: WorkspaceConfigFile,
+  manifest: CanopyJsonFile,
+): Promise<Set<string>> {
+  const existingRepoIds = new Set<string>([
+    ...config.repos.map((repo) => repo.id),
+    ...(manifest.repos ?? []).map((repo) => repo.id),
+  ]);
+  const worktreesRootDir = getWorkspaceWorktreesRootDir(workspaceId);
+
+  try {
+    const worktreeDirs = await readdir(worktreesRootDir, {
+      withFileTypes: true,
+    });
+    for (const worktreeDir of worktreeDirs) {
+      if (!worktreeDir.isDirectory()) {
+        continue;
+      }
+
+      const repoDirs = await readdir(
+        join(worktreesRootDir, worktreeDir.name, 'repos'),
+        {
+          withFileTypes: true,
+        },
+      ).catch(() => []);
+      for (const repoDir of repoDirs) {
+        if (repoDir.isDirectory()) {
+          existingRepoIds.add(repoDir.name);
+        }
+      }
+    }
+  } catch {
+    // The worktrees directory may not exist yet.
+  }
+
+  return existingRepoIds;
+}
+
+export async function normalizeWorkspaceApplySourceChangesRequest(params: {
+  workspaceId: string;
+  config: WorkspaceConfigFile;
+  manifest: CanopyJsonFile;
+  request: WorkspaceApplySourceChangesRequest;
+}): Promise<NormalizedWorkspaceApplySourceChangesRequest> {
+  const repoAdds = params.request.repoAdds;
+  if (!repoAdds) {
+    return {
+      ...params.request,
+      repoAdds: undefined,
+    };
+  }
+
+  const needsGeneratedRepoId = repoAdds.some(
+    (repoAdd) => !Boolean(repoAdd.repoId?.trim()),
+  );
+  const existingRepoIds = needsGeneratedRepoId
+    ? await readExistingWorkspaceRepoIds(
+        params.workspaceId,
+        params.config,
+        params.manifest,
+      )
+    : new Set<string>();
+
+  const normalizedRepoAdds = repoAdds.map(
+    (repoAdd): NormalizedWorkspaceApplySourceRepoAdd => {
+      const explicitRepoId = repoAdd.repoId?.trim();
+      if (explicitRepoId) {
+        existingRepoIds.add(explicitRepoId);
+        return {
+          ...repoAdd,
+          repoId: explicitRepoId,
+        };
+      }
+
+      const generatedRepoId = createUniqueRepoId(
+        slugifyRepoId(repoAdd.repoName) || 'repo',
+        existingRepoIds,
+      );
+      existingRepoIds.add(generatedRepoId);
+
+      return {
+        ...repoAdd,
+        repoId: generatedRepoId,
+      };
+    },
+  );
+
+  return {
+    ...params.request,
+    repoAdds: normalizedRepoAdds,
+  };
+}
+
+function toManifestWorkspaceScripts(
+  scripts: ScriptInputMap | undefined,
+): CanopyJsonFile['scripts'] {
+  const normalized = normalizeScriptInputMap(scripts);
+  if (!normalized) {
+    return undefined;
+  }
+
+  const entries = Object.entries(normalized).filter(
+    (entry): entry is [string, string | ScriptDefinition] => entry[1] !== null,
+  );
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+function toManifestRepoScripts(
+  scripts: ScriptInputMap | undefined,
+): CanopyJsonRepoEntry['scripts'] {
+  return normalizeScriptInputMap(scripts);
+}
+
+function toManifestWorkspaceHooks(
+  hooks: HookInputMap | undefined,
+): CanopyJsonFile['hooks'] {
+  const normalized = normalizeHookInputMap(hooks);
+  if (!normalized) {
+    return undefined;
+  }
+
+  const nextHooks: NonNullable<CanopyJsonFile['hooks']> = {};
+  for (const [triggerName, actions] of Object.entries(normalized)) {
+    if (isHookTriggerName(triggerName) && Array.isArray(actions)) {
+      nextHooks[triggerName] = actions;
+    }
+  }
+
+  return Object.keys(nextHooks).length > 0 ? nextHooks : undefined;
+}
+
+function toManifestRepoHooks(
+  hooks: HookInputMap | undefined,
+): CanopyJsonRepoEntry['hooks'] {
+  const normalized = normalizeHookInputMap(hooks);
+  if (!normalized) {
+    return undefined;
+  }
+
+  const nextHooks: NonNullable<CanopyJsonRepoEntry['hooks']> = {};
+  for (const [triggerName, actions] of Object.entries(normalized)) {
+    if (isHookTriggerName(triggerName)) {
+      nextHooks[triggerName] = actions;
+    }
+  }
+
+  return Object.keys(nextHooks).length > 0 ? nextHooks : undefined;
+}
+
+function mergeRepoScripts(
+  manifest: CanopyJsonFile,
+  request: NormalizedWorkspaceApplySourceChangesRequest,
+): void {
+  if (!manifest.repos) {
+    manifest.repos = [];
+  }
+
+  const repoAddsById = new Map(
+    (request.repoAdds ?? []).map((repo) => [repo.repoId, repo]),
+  );
+
+  for (const repoChange of request.repoScriptChanges ?? []) {
+    const manifestRepo = manifest.repos.find(
+      (repo) => repo.id === repoChange.repoId,
+    );
+    const pendingAddedRepo = repoAddsById.get(repoChange.repoId);
+    if (!manifestRepo && !pendingAddedRepo) {
+      throw new Error(
+        `Cannot apply scripts for repo ${repoChange.repoId} because it is not present in the project manifest`,
+      );
+    }
+
+    if (manifestRepo) {
+      const scripts = toManifestRepoScripts(repoChange.scripts);
+      if (scripts) {
+        manifestRepo.scripts = scripts;
+      } else {
+        delete manifestRepo.scripts;
+      }
+      continue;
+    }
+
+    if (pendingAddedRepo) {
+      pendingAddedRepo.scripts = repoChange.scripts;
+    }
+  }
+}
+
+function mergeRepoHooks(
+  manifest: CanopyJsonFile,
+  request: NormalizedWorkspaceApplySourceChangesRequest,
+): void {
+  if (!manifest.repos) {
+    manifest.repos = [];
+  }
+
+  const repoAddsById = new Map(
+    (request.repoAdds ?? []).map((repo) => [repo.repoId, repo]),
+  );
+
+  for (const repoChange of request.repoHookChanges ?? []) {
+    const manifestRepo = manifest.repos.find(
+      (repo) => repo.id === repoChange.repoId,
+    );
+    const pendingAddedRepo = repoAddsById.get(repoChange.repoId);
+    if (!manifestRepo && !pendingAddedRepo) {
+      throw new Error(
+        `Cannot apply hooks for repo ${repoChange.repoId} because it is not present in the project manifest`,
+      );
+    }
+
+    if (manifestRepo) {
+      const hooks = toManifestRepoHooks(repoChange.hooks);
+      if (hooks) {
+        manifestRepo.hooks = hooks;
+      } else {
+        delete manifestRepo.hooks;
+      }
+      continue;
+    }
+
+    if (pendingAddedRepo) {
+      pendingAddedRepo.hooks = repoChange.hooks;
+    }
+  }
+}
+
+async function safeRemoveRepoWorktree(
+  repoPath: string | null,
+  worktreePath: string,
+): Promise<void> {
+  if (repoPath) {
+    try {
+      await removeWorktree(repoPath, worktreePath);
+      return;
+    } catch {
+      // Fall back to force-removing the directory.
+    }
+  }
+
+  await rm(worktreePath, { recursive: true, force: true });
+  if (repoPath) {
+    bestEffortPruneWorktrees(
+      repoPath,
+      'workspace-source-change-apply cleanupWorktreeDirectory',
+    );
+  }
+}
+
+async function readExistingTargetManifest(
+  workspaceId: string,
+  worktreeId: string,
+): Promise<CanopyJsonFile> {
+  return (
+    (await readCanopyJson(
+      getWorkspaceWorktreeRootRepoDir(workspaceId, worktreeId),
+    )) ?? ({ version: 1, repos: [] } satisfies CanopyJsonFile)
+  );
+}
+
+function ensureManifestRepos(manifest: CanopyJsonFile): CanopyJsonRepoEntry[] {
+  if (!manifest.repos) {
+    manifest.repos = [];
+  }
+  return manifest.repos;
+}
+
+function remoteUrlsReferToSameRepo(left: string, right: string): boolean {
+  return left === right || remoteUrlsMatch(left, right);
+}
+
+function findLocalRepoBinding(
+  config: WorkspaceConfigFile,
+  repoId: string,
+  remoteUrl: string,
+): WorkspaceRepoData | undefined {
+  return config.repos.find(
+    (repo) =>
+      repo.id === repoId ||
+      (typeof repo.manifestUrl === 'string' &&
+        remoteUrlsReferToSameRepo(repo.manifestUrl, remoteUrl)),
+  );
+}
+
+async function applyClaudeMdChange(
+  workspaceId: string,
+  worktreeId: string,
+  claudeMd: string | undefined,
+): Promise<void> {
+  if (claudeMd === undefined) {
+    return;
+  }
+
+  const target = await resolveOptionalProjectInstructionFile(
+    getWorkspaceWorktreeRootRepoDir(workspaceId, worktreeId),
+  );
+  if (!target) {
+    return;
+  }
+  const existingContent = target.exists
+    ? await readFile(target.filePath, 'utf8')
+    : '';
+  if (existingContent === claudeMd) {
+    return;
+  }
+
+  await writeProjectInstructionFile(target, claudeMd);
+}
+
+function applyWorkspaceScriptChanges(
+  manifest: CanopyJsonFile,
+  workspaceScripts: ScriptInputMap | undefined,
+): void {
+  if (workspaceScripts === undefined) {
+    return;
+  }
+
+  const scripts = toManifestWorkspaceScripts(workspaceScripts);
+  if (scripts) {
+    manifest.scripts = scripts;
+  } else {
+    delete manifest.scripts;
+  }
+}
+
+function applyWorkspaceHookChanges(
+  manifest: CanopyJsonFile,
+  workspaceHooks: HookInputMap | undefined,
+): void {
+  if (workspaceHooks === undefined) {
+    return;
+  }
+
+  const hooks = toManifestWorkspaceHooks(workspaceHooks);
+  if (hooks) {
+    manifest.hooks = hooks;
+  } else {
+    delete manifest.hooks;
+  }
+}
+
+function dedupeShareablePluginRefs(
+  plugins: readonly ShareablePluginRef[],
+): ShareablePluginRef[] {
+  const seenKeys = new Set<string>();
+  const result: ShareablePluginRef[] = [];
+  for (const plugin of plugins) {
+    const key = getShareablePluginRefKey(plugin);
+    if (seenKeys.has(key)) {
+      continue;
+    }
+    seenKeys.add(key);
+    result.push(plugin);
+  }
+  return result;
+}
+
+function applyWorkspacePluginChanges(
+  manifest: CanopyJsonFile,
+  plugins: ShareablePluginRef[] | undefined,
+): void {
+  if (plugins === undefined) {
+    return;
+  }
+
+  const nextPlugins = dedupeShareablePluginRefs(plugins);
+  if (nextPlugins.length === 0) {
+    delete manifest.plugins;
+    return;
+  }
+
+  manifest.plugins = nextPlugins;
+}
+
+async function prepareRepoAdds(params: {
+  request: NormalizedWorkspaceApplySourceChangesRequest;
+  workspaceId: string;
+  worktreeId: string;
+  config: WorkspaceConfigFile;
+  manifest: CanopyJsonFile;
+}): Promise<PreparedRepoWorktree[]> {
+  const repos = ensureManifestRepos(params.manifest);
+  const repoWorktreesToCreate: PreparedRepoWorktree[] = [];
+
+  for (const repoAdd of params.request.repoAdds ?? []) {
+    const repoUrl = repoAdd.remoteUrl.trim();
+    if (!repoUrl) {
+      throw new Error(`Repo ${repoAdd.repoId} is missing a remote URL`);
+    }
+
+    const existingById = repos.find((repo) => repo.id === repoAdd.repoId);
+    if (existingById) {
+      if (!remoteUrlsReferToSameRepo(existingById.url, repoUrl)) {
+        throw new Error(
+          `Repo ${repoAdd.repoId} already exists in canopy.json with a different URL`,
+        );
+      }
+    } else {
+      const existingByUrl = repos.find((repo) =>
+        remoteUrlsReferToSameRepo(repo.url, repoUrl),
+      );
+      if (!existingByUrl) {
+        const nextRepo: CanopyJsonRepoEntry = {
+          id: repoAdd.repoId,
+          name: repoAdd.repoName,
+          url: repoUrl,
+        };
+        const scripts = toManifestRepoScripts(repoAdd.scripts);
+        if (scripts) {
+          nextRepo.scripts = scripts;
+        }
+        const hooks = toManifestRepoHooks(repoAdd.hooks);
+        if (hooks) {
+          nextRepo.hooks = hooks;
+        }
+        repos.push(nextRepo);
+      }
+    }
+
+    const binding =
+      findLocalRepoBinding(params.config, repoAdd.repoId, repoUrl) ??
+      (repoAdd.repoPath
+        ? ({
+            id: repoAdd.repoId,
+            name: repoAdd.repoName,
+            repoPath: repoAdd.repoPath,
+            source: 'manifest',
+            manifestUrl: repoUrl,
+          } satisfies WorkspaceRepoData)
+        : undefined);
+
+    if (!binding) {
+      throw new Error(
+        `Repo ${repoAdd.repoId} has no local binding and no repoPath was supplied`,
+      );
+    }
+
+    const repoWorktreePath = getWorkspaceWorktreeRepoDir(
+      params.workspaceId,
+      params.worktreeId,
+      repoAdd.repoId,
+    );
+    const worktreeExists = await readFile(
+      join(repoWorktreePath, '.git'),
+      'utf8',
+    )
+      .then((): boolean => true)
+      .catch((): boolean => false);
+    if (worktreeExists) {
+      continue;
+    }
+
+    repoWorktreesToCreate.push({
+      repo: {
+        ...binding,
+        source: 'manifest',
+        manifestUrl: repoUrl,
+      },
+      repoId: repoAdd.repoId,
+      manifestUrl: repoUrl,
+    });
+  }
+
+  return repoWorktreesToCreate;
+}
+
+async function createPreparedRepoWorktrees(params: {
+  workspaceId: string;
+  worktreeId: string;
+  repos: PreparedRepoWorktree[];
+  createdWorktree: boolean;
+  getWindow: () => BrowserWindow | null;
+}): Promise<void> {
+  await settleAll(
+    params.repos.map(async (prepared) => {
+      const repoWorktreePath = getWorkspaceWorktreeRepoDir(
+        params.workspaceId,
+        params.worktreeId,
+        prepared.repoId,
+      );
+      const branchName = await resolveWorkspaceWorktreeBranchName(
+        params.workspaceId,
+        params.worktreeId,
+        prepared.repoId,
+      );
+      await mkdir(dirname(repoWorktreePath), { recursive: true });
+      await createWorktree(
+        prepared.repo.repoPath,
+        repoWorktreePath,
+        branchName,
+      );
+
+      if (!params.createdWorktree) {
+        detachedWorkCallback(() =>
+          startWorkspaceRepoSetupAndDiscovery({
+            workspaceId: params.workspaceId,
+            worktreeId: params.worktreeId,
+            repo: prepared.repo,
+            getWindow: params.getWindow,
+          }),
+        )();
+      }
+    }),
+  );
+}
+
+async function createWorkspaceRepoWorktrees(params: {
+  workspaceId: string;
+  worktreeId: string;
+  branchName: string;
+  repos: WorkspaceRepoData[];
+}): Promise<void> {
+  await settleAll(
+    params.repos.map(async (repo) => {
+      const repoWorktreePath = getWorkspaceWorktreeRepoDir(
+        params.workspaceId,
+        params.worktreeId,
+        repo.id,
+      );
+      await mkdir(dirname(repoWorktreePath), { recursive: true });
+      await createWorktree(repo.repoPath, repoWorktreePath, params.branchName);
+    }),
+  );
+}
+
+function applyRepoRemovalsToManifest(params: {
+  request: WorkspaceApplySourceChangesRequest;
+  manifest: CanopyJsonFile;
+}): string[] {
+  const repoRemovals = new Set(params.request.repoRemovals ?? []);
+  if (repoRemovals.size === 0) {
+    return [];
+  }
+
+  if (params.manifest.repos) {
+    params.manifest.repos = params.manifest.repos.filter(
+      (repo) => !repoRemovals.has(repo.id),
+    );
+  }
+
+  return Array.from(repoRemovals);
+}
+
+async function removeRepoWorktrees(params: {
+  workspaceId: string;
+  worktreeId: string;
+  repoIds: string[];
+}): Promise<void> {
+  for (const repoId of params.repoIds) {
+    await stopHooksForRepoTarget({
+      projectId: params.workspaceId,
+      worktreeId: params.worktreeId,
+      repoId,
+    }).catch(() => {});
+    await deletePrTrackingState({
+      projectId: params.workspaceId,
+      worktreeId: params.worktreeId,
+      repoStorageKey: getWorkspaceRepoStorageKey(repoId),
+    }).catch(() => {});
+
+    const repoWorktreePath = getWorkspaceWorktreeRepoDir(
+      params.workspaceId,
+      params.worktreeId,
+      repoId,
+    );
+    const repoPath = await getRepoRootFromWorktree(repoWorktreePath).catch(
+      (): null => null,
+    );
+    await safeRemoveRepoWorktree(repoPath, repoWorktreePath);
+  }
+}
+
+function syncLocalRepoBindings(params: {
+  config: WorkspaceConfigFile;
+  manifest: CanopyJsonFile;
+  request: NormalizedWorkspaceApplySourceChangesRequest;
+}): {
+  config: WorkspaceConfigFile;
+  updated: boolean;
+} {
+  const manifestRepos = new Map(
+    (params.manifest.repos ?? []).map((repo) => [repo.id, repo]),
+  );
+  const requestedAddsById = new Map(
+    (params.request.repoAdds ?? []).map((repo) => [repo.repoId, repo]),
+  );
+  const requestedRemovals = new Set(params.request.repoRemovals ?? []);
+  const nextRepos: WorkspaceRepoData[] = params.config.repos.map(
+    (repo): WorkspaceRepoData => {
+      if (requestedRemovals.has(repo.id)) {
+        return {
+          ...repo,
+          source: 'local',
+          hooks: undefined,
+        };
+      }
+
+      const manifestRepo = manifestRepos.get(repo.id);
+      if (!manifestRepo) {
+        return repo;
+      }
+
+      return {
+        ...repo,
+        name: manifestRepo.name,
+        source: 'manifest',
+        manifestUrl: manifestRepo.url,
+      };
+    },
+  );
+
+  for (const manifestRepo of Array.from(manifestRepos.values())) {
+    if (nextRepos.some((repo) => repo.id === manifestRepo.id)) {
+      continue;
+    }
+
+    const requestedAdd = requestedAddsById.get(manifestRepo.id);
+    const repoPath = requestedAdd?.repoPath;
+    if (!repoPath) {
+      continue;
+    }
+
+    nextRepos.push({
+      id: manifestRepo.id,
+      name: manifestRepo.name,
+      repoPath,
+      source: 'manifest',
+      manifestUrl: manifestRepo.url,
+    });
+  }
+
+  const updated =
+    JSON.stringify(nextRepos) !== JSON.stringify(params.config.repos);
+
+  return {
+    config: updated
+      ? {
+          ...params.config,
+          repos: nextRepos,
+        }
+      : params.config,
+    updated,
+  };
+}
+
+/**
+ * Binds the workspace's repositories to the applied `canopy.json` in the
+ * background. The decision is reported from the configuration the apply read,
+ * and the binding is applied to the manifest read inside its write queue, so
+ * a repository or setting changed since is kept (CAN-3819). A missing
+ * manifest is not created.
+ */
+function syncLocalRepoBindingsInBackground(params: {
+  workspaceId: string;
+  config: WorkspaceConfigFile;
+  manifest: CanopyJsonFile;
+  request: NormalizedWorkspaceApplySourceChangesRequest;
+}): { config: WorkspaceConfigFile; updated: boolean } {
+  const syncedBindings = syncLocalRepoBindings(params);
+  if (!syncedBindings.updated) {
+    return syncedBindings;
+  }
+
+  trackDetachedWork(() =>
+    updateWorkspaceConfig(
+      params.workspaceId,
+      (config, read): boolean => {
+        if (read.authority === 'absent') return false;
+        const current = syncLocalRepoBindings({ ...params, config });
+        if (!current.updated) return false;
+        config.repos = current.config.repos;
+        return true;
+      },
+      { shouldWrite: (updated): boolean => updated },
+    ).catch((error) => {
+      // eslint-disable-next-line no-console
+      console.error('Failed to sync workspace repo bindings:', error);
+    }),
+  );
+
+  return syncedBindings;
+}
+
+async function rollbackCreatedWorktree(
+  workspaceId: string,
+  context: TargetWorkspaceContext,
+  repos: WorkspaceRepoData[],
+): Promise<void> {
+  for (const repo of repos) {
+    const repoWorktreePath = getWorkspaceWorktreeRepoDir(
+      workspaceId,
+      context.worktreeId,
+      repo.id,
+    );
+    await safeRemoveRepoWorktree(repo.repoPath, repoWorktreePath).catch(
+      (): Promise<void> => Promise.resolve(),
+    );
+  }
+
+  await safeRemoveRepoWorktree(
+    context.referenceRepoPath,
+    getWorkspaceWorktreeRootRepoDir(workspaceId, context.worktreeId),
+  ).catch((): Promise<void> => Promise.resolve());
+  await rm(
+    join(getWorkspaceWorktreesRootDir(workspaceId), context.worktreeId),
+    { recursive: true, force: true },
+  );
+}
+
+async function ensureTargetWorkspaceWorktree(
+  request: WorkspaceApplySourceChangesRequest,
+  referenceRepoPath: string,
+): Promise<TargetWorkspaceContext> {
+  if (request.target.mode === 'existing') {
+    const existingTarget = request.target;
+    const worktrees = await readWorkspaceWorktrees(request.workspaceId);
+    const worktree = worktrees.find(
+      (entry) => entry.id === existingTarget.worktreeId,
+    );
+    if (!worktree) {
+      throw new WorkspaceSourceChangesRefusedError(
+        'not-found',
+        `Project worktree ${existingTarget.worktreeId} was not found`,
+      );
+    }
+
+    return {
+      worktreeId: worktree.id,
+      branchName: worktree.branchName,
+      createdWorktree: false,
+      referenceRepoPath,
+    };
+  }
+
+  const worktrees = await readWorkspaceWorktrees(request.workspaceId);
+  const existingIds = new Set<string>(request.target.existingWorktreeIds);
+  for (const worktree of worktrees) {
+    existingIds.add(worktree.id);
+  }
+  const worktreeId = generateUniqueAnimalName(existingIds);
+  const worktreeRootPath = getWorkspaceWorktreeRootRepoDir(
+    request.workspaceId,
+    worktreeId,
+  );
+
+  await mkdir(dirname(worktreeRootPath), { recursive: true });
+  await mkdir(getWorktreeDataDir(request.workspaceId, worktreeId), {
+    recursive: true,
+  });
+  const branchName = await createWorktree(
+    referenceRepoPath,
+    worktreeRootPath,
+    worktreeId,
+  );
+  const targetContext: TargetWorkspaceContext = {
+    worktreeId,
+    branchName,
+    createdWorktree: true,
+    referenceRepoPath,
+  };
+
+  const repairIssues = await validateWorkspaceRootWorktree(
+    request.workspaceId,
+    worktreeId,
+  );
+  const blockingIssues = repairIssues.filter((issue) => issue.blocking);
+  if (blockingIssues.length > 0) {
+    const repairedIssues = await repairWorkspaceRootWorktree(
+      request.workspaceId,
+      worktreeId,
+      true,
+    );
+    if (repairedIssues.some((issue) => issue.blocking)) {
+      await rollbackCreatedWorktree(request.workspaceId, targetContext, []);
+      throw new Error(repairedIssues.map((issue) => issue.message).join('\n'));
+    }
+  }
+
+  const row: WorktreeData = {
+    id: worktreeId,
+    branchName,
+    createdAt: new Date().toISOString(),
+  };
+  await updateWorkspaceWorktrees(request.workspaceId, (current) => {
+    if (current.some((worktree) => worktree.id === row.id)) {
+      throw new Error(`Project worktree ${row.id} already exists`);
+    }
+    return [...current, row];
+  });
+
+  return targetContext;
+}
+
+export function applyWorkspaceSourceChangesToWorktree(
+  ...args: Parameters<typeof applyAdmittedWorkspaceSourceChanges>
+): Promise<WorkspaceApplySourceChangesResponse> {
+  const [request] = args;
+  // Repository bindings may republish the manifest after the apply.
+  return withStorageAdmission(
+    request.target.mode === 'new'
+      ? [WORKSPACE_MANIFEST_STORAGE, WORKTREE_LIST_STORAGE]
+      : [WORKSPACE_MANIFEST_STORAGE],
+    () => applyAdmittedWorkspaceSourceChanges(...args),
+  );
+}
+
+async function applyAdmittedWorkspaceSourceChanges(
+  request: WorkspaceApplySourceChangesRequest,
+  getWindow: () => BrowserWindow | null,
+  onApplied?: (event: WorkspaceSourceChangesAppliedEvent) => void,
+): Promise<WorkspaceApplySourceChangesResponse> {
+  const config = await readWorkspaceConfig(request.workspaceId);
+  if (!config.sourceRepoPath) {
+    throw new WorkspaceSourceChangesRefusedError(
+      'no-source-repository',
+      'Project does not have a source repository',
+    );
+  }
+
+  const referenceRepoPath = await resolveWorkspaceReferenceRepoPath(
+    config.sourceRepoPath,
+  );
+  const targetContext = await ensureTargetWorkspaceWorktree(
+    request,
+    referenceRepoPath,
+  );
+  await mkdir(
+    getWorktreeDataDir(request.workspaceId, targetContext.worktreeId),
+    {
+      recursive: true,
+    },
+  );
+
+  const targetManifest = await readExistingTargetManifest(
+    request.workspaceId,
+    targetContext.worktreeId,
+  );
+  const normalizedRequest = await normalizeWorkspaceApplySourceChangesRequest({
+    workspaceId: request.workspaceId,
+    config,
+    manifest: targetManifest,
+    request,
+  });
+
+  try {
+    await applyClaudeMdChange(
+      normalizedRequest.workspaceId,
+      targetContext.worktreeId,
+      normalizedRequest.claudeMd,
+    );
+
+    applyWorkspaceScriptChanges(
+      targetManifest,
+      normalizedRequest.workspaceScripts,
+    );
+    applyWorkspaceHookChanges(targetManifest, normalizedRequest.workspaceHooks);
+    applyWorkspacePluginChanges(
+      targetManifest,
+      normalizedRequest.workspacePlugins,
+    );
+    applyWorkspaceManifestStartPage(
+      targetManifest,
+      normalizedRequest.startPage,
+    );
+    mergeRepoScripts(targetManifest, normalizedRequest);
+    mergeRepoHooks(targetManifest, normalizedRequest);
+    const repoIdsToRemove = applyRepoRemovalsToManifest({
+      request: normalizedRequest,
+      manifest: targetManifest,
+    });
+    const repoWorktreesToCreate = await prepareRepoAdds({
+      request: normalizedRequest,
+      workspaceId: normalizedRequest.workspaceId,
+      worktreeId: targetContext.worktreeId,
+      config,
+      manifest: targetManifest,
+    });
+
+    await writeCanopyJson(
+      getWorkspaceWorktreeRootRepoDir(
+        normalizedRequest.workspaceId,
+        targetContext.worktreeId,
+      ),
+      targetManifest,
+    );
+    onApplied?.({
+      clientRequestId: request.clientRequestId,
+      workspaceId: normalizedRequest.workspaceId,
+      worktreeId: targetContext.worktreeId,
+      branchName: targetContext.branchName,
+      createdWorktree: targetContext.createdWorktree,
+    });
+
+    const syncedBindings = syncLocalRepoBindingsInBackground({
+      workspaceId: normalizedRequest.workspaceId,
+      config,
+      manifest: targetManifest,
+      request: normalizedRequest,
+    });
+
+    // Tracked, so it stays admitted after the apply returns.
+    trackDetachedWork(() =>
+      (async (): Promise<void> => {
+        try {
+          await removeRepoWorktrees({
+            workspaceId: normalizedRequest.workspaceId,
+            worktreeId: targetContext.worktreeId,
+            repoIds: repoIdsToRemove,
+          });
+
+          if (targetContext.createdWorktree) {
+            const refreshedConfig = syncedBindings.config;
+            // New worktrees are populated from the post-sync config so newly
+            // added manifest repos and pre-existing workspace repos are created
+            // together with one branch name.
+            await createWorkspaceRepoWorktrees({
+              workspaceId: normalizedRequest.workspaceId,
+              worktreeId: targetContext.worktreeId,
+              branchName: targetContext.branchName,
+              repos: refreshedConfig.repos,
+            });
+            detachedWorkCallback(() =>
+              startWorkspaceWorktreePostCreateSetup({
+                workspaceId: normalizedRequest.workspaceId,
+                worktreeId: targetContext.worktreeId,
+                repos: refreshedConfig.repos,
+                getWindow,
+              }),
+            )();
+            return;
+          }
+
+          await createPreparedRepoWorktrees({
+            workspaceId: normalizedRequest.workspaceId,
+            worktreeId: targetContext.worktreeId,
+            repos: repoWorktreesToCreate,
+            createdWorktree: targetContext.createdWorktree,
+            getWindow,
+          });
+        } catch (backgroundError) {
+          // eslint-disable-next-line no-console
+          console.error(
+            'Failed to finish project source apply background repo work:',
+            backgroundError,
+          );
+        }
+      })(),
+    );
+
+    return {
+      worktreeId: targetContext.worktreeId,
+      branchName: targetContext.branchName,
+      createdWorktree: targetContext.createdWorktree,
+      localRepoBindingsUpdated: syncedBindings.updated,
+      referenceRepoPath,
+    };
+  } catch (error) {
+    if (targetContext.createdWorktree) {
+      await rollbackCreatedWorktree(
+        normalizedRequest.workspaceId,
+        targetContext,
+        [],
+      );
+      await removeWorkspaceWorktrees(
+        normalizedRequest.workspaceId,
+        (worktree) => worktree.id === targetContext.worktreeId,
+      );
+    }
+    throw error instanceof Error ? error : new Error(String(error));
+  }
+}

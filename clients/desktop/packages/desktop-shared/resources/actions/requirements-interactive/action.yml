@@ -1,0 +1,31 @@
+name: Requirements Interactive
+description: Collect requirements from the user interactively.
+log_format_hint: agent
+inputs:
+  model:
+    description: Optional Claude model override.
+    required: false
+outputs:
+  text_response:
+    description: Clarifying questions for the user.
+    value: ${{ steps.questions.outputs.text_response }}
+  transcript_file:
+    description: Clarification transcript file.
+    value: ${{ steps.questions.outputs.transcript_file }}
+runs:
+  using: composite
+  steps:
+    - id: questions
+      uses: builtin/agent-prompt
+      with:
+        model: ${{ inputs.model }}
+        permission_preset: read_only
+        prompt: |
+          Write a short set of clarifying questions that would help lock down requirements
+          before implementation begins. Keep the list concise and action-oriented.
+    - id: confirm_questions
+      uses: builtin/request-input
+      with:
+        title: Review requirements
+        message: Review the generated clarifying questions before proceeding.
+        fields: '[{"key":"decision","label":"Decision","type":"choice","options":["continue","revise"],"required":true}]'

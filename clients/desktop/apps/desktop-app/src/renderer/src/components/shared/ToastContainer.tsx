@@ -1,0 +1,599 @@
+import { copyTextToClipboard } from '@/lib/clipboard';
+import { openAuthenticatedCloudUrl } from '@/lib/openAuthenticatedCloudPage';
+import { toastMessageReplayClass } from '@/lib/replayPrivacy';
+import { canNavigateToWorktreeFromSidebarItems } from '@/lib/worktreeNavigation';
+import { useChatStore } from '@/stores/chatStore';
+import type {
+  Toast,
+  ToastAction,
+  ToastLink,
+  ToastMeta,
+} from '@/stores/githubStore';
+import { toastLifetimeMs, useGitHubStore } from '@/stores/githubStore';
+import { useNavigationStore } from '@/stores/navigationStore';
+import { useProjectsStore } from '@/stores/projectsStore';
+import { POSTHOG_REPLAY_MASK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
+import {
+  Notice,
+  NoticeButton,
+  NotificationDetailsDialog,
+  previewToastMessage,
+  ToastStack,
+  ToastStackActivatableCard,
+  ToastStackDescription,
+  ToastStackTitle,
+  type InAppNotificationPlacement,
+  type NoticeIntent,
+  type ToastStackItem,
+} from '@canopy/ui-shared';
+import { CopyLinkButton } from '@canopy/ui-shared/components';
+import { ExternalIcon } from '@canopy/ui-shared/icons/AppIcons';
+import type { JSX, MouseEvent } from 'react';
+import { useState } from 'react';
+import { createPortal } from 'react-dom';
+import { ProjectIcon } from './ProjectIcon';
+import { useToastWheelSwipe } from './useToastWheelSwipe';
+
+const OPEN_LABEL = 'Open';
+
+/** Glyph size inside a toast action, matching its 13px label. */
+const TOAST_ACTION_GLYPH_PX = 14;
+
+/**
+ * Copy/open actions for a shareable link attached to a toast. Rendered inside
+ * both the compact toast and its detail modal so a "shared" notification always
+ * hands the user the link. Both are the standard toast action button (the
+ * `NoticeButton` recovery actions such as "Allow all sites" use), each with a
+ * leading glyph, so they read as one set of peer actions (CAN-3510). Copy is
+ * the shared `CopyLinkButton` in its `notice` variant, so its copy behavior and
+ * `Copied` confirmation stay in one place. Clicks stop propagation so they
+ * never trigger the toast's own navigate-and-dismiss behavior.
+ */
+function ToastLinkActions({ link }: { link: ToastLink }): JSX.Element {
+  const handleOpen = (e: MouseEvent<HTMLButtonElement>): void => {
+    e.stopPropagation();
+    const openLink = (): void => {
+      void window.api.browser.openLink({ url: link.url });
+    };
+    if (link.signedIn === true) openAuthenticatedCloudUrl(link.url, openLink);
+    else openLink();
+  };
+
+  return (
+    <div className="flex items-center gap-2">
+      <CopyLinkButton
+        url={link.url}
+        variant="notice"
+        dataTestId="toast-copy-link"
+        write={copyTextToClipboard}
+      />
+      <NoticeButton
+        onClick={handleOpen}
+        data-testid="toast-open-link"
+        icon={
+          <ExternalIcon
+            width={TOAST_ACTION_GLYPH_PX}
+            height={TOAST_ACTION_GLYPH_PX}
+          />
+        }
+      >
+        {OPEN_LABEL}
+      </NoticeButton>
+    </div>
+  );
+}
+
+/**
+ * The toast's single recovery action. Clicks stop propagation so the action
+ * never also triggers the toast's navigate-and-dismiss behavior, and the
+ * toast dismisses itself once the action has run.
+ */
+function ToastActionButton({
+  action,
+  onDone,
+}: {
+  action: ToastAction;
+  onDone: () => void;
+}): JSX.Element {
+  return (
+    <NoticeButton
+      data-testid="toast-action"
+      onClick={(e): void => {
+        e.stopPropagation();
+        action.onClick();
+        onDone();
+      }}
+    >
+      {action.label}
+    </NoticeButton>
+  );
+}
+
+function modalTitleColor(type: Toast['type']): string {
+  switch (type) {
+    case 'error':
+      return 'text-red-600 dark:text-red-400';
+    case 'success':
+      return 'text-emerald-600 dark:text-emerald-400';
+    case 'warning':
+      return 'text-amber-600 dark:text-amber-400';
+    default:
+      return 'text-blue-600 dark:text-blue-400';
+  }
+}
+
+function modalTitle(type: Toast['type']): string {
+  switch (type) {
+    case 'error':
+      return 'Error';
+    case 'success':
+      return 'Success';
+    case 'warning':
+      return 'Warning';
+    default:
+      return 'Info';
+  }
+}
+
+function navigateToToastWorktree(
+  projectId: string,
+  worktreeId: string,
+  openChat?: () => void,
+): boolean {
+  if (
+    !canNavigateToWorktreeFromSidebarItems(
+      useProjectsStore.getState().projects,
+      projectId,
+      worktreeId,
+      useProjectsStore.getState().hasHydratedProjects,
+    )
+  ) {
+    return false;
+  }
+
+  // Chat actions already route Work Entries and synthetic chat scopes.
+  // Use that same destination for both the header and the toast body.
+  if (openChat) {
+    openChat();
+    return true;
+  }
+
+  useNavigationStore.getState().navigate('main');
+  useChatStore.getState().selectWorktree(projectId, worktreeId);
+  return true;
+}
+
+function ModalMetaDetails({
+  meta,
+  onNavigate,
+}: {
+  meta: ToastMeta;
+  onNavigate?: () => void;
+}): JSX.Element | null {
+  const hasContent =
+    meta.title || meta.category || meta.workspaceName || meta.worktreeId;
+  if (!hasContent) return null;
+
+  return (
+    <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs fg-secondary">
+      {meta.title && (
+        <span>
+          <span className="fg-secondary/60">Title</span>{' '}
+          <span
+            className="font-semibold fg-primary/80"
+            data-testid="toast-detail-title"
+          >
+            {meta.title}
+          </span>
+        </span>
+      )}
+      {meta.category && (
+        <span>
+          <span className="fg-secondary/60">Category</span>{' '}
+          <span
+            className="font-semibold fg-primary/80"
+            data-testid="toast-detail-category"
+          >
+            {meta.category}
+          </span>
+        </span>
+      )}
+      {meta.workspaceName && (
+        <span>
+          <span className="fg-secondary/60">Project</span>{' '}
+          <span className={`${POSTHOG_REPLAY_MASK_CLASS} fg-primary/80`}>
+            {meta.workspaceName}
+          </span>
+        </span>
+      )}
+      {meta.worktreeId && (
+        <span>
+          <span className="fg-secondary/60">Worktree</span>{' '}
+          {onNavigate ? (
+            <button
+              type="button"
+              onClick={onNavigate}
+              className="font-medium fg-accent underline underline-offset-2 hover:fg-accent/80"
+            >
+              <span className={POSTHOG_REPLAY_MASK_CLASS}>
+                {meta.worktreeId}
+              </span>
+            </button>
+          ) : (
+            <span className={`${POSTHOG_REPLAY_MASK_CLASS} fg-primary/80`}>
+              {meta.worktreeId}
+            </span>
+          )}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function ToastDetailModal({
+  toast,
+  onClose,
+  onActionDone,
+}: {
+  toast: Toast;
+  onClose: () => void;
+  onActionDone: () => void;
+}): JSX.Element {
+  const projects = useProjectsStore((state) => state.projects);
+  const hasHydratedProjects = useProjectsStore(
+    (state) => state.hasHydratedProjects,
+  );
+  const projectId = toast.meta?.projectId;
+  const worktreeId = toast.meta?.worktreeId;
+  const canNavigateToWorktree =
+    projectId !== undefined &&
+    worktreeId !== undefined &&
+    canNavigateToWorktreeFromSidebarItems(
+      projects,
+      projectId,
+      worktreeId,
+      hasHydratedProjects,
+    );
+  const handleNavigate =
+    projectId !== undefined && worktreeId !== undefined && canNavigateToWorktree
+      ? (): void => {
+          if (
+            navigateToToastWorktree(
+              projectId,
+              worktreeId,
+              toast.meta?.chatId ? toast.onClick : undefined,
+            )
+          ) {
+            onClose();
+          }
+        }
+      : undefined;
+
+  return (
+    <NotificationDetailsDialog
+      onClose={onClose}
+      title={
+        <span className={modalTitleColor(toast.type)}>
+          {modalTitle(toast.type)}
+        </span>
+      }
+      titleId="toast-detail-modal-title"
+      // Error, chat, and hook messages can quote output or replies, so their
+      // detail body is blocked; the card around it is recorded.
+      blockFromReplay={
+        toastMessageReplayClass(
+          toast.type,
+          toast.meta?.category,
+          toast.meta?.blockMessageFromReplay,
+        ) !== ''
+      }
+      tone={toast.type}
+      message={toast.message}
+      leading={
+        toast.meta && (
+          <ModalMetaDetails meta={toast.meta} onNavigate={handleNavigate} />
+        )
+      }
+      trailing={
+        <>
+          {toast.meta?.link && (
+            <div className="mt-3 flex flex-col gap-2">
+              <span className="break-all text-xs fg-secondary">
+                {toast.meta.link.url}
+              </span>
+              <ToastLinkActions link={toast.meta.link} />
+            </div>
+          )}
+          {toast.meta?.action && (
+            <div className="mt-3 flex justify-end">
+              <ToastActionButton
+                action={toast.meta.action}
+                onDone={onActionDone}
+              />
+            </div>
+          )}
+        </>
+      }
+    />
+  );
+}
+
+/** The shared notice intent that carries each toast type's glyph and ink. */
+const STACK_TOAST_INTENT: Record<Toast['type'], NoticeIntent> = {
+  error: 'destructive',
+  warning: 'attention',
+  success: 'positive',
+  info: 'neutral',
+};
+
+interface StackedToast extends ToastStackItem {
+  readonly toast: Toast;
+}
+
+// One stack item per store toast, so an unchanged toast keeps its identity
+// across store updates and the stack leaves it alone.
+const stackedToasts = new WeakMap<Toast, StackedToast>();
+
+function stacked(toast: Toast): StackedToast {
+  const cached = stackedToasts.get(toast);
+  if (cached !== undefined) return cached;
+  const item: StackedToast = {
+    id: toast.id,
+    intent: STACK_TOAST_INTENT[toast.type],
+    timeoutMs: toastLifetimeMs(toast),
+    toast,
+  };
+  stackedToasts.set(toast, item);
+  return item;
+}
+
+/**
+ * One toast in the early-access stack: the shared `Notice` on the stack's
+ * floating card. A toast with an `onClick` opens its destination when the
+ * card itself is clicked; its buttons do only their own job.
+ */
+function StackToastCard({
+  toast,
+  onExpand,
+  onDismiss,
+}: {
+  toast: Toast;
+  onExpand: () => void;
+  onDismiss: () => void;
+}): JSX.Element {
+  const projects = useProjectsStore((state) => state.projects);
+  const hasHydratedProjects = useProjectsStore(
+    (state) => state.hasHydratedProjects,
+  );
+  const meta = toast.meta;
+  const projectId = meta?.projectId;
+  const worktreeId = meta?.worktreeId;
+  const hasWorktreeTarget = projectId !== undefined && worktreeId !== undefined;
+  const canNavigateToWorktree =
+    hasWorktreeTarget &&
+    canNavigateToWorktreeFromSidebarItems(
+      projects,
+      projectId,
+      worktreeId,
+      hasHydratedProjects,
+    );
+  const hasDestination =
+    !!toast.onClick && (!hasWorktreeTarget || canNavigateToWorktree);
+  const openDestination = (): void => {
+    if (
+      projectId !== undefined &&
+      worktreeId !== undefined &&
+      !canNavigateToWorktreeFromSidebarItems(
+        useProjectsStore.getState().projects,
+        projectId,
+        worktreeId,
+        useProjectsStore.getState().hasHydratedProjects,
+      )
+    ) {
+      return;
+    }
+    toast.onClick?.();
+    onDismiss();
+  };
+  // An ordinary update from a project wears that project's icon in place of
+  // the neutral info glyph. A failure, warning, or success keeps its own
+  // glyph, whose shape and ink carry the outcome.
+  const project =
+    toast.type === 'info' && projectId !== undefined
+      ? projects.find((entry) => entry.id === projectId)
+      : undefined;
+  // With the icon naming the project, the headline names the worktree. The
+  // project name leads otherwise, then the toast's own title, then its
+  // category. A title the headline displaces opens the message instead, so it
+  // is never lost.
+  const worktreeName =
+    project !== undefined &&
+    project.type !== 'cowork' &&
+    project.worktrees.some((entry) => entry.id === worktreeId)
+      ? worktreeId
+      : undefined;
+  const projectName =
+    meta?.workspaceName === undefined || meta.workspaceName === ''
+      ? undefined
+      : meta.workspaceName;
+  const headline = worktreeName ?? projectName ?? meta?.title ?? meta?.category;
+  const message =
+    meta?.title && headline !== meta.title
+      ? `${meta.title}${/[.:!?…]$/.test(meta.title) ? '' : '.'} ${toast.message}`
+      : toast.message;
+  const preview = previewToastMessage(message);
+  // The text preview can keep a message that still wraps past the three-line
+  // clamp; the clamp reports that, and the card then opens the full message.
+  const [clampOverflow, setClampOverflow] = useState(false);
+  const truncated = preview.truncated || clampOverflow;
+  // The card opens the toast's destination. One with nowhere to go opens its
+  // own message in full when the card had to cut it short.
+  const activate = hasDestination
+    ? openDestination
+    : truncated
+      ? onExpand
+      : undefined;
+  const link = meta?.link;
+  const action = meta?.action;
+  const actions =
+    link === undefined && action === undefined ? undefined : (
+      <>
+        {link !== undefined && <ToastLinkActions link={link} />}
+        {action !== undefined && (
+          <ToastActionButton action={action} onDone={onDismiss} />
+        )}
+      </>
+    );
+
+  return (
+    <ToastStackActivatableCard
+      onActivate={activate}
+      activateLabel={
+        hasDestination ? 'Open notification' : 'Read full notification'
+      }
+      blurFocusBeforeActivate={!hasDestination}
+      toastType={toast.type}
+    >
+      <Notice
+        intent={STACK_TOAST_INTENT[toast.type]}
+        icon={
+          project === undefined ? undefined : (
+            <span data-testid="toast-project-icon" className="inline-flex">
+              <ProjectIcon
+                kind={project.type}
+                color={project.color}
+                temporary={
+                  project.type === 'multi-repo' ? project.temporary : undefined
+                }
+                repoPath={
+                  project.type === 'single-repo' ? project.repoPath : undefined
+                }
+                size="sm"
+              />
+            </span>
+          )
+        }
+        surface="none"
+        shape="toast"
+        titleLayout="stacked"
+        // The stack's region announces additions; a per-notice alert would
+        // nest a second live region inside it.
+        role="none"
+        title={
+          headline === undefined ? undefined : (
+            <ToastStackTitle>
+              <span
+                data-testid="toast-meta-title"
+                // The headline names the worktree or project when it has one.
+                className={
+                  headline !== undefined &&
+                  (headline === worktreeName || headline === projectName)
+                    ? POSTHOG_REPLAY_MASK_CLASS
+                    : undefined
+                }
+              >
+                {headline}
+              </span>
+            </ToastStackTitle>
+          )
+        }
+        actions={actions}
+        // Buttons get their own row under the message, so the close button
+        // stays in the top-right corner of every toast.
+        actionsPlacement="below"
+        onDismiss={onDismiss}
+        dismissTestId="toast-dismiss"
+      >
+        <ToastStackDescription onOverflowChange={setClampOverflow}>
+          {/* A message that names a person, such as an invite, opts out of
+              session replay. */}
+          <span
+            className={`${toastMessageReplayClass(toast.type, meta?.category, meta?.blockMessageFromReplay)} whitespace-pre-wrap break-words`}
+          >
+            {preview.text}
+          </span>
+        </ToastStackDescription>
+      </Notice>
+    </ToastStackActivatableCard>
+  );
+}
+
+/**
+ * The early-access toast stack: the shared `ToastStack` over this window's
+ * toasts. Expiry and swipes hide a toast (it stays in notification history);
+ * Dismiss removes it, as in the original list.
+ */
+function ToastStackHost({
+  placement,
+}: {
+  placement: InAppNotificationPlacement;
+}): JSX.Element {
+  const toasts = useGitHubStore((state) => state.toasts);
+  const dismissToast = useGitHubStore((state) => state.dismissToast);
+  const expireToast = useGitHubStore((state) => state.expireToast);
+  const [expandedToast, setExpandedToast] = useState<Toast | null>(null);
+  // A two-finger trackpad swipe toward the stack's screen edge hides a toast,
+  // as dragging it away does.
+  const swipeHostRef = useToastWheelSwipe(
+    placement.endsWith('left') ? 'left' : 'right',
+    expireToast,
+  );
+
+  return (
+    <>
+      <div
+        ref={swipeHostRef}
+        data-testid="toast-stack-host"
+        // The in-app browser is a native view that paints over the page
+        // whatever the z-index; it steps aside for anything carrying this
+        // attribute. Cards move by transform, which nothing reports, so this
+        // still box around the resting stack speaks for them.
+        data-canopy-browser-native-overlay={
+          toasts.length > 0 ? 'true' : undefined
+        }
+      >
+        <ToastStack
+          data-testid="toast-live-region"
+          placement={placement}
+          toasts={toasts.map(stacked)}
+          onClose={expireToast}
+          renderToast={(item): JSX.Element => (
+            <div data-toast-id={item.toast.id}>
+              <StackToastCard
+                toast={item.toast}
+                onExpand={(): void => setExpandedToast(item.toast)}
+                onDismiss={(): void => dismissToast(item.toast.id)}
+              />
+            </div>
+          )}
+        />
+      </div>
+      {expandedToast &&
+        createPortal(
+          <ToastDetailModal
+            toast={expandedToast}
+            onClose={(): void => setExpandedToast(null)}
+            onActionDone={(): void => {
+              dismissToast(expandedToast.id);
+              setExpandedToast(null);
+            }}
+          />,
+          document.body,
+        )}
+    </>
+  );
+}
+
+export interface ToastContainerProps {
+  /** The corner the surrounding notification container is pinned to. */
+  placement?: InAppNotificationPlacement;
+}
+
+/**
+ * The window's shared notification stack.
+ */
+export function ToastContainer({
+  placement = 'top-right',
+}: ToastContainerProps): JSX.Element {
+  return <ToastStackHost placement={placement} />;
+}

@@ -1,0 +1,740 @@
+import {
+  parseOpenCodeReportedUsage,
+  type OpenCodeReportedUsage,
+} from '@canopy/protocol/portal';
+import {
+  useCallback,
+  useEffect,
+  lazy,
+  Suspense,
+  useRef,
+  useState,
+  type JSX,
+  type ReactNode,
+  type RefObject,
+} from 'react';
+import { createPortal } from 'react-dom';
+import { getDocument } from '../panels/window-registry';
+import { formatCost, formatUsageResetWhen } from '../lib/format-usage';
+import {
+  CircularProgress,
+  type CircularProgressTone,
+} from './CircularProgress';
+import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
+
+import {
+  UsageMeter,
+  formatUsagePercent,
+  USAGE_TOUCH_FLOOR_CLASS,
+} from './usage-indicator-meter';
+export { USAGE_TOUCH_FLOOR_CLASS } from './usage-indicator-meter';
+import {
+  UsageDisclosureChevron,
+  UsageTextAction,
+  USAGE_DISCLOSURE_ROW_CLASS,
+  USAGE_DISCLOSURE_INK_CLASS,
+} from './UsageIndicatorActions';
+export {
+  UsageActionRow,
+  UsageDisclosureChevron,
+  UsageSectionHeader,
+  UsageTextAction,
+  USAGE_DISCLOSURE_ROW_CLASS,
+  USAGE_DISCLOSURE_INK_CLASS,
+} from './UsageIndicatorActions';
+
+const UsagePopover = lazy(() => import('./UsageIndicatorPopover'));
+
+/**
+ * The usage figures the composer meter renders. Cumulative counters are the
+ * chat's running totals; `contextTokens` / `contextWindow` describe the
+ * current context fill. Cost, duration, and cache-write are optional because
+ * not every runtime reports them (Codex, or a cloud harness whose cost is
+ * unavailable); an absent value hides its row rather than showing a zero.
+ */
+export interface UsageIndicatorResponse {
+  title?: string;
+  context?: { usedTokens: number; maxTokens: number };
+  message: string;
+  note: string;
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+    reasoningTokens?: number;
+    estimatedCostUsd?: number;
+  };
+}
+
+/** One reported-usage presentation shared by every OpenCode chat host. */
+export function createOpenCodeUsageResponse(
+  value: OpenCodeReportedUsage | null | undefined,
+): UsageIndicatorResponse {
+  const report = parseOpenCodeReportedUsage(value);
+  return {
+    title: 'Turn usage',
+    message: report?.turn
+      ? 'Latest reported turn. Input excludes cached tokens.'
+      : 'OpenCode has not reported token usage for this turn.',
+    note: 'Account limits and billed charges are unavailable.',
+    usage: report?.turn,
+    context: report?.context,
+  };
+}
+
+const CREDIT_COUNT_FORMAT = new Intl.NumberFormat('en-US', {
+  maximumFractionDigits: 2,
+});
+
+/** A balance counted in credits, not dollars: `62,500`, `12.5`. */
+export function formatCreditCount(credits: number): string {
+  return CREDIT_COUNT_FORMAT.format(credits);
+}
+
+/** A credit balance as a count: `62,500 credits left`, `1 credit left`. */
+export function formatCreditsLeft(credits: number): string {
+  return `${formatCreditCount(credits)} ${
+    credits === 1 ? 'credit' : 'credits'
+  } left`;
+}
+
+export interface UsageIndicatorAccountSummaryProps {
+  providerLabel: string;
+  /** The signed-in account, usually its email; shown under the plan. */
+  account?: string;
+  /** The subscription's full name (`Claude Max 20x`, `ChatGPT Pro`). */
+  plan?: string;
+  status?: string;
+  limits: Array<{
+    id: string;
+    label: string;
+    usedPercent?: number;
+    unlimited?: boolean;
+    resetsAt?: string | number;
+    usedUsd?: number;
+    remainingUsd?: number;
+    totalUsd?: number;
+    /** A balance counted in the provider's credits, not dollars (Codex). */
+    remainingCredits?: number;
+  }>;
+  /**
+   * Fetches the account's usage again. Offered only when the last read
+   * failed; the host refreshes on its own as the popover opens.
+   */
+  onRetry?: () => void;
+  /**
+   * Account settings the popover cannot show, as a labelled action. Omit it
+   * when the host's "See detailed breakdown" already leads to the same place.
+   */
+  onManage?: () => void;
+  /**
+   * The account's one fact for this chat, right of the title: its share
+   * (`65% of turns`), or when a resting account is back. With it the
+   * header takes two lines, the account as the title over the plan, for a
+   * popover that lists several accounts; `onManage` is not shown there, so
+   * the host offers one Manage row for the list.
+   */
+  detail?: string;
+  /**
+   * With `detail`: the provider's mark before the plan, at 12px to match
+   * the plan's 11px line; drawn in the quiet ink.
+   */
+  icon?: ReactNode;
+  /**
+   * With `detail`: folds the limits into a meter beside the plan. The whole
+   * card is the toggle, like the popover's Context and Cost rows. Absent,
+   * every limit shows.
+   */
+  disclosure?: UsageIndicatorAccountDisclosure;
+}
+
+export interface UsageIndicatorAccountDisclosure {
+  readonly expanded: boolean;
+  readonly onToggle: () => void;
+  /**
+   * The limit shown while folded. It leads when open too, so opening only
+   * adds rows below it; the first limit when absent or not in `limits`.
+   */
+  readonly leadLimitId?: string;
+}
+
+type UsageIndicatorAccountLimit =
+  UsageIndicatorAccountSummaryProps['limits'][number];
+
+/** The lead limit first, then the rest in their order. */
+function orderAccountLimits(
+  limits: readonly UsageIndicatorAccountLimit[],
+  leadLimitId: string | undefined,
+): readonly UsageIndicatorAccountLimit[] {
+  const lead = limits.find((limit) => limit.id === leadLimitId) ?? limits[0];
+  if (lead === undefined) return limits;
+  return [lead, ...limits.filter((limit) => limit !== lead)];
+}
+
+/** One limit: its name, reset time and percent over its meter. */
+function AccountLimitRow({
+  limit,
+}: {
+  limit: UsageIndicatorAccountLimit;
+}): JSX.Element {
+  const resetWhen = formatUsageResetWhen(limit.resetsAt);
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-baseline justify-between gap-3 text-xs">
+        <span className="min-w-0 truncate fg-primary">{limit.label}</span>
+        <span className="flex shrink-0 items-baseline gap-2 tabular-nums">
+          {resetWhen && (
+            // Shown as just the time ("In 2 hr 45 min", "Sun 4:38 AM")
+            // so the popover fits 292px; "Resets" stays for screen
+            // readers, which read the whole sentence.
+            <span className="fg-secondary">
+              <span className="sr-only">Resets </span>
+              <span className="inline-block first-letter:uppercase">
+                {resetWhen}
+              </span>
+            </span>
+          )}
+          {(limit.unlimited || limit.usedPercent !== undefined) && (
+            <span className="fg-secondary">
+              {limit.unlimited
+                ? 'Unlimited'
+                : limit.usedPercent !== undefined
+                  ? formatUsagePercent(limit.usedPercent)
+                  : null}
+            </span>
+          )}
+        </span>
+      </div>
+      {!limit.unlimited && limit.usedPercent !== undefined && (
+        <UsageMeter
+          percentage={limit.usedPercent}
+          label={`${limit.label} used`}
+        />
+      )}
+      {limit.remainingCredits !== undefined && (
+        <div className="text-xs tabular-nums fg-secondary">
+          {formatCreditsLeft(limit.remainingCredits)}
+        </div>
+      )}
+      {(limit.usedUsd !== undefined || limit.remainingUsd !== undefined) && (
+        <div className="text-xs tabular-nums fg-secondary">
+          {limit.usedUsd !== undefined && `Spent ${formatCost(limit.usedUsd)}`}
+          {limit.usedUsd !== undefined &&
+            limit.remainingUsd !== undefined &&
+            ' · '}
+          {limit.remainingUsd !== undefined &&
+            `${formatCost(limit.remainingUsd)}${
+              limit.totalUsd !== undefined
+                ? ` of ${formatCost(limit.totalUsd)}`
+                : ''
+            } left`}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * A listed account's two lines: the account as the title with, folded, its
+ * lead meter and the chevron at the right; then the provider mark and plan
+ * with the account's one fact at the right, in the quieter ink.
+ */
+function AccountCardHeader({
+  icon,
+  plan,
+  account,
+  detail,
+  quiet,
+  mini,
+  open,
+}: {
+  icon: ReactNode;
+  plan: string;
+  account: string | undefined;
+  detail: string;
+  /** The ink of the quieter text: brightening with the card's hover. */
+  quiet: string;
+  mini?: ReactNode;
+  /** Whether the card is open; absent, the card does not fold. */
+  open?: boolean;
+}): JSX.Element {
+  return (
+    <>
+      <span className="flex items-center gap-3">
+        <span
+          data-testid="usage-indicator-account-label"
+          className="min-w-0 flex-1 truncate fg-primary"
+        >
+          {account ? (
+            // Session replay blocks the account; its tooltip sits on the
+            // blocked element, which records no attributes.
+            <span className={REPLAY_BLOCK_CLASS} title={account}>
+              {account}
+            </span>
+          ) : (
+            plan
+          )}
+        </span>
+        {(mini || open !== undefined) && (
+          // The lead meter and the chevron, as the Context row's value and
+          // chevron; 8px apart, as the chevron's glyph sits inset in its box.
+          <span className={`flex shrink-0 items-center gap-2 ${quiet}`}>
+            {mini}
+            {open !== undefined && <UsageDisclosureChevron open={open} />}
+          </span>
+        )}
+      </span>
+      {/* One step down the type scale from the title, in the quieter ink. */}
+      <span className="flex items-center justify-between gap-3 text-2xs">
+        <span className="flex min-w-0 items-center gap-1.5">
+          {icon && (
+            <span aria-hidden="true" className="flex shrink-0 fg-tertiary">
+              {icon}
+            </span>
+          )}
+          <span
+            data-testid="usage-indicator-plan"
+            className={`min-w-0 truncate ${quiet}`}
+          >
+            {account ? plan : null}
+          </span>
+        </span>
+        <span
+          data-testid="usage-indicator-account-detail"
+          className={`shrink-0 whitespace-nowrap ${quiet}`}
+        >
+          {detail}
+        </span>
+      </span>
+    </>
+  );
+}
+
+/**
+ * Plan usage limits for the chat's provider account, kept separate from the
+ * current chat's context. One meter per limit, each with its own reset time,
+ * so the rows scan as a column of bars.
+ */
+export function UsageIndicatorAccountSummary({
+  providerLabel,
+  account,
+  plan,
+  status,
+  limits,
+  onRetry,
+  onManage,
+  detail,
+  disclosure,
+  icon,
+}: UsageIndicatorAccountSummaryProps): JSX.Element {
+  const card = detail !== undefined;
+  const folds = card ? disclosure : undefined;
+  const ordered = folds
+    ? orderAccountLimits(limits, folds.leadLimitId)
+    : limits;
+  const lead = ordered[0];
+  // Folded, the lead limit's meter sits beside the plan; a limit with no
+  // meter (unlimited, credits) stays a row instead. Opening shows every
+  // limit at once, as the Context and Cost rows open.
+  const meterFolds =
+    folds !== undefined &&
+    lead !== undefined &&
+    !lead.unlimited &&
+    lead.usedPercent !== undefined;
+  const shownLimits = folds
+    ? folds.expanded
+      ? ordered
+      : ordered.slice(0, meterFolds ? 0 : 1)
+    : limits;
+  const mini =
+    meterFolds && lead?.usedPercent !== undefined ? (
+      // The lead meter at the header's size; hidden (and out of the
+      // accessibility tree) while the full rows show, so the header keeps
+      // its layout.
+      <div
+        data-testid="usage-indicator-account-mini"
+        className={`w-20 shrink-0 ${folds.expanded ? 'invisible' : ''}`}
+      >
+        <UsageMeter
+          percentage={lead.usedPercent}
+          label={`${lead.label} used`}
+        />
+      </div>
+    ) : undefined;
+  const statusLine = status && (
+    <p role="status" className="text-xs fg-secondary">
+      {status}{' '}
+      {onRetry && (
+        <button
+          type="button"
+          onClick={onRetry}
+          data-testid="usage-indicator-retry"
+          className={`focus-ring rounded-sm fg-primary transition-colors hover:fg-secondary ${USAGE_TOUCH_FLOOR_CLASS}`}
+        >
+          Try again
+        </button>
+      )}
+    </p>
+  );
+  const limitRows = shownLimits.map((limit) => (
+    <AccountLimitRow key={limit.id} limit={limit} />
+  ));
+
+  if (card) {
+    const quiet = folds ? USAGE_DISCLOSURE_INK_CLASS : 'fg-secondary';
+    const header = (
+      <AccountCardHeader
+        icon={icon}
+        plan={plan ?? providerLabel}
+        account={account}
+        detail={detail}
+        quiet={quiet}
+        mini={mini}
+        {...(folds ? { open: folds.expanded } : {})}
+      />
+    );
+    return (
+      // An inset card on the depth surface: 4px in from the popover's edge,
+      // so its 8px corners nest in the popover's 12px ones, and 8px inside,
+      // so its text lines up with the popover's other rows. Top and bottom
+      // are 8px and 12px: the title's 18px line puts 4px of leading above
+      // its letters, so the drawn text sits 12px from the top as it does
+      // from the bottom.
+      <section
+        data-testid="usage-indicator-account"
+        aria-label={`${providerLabel} usage limits`}
+        className="relative -mx-2 flex flex-col gap-2 rounded-md bg-depth px-2 pb-3 pt-2"
+      >
+        {folds ? (
+          <button
+            type="button"
+            onClick={folds.onToggle}
+            aria-expanded={folds.expanded}
+            data-testid="usage-indicator-account-toggle"
+            // As the Context row: the whole card takes the click (its
+            // `after:` overlay), and its quieter ink and chevron brighten.
+            className={`${USAGE_DISCLOSURE_ROW_CLASS} flex-col gap-1.5 after:absolute after:inset-0 after:rounded-md after:content-['']`}
+          >
+            {header}
+          </button>
+        ) : (
+          <div className="flex flex-col gap-1.5 text-xs">{header}</div>
+        )}
+        {statusLine}
+        {limitRows}
+      </section>
+    );
+  }
+
+  return (
+    <section
+      data-testid="usage-indicator-account"
+      aria-label={`${providerLabel} usage limits`}
+      className="flex flex-col gap-3"
+    >
+      {/* Which subscription the limits below belong to, and whose: the
+          plan, then the account in brackets after it, with Manage across
+          from them like each limit's reset time. A long account truncates. */}
+      <div className="flex items-baseline justify-between gap-3 text-xs">
+        <span className="flex min-w-0 items-baseline gap-1">
+          <span
+            data-testid="usage-indicator-plan"
+            className="shrink-0 fg-primary"
+          >
+            {plan ?? providerLabel}
+          </span>
+          {account && (
+            // Session replay blocks the account; its tooltip sits on the
+            // blocked element, which records no attributes.
+            <span
+              data-testid="usage-indicator-account-label"
+              className="min-w-0 truncate fg-secondary"
+            >
+              (
+              <span className={REPLAY_BLOCK_CLASS} title={account}>
+                {account}
+              </span>
+              )
+            </span>
+          )}
+        </span>
+        {onManage && (
+          <UsageTextAction
+            label="Manage"
+            onClick={onManage}
+            ariaLabel={`Manage ${providerLabel}`}
+          />
+        )}
+      </div>
+      {statusLine}
+      {limitRows}
+    </section>
+  );
+}
+
+export interface UsageIndicatorUsage {
+  /** Current context window fill. */
+  contextTokens: number;
+  /** Model context window; 0 when unknown (hides the meter). */
+  contextWindow: number;
+  /** Cumulative session cost in USD. */
+  totalCostUsd?: number;
+  /** Cumulative input tokens. */
+  inputTokens: number;
+  /** Cumulative output tokens. */
+  outputTokens: number;
+  /** Cumulative cache read input tokens. */
+  cacheReadInputTokens: number;
+  /** Cumulative cache creation (write) input tokens. */
+  cacheCreationInputTokens?: number;
+  /** Total duration in milliseconds. */
+  durationMs?: number;
+  /** Number of turns completed. */
+  numTurns: number;
+  /** Model name string from the last assistant message. */
+  model: string;
+}
+
+/**
+ * Fallback when neither a usage nor a model with a configured context window
+ * is known. The popover still opens so the meter never reads as broken; the
+ * Context row is simply omitted (a window of 0 is not a window).
+ */
+const UNKNOWN_USAGE: UsageIndicatorUsage = {
+  contextTokens: 0,
+  contextWindow: 0,
+  totalCostUsd: 0,
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheReadInputTokens: 0,
+  cacheCreationInputTokens: 0,
+  durationMs: 0,
+  numTurns: 0,
+  model: '',
+};
+
+// ---------------------------------------------------------------------------
+// Color thresholds
+// ---------------------------------------------------------------------------
+
+/**
+ * Realm-neutral node check: the popover may live in an auxiliary window whose
+ * nodes are not instances of this realm's `Node`, so `instanceof` would treat
+ * a click inside the popover as an outside click.
+ */
+function isDomNode(value: unknown): value is Node {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'nodeType' in value &&
+    typeof value.nodeType === 'number'
+  );
+}
+
+/** The ring warns as the context nears its limit, like the meter bar. */
+export function getUsageRingTone(percentage: number): CircularProgressTone {
+  if (percentage >= 90) return 'destructive';
+  if (percentage >= 70) return 'warning';
+  return 'neutral';
+}
+
+/**
+ * What fills the context window, by category (the provider's /context
+ * breakdown). Mirrors the host's contract; the component only draws it.
+ */
+export interface UsageIndicatorContextBreakdown {
+  categories: Array<{
+    name: string;
+    tokens: number;
+    /** `deferred` rows sit outside the window and take no share of it. */
+    kind: 'used' | 'free' | 'buffer' | 'deferred';
+  }>;
+  /** The window the categories are measured against. */
+  maxTokens: number;
+}
+
+// ---------------------------------------------------------------------------
+// UsageIndicator — main export
+// ---------------------------------------------------------------------------
+
+export interface UsageIndicatorProps {
+  /** Mounted only while the popup is open; hosts own account subscriptions. */
+  accountUsage?: ReactNode;
+  responseUsage?: UsageIndicatorResponse;
+  usage: UsageIndicatorUsage | undefined;
+  isCodex: boolean;
+  modelLabel?: string;
+  /** Opens the host's full usage view from the popover's footer link. */
+  onSeeDetails?: () => void;
+  /**
+   * What fills the context window, by category. With it the meter splits
+   * into its categories and the expanded view lists them; without it the
+   * expanded view shows the session's cost and token counts.
+   */
+  contextBreakdown?: UsageIndicatorContextBreakdown;
+  /**
+   * The chat's cost row, previewed under Context. A host with a cost read
+   * path passes it (`UsageCostPreviewRow` from `components/cost`); it replaces
+   * the session Cost figure. The popover imports no cost code itself.
+   */
+  readonly costPreview?: ReactNode;
+  /** Called as the popover opens and closes (hosts fetch fresh data on open). */
+  onOpenChange?: (open: boolean) => void;
+  /**
+   * The 32px round trigger of the composer's capsule controls (model,
+   * effort), so the meter's hover shape matches theirs.
+   */
+  capsule?: boolean;
+  /**
+   * Host-resolved usage for a chat whose session has not produced a turn yet
+   * (every counter at zero, sized to the model's configured context window),
+   * so the meter stays alive instead of rendering a dead ring. Ignored once
+   * `usage` is known.
+   */
+  seedUsage?: UsageIndicatorUsage;
+  /** Lines the popover's right edge up with this element (the composer box). */
+  alignRef?: RefObject<HTMLElement | null>;
+}
+
+export function UsageIndicator({
+  usage: reportedUsage,
+  isCodex,
+  seedUsage,
+  modelLabel,
+  responseUsage,
+  accountUsage,
+  onSeeDetails,
+  contextBreakdown,
+  costPreview,
+  onOpenChange,
+  capsule = false,
+  alignRef,
+}: UsageIndicatorProps): JSX.Element {
+  // A tab with no usage yet still gets a usable meter: the host's seed when
+  // one is known, otherwise an all-zero placeholder so the popover can at
+  // least say why it is empty (CAN-2799). The seed is synthetic, so the
+  // popover shows its zero but never its window as the runtime's figure —
+  // Codex only reports context through `token_usage_updated`.
+  const usage = reportedUsage ?? seedUsage ?? UNKNOWN_USAGE;
+  const [open, setOpen] = useState(false);
+  const onOpenChangeRef = useRef(onOpenChange);
+  onOpenChangeRef.current = onOpenChange;
+  useEffect(() => {
+    onOpenChangeRef.current?.(open);
+  }, [open]);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
+
+  // Opens on click only: hovering past the meter on the way to the send
+  // button should not throw a popover over the composer.
+  const handleClick = useCallback((): void => {
+    setOpen((previous) => !previous);
+  }, []);
+
+  // Escape closes the popover from anywhere and hands focus back to the ring.
+  useEffect(() => {
+    if (!open) return undefined;
+    const handler = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      e.stopPropagation();
+      setOpen(false);
+      triggerRef.current?.focus();
+    };
+    const doc = getDocument(containerRef.current);
+    doc.addEventListener('keydown', handler, true);
+    return (): void => doc.removeEventListener('keydown', handler, true);
+  }, [open]);
+
+  // Close on an outside click.
+  useEffect(() => {
+    if (!open) return undefined;
+    const handler = (e: MouseEvent): void => {
+      const target = isDomNode(e.target) ? e.target : null;
+      const insideTrigger =
+        target !== null &&
+        containerRef.current !== null &&
+        containerRef.current.contains(target);
+      const insidePopover =
+        target !== null &&
+        popoverRef.current !== null &&
+        popoverRef.current.contains(target);
+      if (!insideTrigger && !insidePopover) {
+        setOpen(false);
+      }
+    };
+    const doc = getDocument(containerRef.current);
+    doc.addEventListener('mousedown', handler);
+    return (): void => doc.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  // Nothing counted yet and no split to show: the popover draws the row at
+  // zero instead (see `showEmptyContext`).
+  const showContextWindow =
+    !responseUsage &&
+    usage.contextWindow > 0 &&
+    (usage.contextTokens > 0 || contextBreakdown !== undefined);
+  const percentage = showContextWindow
+    ? Math.min((usage.contextTokens / usage.contextWindow) * 100, 100)
+    : 0;
+
+  const ringTone = getUsageRingTone(percentage);
+
+  return (
+    <div ref={containerRef} className="relative">
+      <button
+        type="button"
+        ref={triggerRef}
+        onClick={handleClick}
+        className={`focus-ring flex items-center text-2xs fg-secondary transition hover:bg-subtle hover:fg-primary ${
+          capsule
+            ? responseUsage
+              ? 'h-8 min-w-8 justify-center gap-1 rounded-full px-2.5 pointer-coarse:min-h-11 pointer-coarse:min-w-11'
+              : 'h-8 w-8 justify-center rounded-full pointer-coarse:min-h-11 pointer-coarse:min-w-11'
+            : 'gap-1 rounded-md px-1.5 py-0.5'
+        }`}
+        aria-label="Usage indicator"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        data-testid="usage-indicator"
+      >
+        {responseUsage ? (
+          'Usage'
+        ) : (
+          <CircularProgress percentage={percentage} tone={ringTone} />
+        )}
+      </button>
+
+      {open &&
+        createPortal(
+          <Suspense fallback={null}>
+            <UsagePopover
+              usage={usage}
+              modelLabel={modelLabel ?? usage.model}
+              percentage={percentage}
+              isCodex={isCodex}
+              showContextWindow={showContextWindow}
+              responseUsage={responseUsage}
+              accountUsage={accountUsage}
+              contextBreakdown={contextBreakdown}
+              costPreview={costPreview}
+              onSeeDetails={
+                onSeeDetails
+                  ? (): void => {
+                      setOpen(false);
+                      onSeeDetails();
+                    }
+                  : undefined
+              }
+              anchorRef={containerRef}
+              {...(alignRef ? { alignRef } : {})}
+              popoverRef={popoverRef}
+            />
+          </Suspense>,
+          getDocument(containerRef.current).body,
+        )}
+    </div>
+  );
+}

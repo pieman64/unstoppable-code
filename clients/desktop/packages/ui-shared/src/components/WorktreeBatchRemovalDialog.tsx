@@ -1,0 +1,542 @@
+'use client';
+
+import { useRef, type JSX, type ReactNode, type RefObject } from 'react';
+import { CheckIcon, CloseIcon, InfoIcon, WarningIcon } from '../icons/AppIcons';
+import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
+import { Button } from './Button';
+import { DialogModal } from './DialogModal';
+import { LoadingSpinner } from './LoadingSpinner';
+import { RichHoverTooltip } from './RichHoverTooltip';
+import { worktreeCountLabel } from './worktree-count-label';
+
+export type WorktreeBatchRemovalDialogMode = 'archive' | 'delete';
+
+export type WorktreeBatchRemovalDialogPhase = 'confirm' | 'running' | 'results';
+
+export type WorktreeBatchRemovalDialogRowStatus =
+  | 'pending'
+  | 'running'
+  | 'done'
+  | 'failed'
+  | 'skipped';
+
+/** Local work a row's removal takes with it, as the host reports it. */
+export interface WorktreeBatchRemovalDialogLocalWork {
+  readonly insertions?: number;
+  readonly deletions?: number;
+  readonly uncommitted?: boolean;
+  readonly unpushed?: boolean;
+}
+
+export interface WorktreeBatchRemovalDialogRow {
+  readonly key: string;
+  readonly projectName: string;
+  readonly label: string;
+  readonly branchName?: string;
+  readonly localWork?: WorktreeBatchRemovalDialogLocalWork;
+  /** Running and results phases. */
+  readonly status?: WorktreeBatchRemovalDialogRowStatus;
+  /** Why the row failed or was skipped. */
+  readonly reason?: string;
+}
+
+/** A selected row that can't be removed right now, with why. */
+export interface WorktreeBatchRemovalDialogExcludedRow {
+  readonly key: string;
+  readonly projectName: string;
+  readonly label: string;
+  readonly branchName?: string;
+  readonly reason: string;
+}
+
+export interface WorktreeBatchRemovalDialogProps {
+  readonly mode: WorktreeBatchRemovalDialogMode;
+  readonly phase: WorktreeBatchRemovalDialogPhase;
+  /** The rows the batch removes, in the order it runs them. */
+  readonly rows: readonly WorktreeBatchRemovalDialogRow[];
+  /** Listed under Not included; they don't count toward the title. */
+  readonly excluded: readonly WorktreeBatchRemovalDialogExcludedRow[];
+  /** One-line retention outcome for the included rows. */
+  readonly retentionSummary: string;
+  readonly retentionDetail: string;
+  /**
+   * The host's warning when included rows have local work, or its own
+   * wording for what the removal does with saved changes.
+   */
+  readonly warning?: string;
+  /**
+   * Preserve local / Delete local, applied to every included row. Without
+   * it the confirm offers one `Archive N worktrees` / `Delete N worktrees`.
+   */
+  readonly branchChoice: boolean;
+  readonly stopRequested?: boolean;
+  readonly testId?: string;
+  readonly onCancel: () => void;
+  /** `deleteBranch` is set only where `branchChoice` is offered. */
+  readonly onConfirm: (deleteBranch?: boolean) => void;
+  readonly onStop: () => void;
+  /** Closes the results phase. */
+  readonly onDone: () => void;
+}
+
+function hasLocalWork(
+  localWork: WorktreeBatchRemovalDialogLocalWork | undefined,
+): boolean {
+  if (localWork === undefined) return false;
+  return (
+    (localWork.insertions ?? 0) + (localWork.deletions ?? 0) > 0 ||
+    localWork.uncommitted === true ||
+    localWork.unpushed === true
+  );
+}
+
+function LocalWorkBadge({
+  localWork,
+}: {
+  localWork: WorktreeBatchRemovalDialogLocalWork;
+}): JSX.Element | null {
+  const insertions = localWork.insertions ?? 0;
+  const deletions = localWork.deletions ?? 0;
+  if (insertions + deletions > 0) {
+    return (
+      <span className="shrink-0 text-xs font-medium tabular-nums">
+        <span className="fg-success">+{insertions}</span>{' '}
+        <span className="fg-destructive">−{deletions}</span>
+      </span>
+    );
+  }
+  const label =
+    localWork.uncommitted === true
+      ? 'Uncommitted changes'
+      : localWork.unpushed === true
+        ? 'Unpushed commits'
+        : null;
+  return label === null ? null : (
+    <span className="shrink-0 text-xs fg-warning">{label}</span>
+  );
+}
+
+function StatusMark({
+  status,
+}: {
+  status: WorktreeBatchRemovalDialogRowStatus | undefined;
+}): JSX.Element | null {
+  switch (status) {
+    case undefined:
+      return null;
+    case 'pending':
+      return (
+        <span
+          aria-label="Waiting"
+          role="img"
+          className="h-1.5 w-1.5 rounded-full bg-fg-quaternary/50"
+        />
+      );
+    case 'running':
+      return <LoadingSpinner sizePx={14} />;
+    case 'done':
+      return <CheckIcon size={14} aria-label="Done" className="fg-success" />;
+    case 'failed':
+      return (
+        <CloseIcon size={14} aria-label="Failed" className="fg-destructive" />
+      );
+    case 'skipped':
+      return (
+        <WarningIcon size={14} aria-label="Skipped" className="fg-warning" />
+      );
+  }
+}
+
+function RowIdentity({
+  projectName,
+  label,
+  branchName,
+  trailing,
+  reason,
+}: {
+  projectName: string;
+  label: string;
+  branchName?: string;
+  trailing?: ReactNode;
+  reason?: string;
+}): JSX.Element {
+  return (
+    <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-w-0 items-center gap-2">
+        <span className={`${REPLAY_MASK_CLASS} min-w-0 truncate fg-primary`}>
+          {label}
+        </span>
+        {trailing}
+      </div>
+      <span className="min-w-0 truncate text-xs fg-tertiary">
+        <span className={REPLAY_MASK_CLASS}>{projectName}</span>
+        {branchName !== undefined && branchName !== label && (
+          <>
+            {' · '}
+            <span className={REPLAY_MASK_CLASS}>{branchName}</span>
+          </>
+        )}
+      </span>
+      {reason !== undefined && (
+        <span className="min-w-0 text-xs fg-secondary">{reason}</span>
+      )}
+    </div>
+  );
+}
+
+function resultSummary(
+  mode: WorktreeBatchRemovalDialogMode,
+  rows: readonly WorktreeBatchRemovalDialogRow[],
+): string {
+  const count = (status: WorktreeBatchRemovalDialogRowStatus): number =>
+    rows.filter((row) => row.status === status).length;
+  const parts = [
+    `${count('done')} ${mode === 'archive' ? 'archived' : 'deleted'}`,
+  ];
+  if (count('failed') > 0) parts.push(`${count('failed')} failed`);
+  if (count('skipped') > 0) parts.push(`${count('skipped')} skipped`);
+  if (count('pending') > 0) parts.push(`${count('pending')} not started`);
+  return parts.join(', ');
+}
+
+interface ConfirmSummaryProps {
+  readonly mode: WorktreeBatchRemovalDialogMode;
+  readonly nothingRemovable: boolean;
+  readonly warning?: string;
+  readonly retentionSummary: string;
+  readonly retentionDetail: string;
+  readonly branchChoice: boolean;
+  readonly testId: string;
+}
+
+/** What the removal does: the warning, retention, and branch choice. */
+function ConfirmSummary({
+  mode,
+  nothingRemovable,
+  warning,
+  retentionSummary,
+  retentionDetail,
+  branchChoice,
+  testId,
+}: ConfirmSummaryProps): JSX.Element {
+  return (
+    <div className="flex flex-col gap-1 text-s">
+      {nothingRemovable ? (
+        <p className="fg-secondary" data-testid={`${testId}-nothing-removable`}>
+          None of the selected worktrees can be{' '}
+          {mode === 'archive' ? 'archived' : 'deleted'} right now.
+        </p>
+      ) : (
+        <>
+          {warning !== undefined && (
+            <p className="fg-primary" data-testid={`${testId}-warning`}>
+              {warning}
+            </p>
+          )}
+          <p className="fg-secondary" data-testid={`${testId}-summary`}>
+            {retentionSummary}
+            <RichHoverTooltip
+              content={
+                <span className="block text-xs leading-snug fg-primary">
+                  {retentionDetail}
+                </span>
+              }
+              surfaceClassName="w-72"
+              triggerWrapperClassName="ml-1 align-middle"
+            >
+              <button
+                type="button"
+                aria-label="About restoring these worktrees"
+                className="focus-ring inline-flex rounded-full fg-tertiary hover:fg-primary"
+              >
+                <InfoIcon size={14} aria-hidden="true" />
+              </button>
+            </RichHoverTooltip>
+          </p>
+          {branchChoice && (
+            <p className="fg-tertiary">
+              Choose whether to keep the local Git branch. Delete local deletes
+              it for every worktree listed.
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function ExcludedRows({
+  excluded,
+  testId,
+}: {
+  excluded: readonly WorktreeBatchRemovalDialogExcludedRow[];
+  testId: string;
+}): JSX.Element {
+  return (
+    <section
+      className="flex flex-col gap-2 text-s"
+      aria-labelledby={`${testId}-excluded-heading`}
+      data-testid={`${testId}-excluded`}
+    >
+      <h3
+        id={`${testId}-excluded-heading`}
+        className="text-xs font-medium fg-tertiary"
+      >
+        Not included ({excluded.length})
+      </h3>
+      <ul className="flex max-h-40 flex-col gap-2 overflow-y-auto">
+        {excluded.map((row) => (
+          <li
+            key={row.key}
+            className="flex min-w-0 items-start gap-2"
+            data-testid={`${testId}-excluded-row`}
+            data-row-key={row.key}
+          >
+            <RowIdentity
+              projectName={row.projectName}
+              label={row.label}
+              branchName={row.branchName}
+              reason={row.reason}
+            />
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+interface ConfirmActionsProps {
+  readonly mode: WorktreeBatchRemovalDialogMode;
+  readonly count: number;
+  readonly branchChoice: boolean;
+  readonly cancelRef: RefObject<HTMLButtonElement | null>;
+  readonly testId: string;
+  readonly onCancel: () => void;
+  readonly onConfirm: (deleteBranch?: boolean) => void;
+}
+
+/** Cancel, then Preserve local / Delete local or one Archive/Delete N. */
+function ConfirmActions({
+  mode,
+  count,
+  branchChoice,
+  cancelRef,
+  testId,
+  onCancel,
+  onConfirm,
+}: ConfirmActionsProps): JSX.Element {
+  const verb = mode === 'archive' ? 'Archive' : 'Delete';
+  const nothingRemovable = count === 0;
+  return (
+    <>
+      <Button
+        ref={cancelRef}
+        variant="ghost"
+        size="lg"
+        onClick={onCancel}
+        data-testid={`${testId}-cancel`}
+      >
+        Cancel
+      </Button>
+      {branchChoice ? (
+        <>
+          <Button
+            variant="outline"
+            size="lg"
+            className="ml-auto"
+            disabled={nothingRemovable}
+            onClick={(): void => onConfirm(false)}
+            data-testid={`${testId}-preserve-branch`}
+          >
+            Preserve local
+          </Button>
+          <Button
+            variant="destructive"
+            size="lg"
+            disabled={nothingRemovable}
+            onClick={(): void => onConfirm(true)}
+            data-testid={`${testId}-delete-branch`}
+          >
+            Delete local
+          </Button>
+        </>
+      ) : (
+        <Button
+          variant={mode === 'delete' ? 'destructive' : 'primary'}
+          size="lg"
+          className="ml-auto"
+          disabled={nothingRemovable}
+          onClick={(): void => onConfirm()}
+          data-testid={`${testId}-confirm`}
+        >
+          {nothingRemovable ? verb : `${verb} ${worktreeCountLabel(count)}`}
+        </Button>
+      )}
+    </>
+  );
+}
+
+/**
+ * Bulk worktree removal (CAN-3975): one confirm for the selection, then the
+ * batch's progress, then what happened to each row. Pure display; the host
+ * runs the batch and feeds each row's status back.
+ */
+export function WorktreeBatchRemovalDialog({
+  mode,
+  phase,
+  rows,
+  excluded,
+  retentionSummary,
+  retentionDetail,
+  warning,
+  branchChoice,
+  stopRequested = false,
+  testId = 'worktree-batch-removal-dialog',
+  onCancel,
+  onConfirm,
+  onStop,
+  onDone,
+}: WorktreeBatchRemovalDialogProps): JSX.Element {
+  const cancelRef = useRef<HTMLButtonElement | null>(null);
+  const titleId = `${testId}-title`;
+  const verb = mode === 'archive' ? 'Archive' : 'Delete';
+  const count = rows.length;
+  const nothingRemovable = count === 0;
+  // Rows with local work lead in the confirm, so the warning names what the
+  // user sees first. Running and results keep the batch's own order.
+  const orderedRows =
+    phase === 'confirm'
+      ? [
+          ...rows.filter((row) => hasLocalWork(row.localWork)),
+          ...rows.filter((row) => !hasLocalWork(row.localWork)),
+        ]
+      : rows;
+  const title =
+    phase === 'confirm'
+      ? nothingRemovable
+        ? `${verb} worktrees?`
+        : `${verb} ${worktreeCountLabel(count)}?`
+      : phase === 'running'
+        ? `${mode === 'archive' ? 'Archiving' : 'Deleting'} ${worktreeCountLabel(count)}…`
+        : resultSummary(mode, rows);
+  const close =
+    phase === 'running'
+      ? (): void => undefined
+      : phase === 'results'
+        ? onDone
+        : onCancel;
+  return (
+    // The dialog portals to <body>, but React still bubbles its clicks to the
+    // rail that opened it; stop them here so they never reach a row.
+    <div className="contents" onClick={(event) => event.stopPropagation()}>
+      <DialogModal
+        title={title}
+        titleId={titleId}
+        maxWidth="md"
+        headerBorder={false}
+        headerSpacing="tight"
+        showCloseButton={false}
+        scrollableBody={false}
+        trapFocus
+        initialFocusRef={phase === 'confirm' ? cancelRef : undefined}
+        closeOnBackdrop={phase !== 'running'}
+        closeOnEscape={phase !== 'running'}
+        dataTestId={testId}
+        onClose={close}
+      >
+        <div className="flex flex-col gap-4 px-5 pb-5 pt-1" data-phase={phase}>
+          {phase === 'confirm' && (
+            <ConfirmSummary
+              mode={mode}
+              nothingRemovable={nothingRemovable}
+              warning={warning}
+              retentionSummary={retentionSummary}
+              retentionDetail={retentionDetail}
+              branchChoice={branchChoice}
+              testId={testId}
+            />
+          )}
+          {count > 0 && (
+            <ul
+              className="flex max-h-64 flex-col gap-2 overflow-y-auto text-s"
+              aria-label={
+                phase === 'confirm' ? `Worktrees to ${mode}` : 'Progress'
+              }
+              data-testid={`${testId}-rows`}
+            >
+              {orderedRows.map((row) => (
+                <li
+                  key={row.key}
+                  className="flex min-w-0 items-start gap-2"
+                  data-testid={`${testId}-row`}
+                  data-row-key={row.key}
+                  data-status={row.status}
+                >
+                  {row.status !== undefined && (
+                    <span className="inline-flex h-5 w-4 shrink-0 items-center justify-center">
+                      <StatusMark status={row.status} />
+                    </span>
+                  )}
+                  <RowIdentity
+                    projectName={row.projectName}
+                    label={row.label}
+                    branchName={row.branchName}
+                    reason={
+                      row.status === 'failed' || row.status === 'skipped'
+                        ? row.reason
+                        : undefined
+                    }
+                    trailing={
+                      phase === 'confirm' && row.localWork ? (
+                        <LocalWorkBadge localWork={row.localWork} />
+                      ) : undefined
+                    }
+                  />
+                </li>
+              ))}
+            </ul>
+          )}
+          {phase === 'confirm' && excluded.length > 0 && (
+            <ExcludedRows excluded={excluded} testId={testId} />
+          )}
+          <div className="flex items-center gap-2 pt-1">
+            {phase === 'confirm' && (
+              <ConfirmActions
+                mode={mode}
+                count={count}
+                branchChoice={branchChoice}
+                cancelRef={cancelRef}
+                testId={testId}
+                onCancel={onCancel}
+                onConfirm={onConfirm}
+              />
+            )}
+            {phase === 'running' && (
+              <Button
+                variant="outline"
+                size="lg"
+                className="ml-auto"
+                disabled={stopRequested}
+                onClick={onStop}
+                data-testid={`${testId}-stop`}
+              >
+                {stopRequested ? 'Stopping…' : 'Stop after this one'}
+              </Button>
+            )}
+            {phase === 'results' && (
+              <Button
+                variant="primary"
+                size="lg"
+                className="ml-auto"
+                onClick={onDone}
+                data-testid={`${testId}-done`}
+              >
+                Done
+              </Button>
+            )}
+          </div>
+        </div>
+      </DialogModal>
+    </div>
+  );
+}

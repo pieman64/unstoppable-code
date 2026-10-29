@@ -1,0 +1,32 @@
+@import './workspace-layout-picker.css';
+/* Shared UI design tokens
+ *
+ * Shared design tokens, theme blocks, and animation keyframes used by both the
+ * desktop renderer (`apps/desktop-app`) and the web portal (`apps/web`). This
+ * Built-in theme recipes live in theme-recipes.json and generate
+ * generated-theme-tokens.css. This file maps that semantic output to the
+ * stable app utility API; each app's globals.css imports it at the top and
+ * layers app-specific styles on top.
+ *
+ * Surface covered here:
+ * - Tailwind v4 background, foreground, border, radius, and animation utilities
+ * - Animation keyframes
+ * - Light + dark variants for all 8 named themes (default, unstoppable, dusk,
+ *   lime, ocean, retro, neo, forest)
+ * - Base element styles, scrollbar styles, reduced-motion behavior
+ * - `--ui-zoom` / `--border-hairline` defaults that the desktop renderer
+ *   overrides for its uniform interface-scale zoom
+ *
+ * Anything app-specific (Electron window dragging, font loading, web-only
+ * legacy aliases, Slate/Monaco diff overrides) stays in the importing app's
+ * globals.css or root layout.
+ *
+ * Font wiring: the Inter 4.001 and JetBrains Mono 2.304 variable assets live
+ * in this package under assets/fonts, while each app loads them through its
+ * own bundler (desktop: @font-face in its globals.css; web: next/font/local).
+ * --font-sans / --font-mono retain var() hooks so a consuming app can
+ * override either family; web uses those hooks for its next/font loaders.
+ */
+
+@import './generated-theme-tokens.css';
+@import './canopy-tokens-core.css';

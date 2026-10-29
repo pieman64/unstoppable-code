@@ -1,0 +1,16 @@
+{
+  "name": "@canopy/artifact-crypto",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Node-only authenticated streaming codec for shared-container artifacts.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@canopy/protocol": "workspace:*"
+  }
+}

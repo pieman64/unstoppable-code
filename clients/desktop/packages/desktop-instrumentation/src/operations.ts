@@ -1,0 +1,389 @@
+import type {
+  DesktopInstrumentationContext,
+  DesktopInstrumentationFailureReason,
+  DesktopInstrumentationOperationOptions,
+} from './types';
+
+/**
+ * A product operation also becomes one PostHog event when it finishes.
+ * `posthogEvent` is a fixed `category:object_action` name; the variable part
+ * of the operation (its `action`, `outcome`, ...) stays in property values.
+ */
+interface ProductOperationPolicy {
+  readonly kind: 'product';
+  readonly posthogEvent: string;
+  readonly contextKeys: readonly string[];
+  /** Narrows the operation to the contexts the event describes. */
+  readonly includes?: (context: DesktopInstrumentationContext) => boolean;
+  /** Fixed renames for context keys that collide with operation properties. */
+  readonly renamedContextKeys?: Readonly<Record<string, string>>;
+}
+
+/** Performance and diagnostic operations stay Datadog-only. */
+interface ExcludedOperationPolicy {
+  readonly kind: 'excluded';
+  readonly reason: 'performance' | 'diagnostic';
+}
+
+type DesktopOperationPolicy = ProductOperationPolicy | ExcludedOperationPolicy;
+
+const PIPELINE_DEFINITION_CHANGES: ReadonlySet<unknown> = new Set([
+  'create',
+  'update',
+  'delete',
+  'duplicate',
+  'shared_create',
+  'shared_update',
+  'shared_delete',
+]);
+
+const AUDIT_CONTEXT_KEYS = [
+  'event_type',
+  'provider',
+  'model',
+  'has_transcript',
+  'is_ai_credits_routed',
+  'tool_use_count',
+  'sub_agent_count',
+  'message_count',
+  'total_cost_usd',
+];
+const WORKSPACE_CONTEXT_KEYS = [
+  'action',
+  'source',
+  'workspace_total',
+  'single_repo_workspace_total',
+  'multi_repo_workspace_total',
+  'temporary_workspace_total',
+  'worktree_total',
+  'workspace_worktree_total',
+  'workspace_repo_total',
+  'workspace_type',
+  'workspace_is_temporary',
+];
+const STANDALONE_CONTEXT_KEYS = [
+  'action',
+  'chat_disposition',
+  'standalone_project_total',
+  'standalone_chat_total',
+  'standalone_archived_chat_total',
+  'standalone_note_total',
+  'standalone_prompt_total',
+  'standalone_attachment_total',
+  'project_chat_total',
+  'project_archived_chat_total',
+  'project_note_total',
+  'project_prompt_total',
+  'project_attachment_total',
+];
+
+/**
+ * Every custom operation the desktop app records. Operation APIs accept only
+ * these names, so a new operation cannot compile until it is classified as a
+ * product operation (Datadog and PostHog) or an excluded one (Datadog only).
+ * Handled errors never reach PostHog and are not operations.
+ */
+export const DESKTOP_OPERATIONS = {
+  'canopy.model_recovery': {
+    kind: 'product',
+    posthogEvent: 'billing:model_recovery_view',
+    contextKeys: ['recovery_source', 'model_id', 'library_access'],
+  },
+  'canopy.model_access': {
+    kind: 'product',
+    posthogEvent: 'billing:model_access_update',
+    contextKeys: ['recovery_source', 'model_id', 'library_access'],
+  },
+  'canopy.share_dialog': {
+    kind: 'product',
+    posthogEvent: 'sharing:dialog_open',
+    contextKeys: ['resource_kind', 'source'],
+  },
+  'canopy.chat_turn': {
+    kind: 'product',
+    posthogEvent: 'chat:turn_end',
+    contextKeys: AUDIT_CONTEXT_KEYS,
+  },
+  'canopy.portal_chat_visual_read': {
+    kind: 'product',
+    posthogEvent: 'chat:visual_view',
+    contextKeys: ['page_count', 'size_bytes', 'transport_type'],
+  },
+  'canopy.agent_task': {
+    kind: 'product',
+    posthogEvent: 'agent:task_end',
+    contextKeys: AUDIT_CONTEXT_KEYS,
+  },
+  'canopy.pipeline_execution': {
+    kind: 'product',
+    posthogEvent: 'pipeline:run_end',
+    contextKeys: [
+      'trigger_type',
+      'pipeline_source',
+      'job_count',
+      'step_count',
+      'plugin_collection_count',
+      'has_project_context',
+      'has_parent_execution',
+      'is_rerun',
+      'paused_job_count',
+      'failed_job_count',
+      'cancelled_job_count',
+      'skipped_job_count',
+    ],
+  },
+  'canopy.pipeline_crud': {
+    kind: 'product',
+    posthogEvent: 'pipeline:definition_update',
+    contextKeys: [
+      'action',
+      'source',
+      'result_count',
+      'trigger_type',
+      'share_scope',
+      'has_pipeline_id',
+      'has_project_context',
+      'has_search_query',
+    ],
+    // Reads (list, get, discover) fire on ordinary page loads; only changes
+    // to a pipeline definition are product activity.
+    includes: (context) => PIPELINE_DEFINITION_CHANGES.has(context.action),
+  },
+  'canopy.workspace_crud': {
+    kind: 'product',
+    posthogEvent: 'workspace:project_update',
+    contextKeys: WORKSPACE_CONTEXT_KEYS,
+    renamedContextKeys: { workspace_is_temporary: 'is_workspace_temporary' },
+  },
+  'canopy.worktree_crud': {
+    kind: 'product',
+    posthogEvent: 'workspace:worktree_update',
+    contextKeys: WORKSPACE_CONTEXT_KEYS,
+    renamedContextKeys: { workspace_is_temporary: 'is_workspace_temporary' },
+  },
+  'canopy.standalone_chat_project_crud': {
+    kind: 'product',
+    posthogEvent: 'cowork:project_update',
+    contextKeys: STANDALONE_CONTEXT_KEYS,
+  },
+  'canopy.standalone_chat_project_feature': {
+    kind: 'product',
+    posthogEvent: 'cowork:project_feature_update',
+    contextKeys: [
+      ...STANDALONE_CONTEXT_KEYS,
+      'item_kind',
+      'item_count',
+      'was_update',
+    ],
+    renamedContextKeys: { was_update: 'is_update' },
+  },
+  'canopy.onboarding_profile': {
+    kind: 'product',
+    posthogEvent: 'onboarding:profile_update',
+    contextKeys: ['attribution_source', 'profile_role'],
+  },
+  'canopy.activation_campaign': {
+    kind: 'product',
+    posthogEvent: 'activation:campaign_update',
+    contextKeys: ['campaign_id', 'item_id', 'outcome', 'reason', 'destination'],
+  },
+  'canopy.home_onboarding_suggestions': {
+    kind: 'product',
+    posthogEvent: 'home:onboarding_suggestion_update',
+    contextKeys: ['action', 'entry', 'step', 'reason', 'role', 'count'],
+  },
+  'canopy.suggested_prompt': {
+    kind: 'product',
+    posthogEvent: 'chat:suggested_prompt_update',
+    contextKeys: [
+      'action',
+      'surface',
+      'suggestion_count',
+      'suggestion_ids',
+      'suggestion_id',
+      'suggestion_index',
+      'mcp_keys',
+      'mcp_key',
+    ],
+    // Its home/chat/cowork placement would otherwise be replaced by the
+    // window surface every renderer event carries.
+    renamedContextKeys: { surface: 'prompt_surface' },
+  },
+  'canopy.provider_account_connect': {
+    kind: 'product',
+    posthogEvent: 'provider:account_connect',
+    // Never account details: no email, label, plan, or org.
+    contextKeys: ['provider', 'connect_source'],
+  },
+  'canopy.skill_suggestion': {
+    kind: 'product',
+    posthogEvent: 'chat:skill_suggestion_update',
+    // Counts and outcomes only; never prompts, titles or skill names.
+    contextKeys: ['action', 'occurrence_count', 'outcome', 'candidate_count'],
+  },
+  'canopy.slow_action': { kind: 'excluded', reason: 'performance' },
+  'canopy.ipc_action': { kind: 'excluded', reason: 'performance' },
+  'canopy.managed_process': { kind: 'excluded', reason: 'performance' },
+  'canopy.code_graph_generation': { kind: 'excluded', reason: 'performance' },
+  'canopy.code_graph_refresh_metrics': {
+    kind: 'excluded',
+    reason: 'performance',
+  },
+  'canopy.code_graph_query_metrics': {
+    kind: 'excluded',
+    reason: 'performance',
+  },
+  'canopy.app_diagnostic': { kind: 'excluded', reason: 'diagnostic' },
+  'canopy.local_memory_citation_compliance': {
+    kind: 'excluded',
+    reason: 'diagnostic',
+  },
+} as const satisfies Record<string, DesktopOperationPolicy>;
+
+export type DesktopOperationName = keyof typeof DESKTOP_OPERATIONS;
+
+const postHogOperationEvents = new Set<string>();
+for (const policy of Object.values(DESKTOP_OPERATIONS)) {
+  if (policy.kind === 'product')
+    postHogOperationEvents.add(policy.posthogEvent);
+}
+
+export function isDesktopPostHogOperationEvent(event: string): boolean {
+  return postHogOperationEvents.has(event);
+}
+
+export type DesktopOperationSurface = 'background' | 'main' | 'app-advisor';
+
+export type DesktopOperationOutcome =
+  | { status: 'success' }
+  | { status: 'failure'; failureReason: DesktopInstrumentationFailureReason };
+
+export interface PostHogOperationEvent {
+  event: string;
+  properties: DesktopInstrumentationContext;
+}
+
+export interface PostHogOperationTracker {
+  start: (
+    name: DesktopOperationName,
+    options?: DesktopInstrumentationOperationOptions,
+  ) => void;
+  finish: (
+    name: DesktopOperationName,
+    outcome: DesktopOperationOutcome,
+    surface: DesktopOperationSurface,
+    options?: DesktopInstrumentationOperationOptions,
+  ) => PostHogOperationEvent | undefined;
+}
+
+/** Bounds start times for operations that never finish. */
+const MAX_TRACKED_OPERATION_STARTS = 500;
+
+function getProductOperationPolicy(
+  name: DesktopOperationName,
+): ProductOperationPolicy | undefined {
+  const policy: DesktopOperationPolicy = DESKTOP_OPERATIONS[name];
+  return policy.kind === 'product' ? policy : undefined;
+}
+
+function projectContextKeys(
+  context: DesktopInstrumentationContext,
+  approved: readonly string[],
+  renamed: Readonly<Record<string, string>> | undefined,
+): DesktopInstrumentationContext {
+  const projected: DesktopInstrumentationContext = {};
+  for (const key of approved) {
+    const value = context[key];
+    if (value !== undefined) projected[renamed?.[key] ?? key] = value;
+  }
+  return projected;
+}
+
+/**
+ * Operations that measure their own working time keep it; wall-clock time
+ * between start and finish is the fallback.
+ */
+function resolveDurationMs(
+  context: DesktopInstrumentationContext,
+  started: number | undefined,
+  now: () => number,
+): number | undefined {
+  const measured = context.duration_ms;
+  if (typeof measured === 'number' && Number.isFinite(measured)) {
+    return measured;
+  }
+  if (started === undefined) return undefined;
+  return Math.max(0, now() - started);
+}
+
+export interface PostHogOperationTrackerOptions {
+  /** Bundled release version stamped as `app_version`; omitted when unset. */
+  appVersion?: string;
+  now?: () => number;
+}
+
+/**
+ * Turns Datadog start/finish pairs into one PostHog event per finished
+ * product operation. Excluded operations are never tracked or emitted.
+ */
+export function createPostHogOperationTracker({
+  appVersion,
+  now = (): number => Date.now(),
+}: PostHogOperationTrackerOptions = {}): PostHogOperationTracker {
+  const startedAt = new Map<string, number>();
+  const keyOf = (
+    name: DesktopOperationName,
+    options: DesktopInstrumentationOperationOptions | undefined,
+  ): string => `${name}\u0000${options?.operationKey ?? ''}`;
+
+  return {
+    start: (name, options): void => {
+      const policy = getProductOperationPolicy(name);
+      if (
+        !policy ||
+        (policy.includes && !policy.includes(options?.context ?? {}))
+      )
+        return;
+      const key = keyOf(name, options);
+      // Re-insert so the map stays ordered oldest-first for eviction.
+      startedAt.delete(key);
+      startedAt.set(key, now());
+      if (startedAt.size > MAX_TRACKED_OPERATION_STARTS) {
+        const oldest = startedAt.keys().next();
+        if (!oldest.done) startedAt.delete(oldest.value);
+      }
+    },
+    finish: (
+      name,
+      outcome,
+      surface,
+      options,
+    ): PostHogOperationEvent | undefined => {
+      const policy = getProductOperationPolicy(name);
+      if (!policy) return undefined;
+      const key = keyOf(name, options);
+      const started = startedAt.get(key);
+      startedAt.delete(key);
+      const context = options?.context ?? {};
+      if (policy.includes && !policy.includes(context)) return undefined;
+      const durationMs = resolveDurationMs(context, started, now);
+      return {
+        event: policy.posthogEvent,
+        properties: {
+          ...projectContextKeys(
+            context,
+            policy.contextKeys,
+            policy.renamedContextKeys,
+          ),
+          status: outcome.status,
+          ...(outcome.status === 'failure'
+            ? { failure_reason: outcome.failureReason }
+            : {}),
+          ...(durationMs === undefined ? {} : { duration_ms: durationMs }),
+          surface,
+          ...(appVersion === undefined ? {} : { app_version: appVersion }),
+        },
+      };
+    },
+  };
+}

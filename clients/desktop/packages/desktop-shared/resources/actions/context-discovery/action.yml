@@ -1,0 +1,25 @@
+name: Context Discovery
+description: Gather targeted codebase context for downstream steps.
+log_format_hint: agent
+inputs:
+  model:
+    description: Optional Claude model override.
+    required: false
+outputs:
+  text_response:
+    description: Targeted context summary.
+    value: ${{ steps.context.outputs.text_response }}
+  transcript_file:
+    description: Context discovery transcript file.
+    value: ${{ steps.context.outputs.transcript_file }}
+runs:
+  using: composite
+  steps:
+    - id: context
+      uses: builtin/agent-prompt
+      with:
+        model: ${{ inputs.model }}
+        permission_preset: read_only
+        prompt: |
+          Gather the most relevant codebase context for the next implementation step.
+          Focus on dependencies, touched files, contracts, and local conventions.

@@ -1,0 +1,25 @@
+name: Memory Write
+description: Append a structured record to a JSONL memory file.
+inputs:
+  file:
+    description: Relative path to the JSONL memory file.
+    required: true
+  step_id:
+    description: Identifier for the step writing the memory record.
+    required: true
+  data:
+    description: JSON string or raw text payload to store.
+    required: false
+    default: ""
+  tags:
+    description: Optional comma-separated tags.
+    required: false
+    default: ""
+outputs:
+  record_count:
+    description: Total number of records in the file after the write.
+  file_path:
+    description: Absolute path to the memory file.
+runs:
+  using: node
+  main: index.js

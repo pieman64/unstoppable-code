@@ -1,0 +1,13 @@
+name: Hello World (Python)
+description: A simple hello world action using Python execution.
+inputs:
+  message:
+    description: A message to include in the output
+    required: false
+    default: ""
+outputs:
+  timestamp:
+    description: Timestamp tag in the format <timestamp>-py
+runs:
+  using: python
+  main: hello-world.py

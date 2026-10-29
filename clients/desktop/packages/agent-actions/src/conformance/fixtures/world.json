@@ -1,0 +1,72 @@
+{
+  "brand": {
+    "displayName": "Conformance Host",
+    "toolNamespace": "conformance_host"
+  },
+  "workspace": {
+    "workspaceId": "w1",
+    "name": "Conformance workspace",
+    "kind": "git",
+    "repositories": [
+      {
+        "repoId": "r1",
+        "remoteUrl": "https://example.com/conformance/app.git",
+        "defaultBranch": "main"
+      }
+    ]
+  },
+  "worktrees": [
+    { "worktreeId": "t1", "name": "Main", "branch": "main" },
+    { "worktreeId": "t2", "name": "Feature", "branch": "feature" }
+  ],
+  "chats": [
+    {
+      "chatId": "c1",
+      "worktreeId": "t1",
+      "title": "Current chat",
+      "state": "running",
+      "modelId": "M1",
+      "lastResponse": null
+    },
+    {
+      "chatId": "c2",
+      "worktreeId": "t1",
+      "title": "Idle chat",
+      "state": "idle",
+      "modelId": "M2",
+      "lastResponse": "Finished the review."
+    },
+    {
+      "chatId": "c3",
+      "worktreeId": "t2",
+      "title": "Archived chat",
+      "state": "archived",
+      "modelId": "M1",
+      "lastResponse": null
+    }
+  ],
+  "models": [
+    {
+      "id": "M1",
+      "label": "Model one",
+      "provider": "claude",
+      "thinkingLevels": ["off", "medium", "high"]
+    },
+    {
+      "id": "M2",
+      "label": "Model two",
+      "provider": "codex",
+      "thinkingLevels": []
+    }
+  ],
+  "defaultModelId": "M1",
+  "organizations": [{ "organizationId": "o1", "name": "Conformance org" }],
+  "foreign": {
+    "workspaceId": "w2",
+    "worktreeId": "tx",
+    "chatId": "cx",
+    "organizationId": "ox"
+  },
+  "current": { "workspaceId": "w1", "worktreeId": "t1", "chatId": "c1" },
+  "callerDepth": 0
+}

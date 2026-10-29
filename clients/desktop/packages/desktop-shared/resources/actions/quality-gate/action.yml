@@ -1,0 +1,43 @@
+name: Quality Gate
+description: Score content against criteria and fail below the threshold.
+log_format_hint: agent
+inputs:
+  text:
+    description: Inline text to evaluate.
+    required: false
+    default: ''
+  text_file:
+    description: Path to a file containing text to evaluate.
+    required: false
+  criteria:
+    description: Evaluation criteria for the gate.
+    required: false
+  threshold:
+    description: Minimum passing score from 0 to 100.
+    required: false
+    default: 80
+  model:
+    description: Optional Claude model override.
+    required: false
+  permission_preset:
+    description: Permission preset for the evaluator.
+    required: false
+    default: read_only
+  system_prompt:
+    description: Optional system prompt appendix.
+    required: false
+  max_turns:
+    description: Maximum Claude turns.
+    required: false
+outputs:
+  score:
+    description: Numeric score from 0 to 100.
+  passed:
+    description: Whether the score met the threshold.
+  feedback:
+    description: Concise gate feedback.
+  transcript_file:
+    description: Path to the step log or transcript capture containing evaluation events.
+runs:
+  using: node
+  main: index.js

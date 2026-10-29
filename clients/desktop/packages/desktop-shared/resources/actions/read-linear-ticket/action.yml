@@ -1,0 +1,82 @@
+name: Read Linear Ticket
+description: Resolve a Linear ticket from a ticket id or Linear issue URL and emit structured ticket details.
+inputs:
+  ticket_id:
+    description: Linear ticket id like TEAM-123 or a Linear issue URL.
+    required: true
+outputs:
+  ticket_id:
+    description: Canonical Linear ticket identifier.
+  issue_id:
+    description: Internal Linear issue id.
+  issue_number:
+    description: Numeric Linear issue number.
+  title:
+    description: Ticket title.
+  description:
+    description: Ticket description normalized to a single line.
+  url:
+    description: Linear issue URL.
+  status:
+    description: Workflow status name.
+  status_type:
+    description: Workflow status type.
+  status_json:
+    description: JSON string containing the full workflow status object.
+  priority:
+    description: Priority label.
+  priority_value:
+    description: Numeric priority value.
+  assignee:
+    description: Assignee display name when present.
+  assignee_email:
+    description: Assignee email when present.
+  assignee_json:
+    description: JSON string containing the assignee object when present.
+  creator:
+    description: Creator display name.
+  creator_email:
+    description: Creator email.
+  creator_json:
+    description: JSON string containing the creator object.
+  team:
+    description: Team display name.
+  team_key:
+    description: Team key.
+  team_json:
+    description: JSON string containing the full team object when present.
+  project:
+    description: Project name when present.
+  project_status:
+    description: Project status name when present.
+  project_json:
+    description: JSON string containing the full project object when present.
+  cycle:
+    description: Cycle name when present.
+  cycle_json:
+    description: JSON string containing the full cycle object when present.
+  parent_ticket_id:
+    description: Parent ticket identifier when present.
+  parent_json:
+    description: JSON string containing the full parent ticket object when present.
+  branch_name:
+    description: Suggested branch name for the ticket.
+  estimate:
+    description: Ticket estimate when present.
+  due_date:
+    description: Ticket due date when present.
+  created_at:
+    description: Ticket creation timestamp in ISO 8601 format.
+  updated_at:
+    description: Ticket update timestamp in ISO 8601 format.
+  labels:
+    description: JSON array string of label names.
+  details_json:
+    description: Single-line JSON string containing the full structured ticket details.
+  details_json_file:
+    description: File path containing structured ticket details JSON.
+  summary_file:
+    description: File path containing a readable ticket summary.
+runs:
+  using: node
+  main: index.js

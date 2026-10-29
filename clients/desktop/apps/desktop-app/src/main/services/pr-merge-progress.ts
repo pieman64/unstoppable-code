@@ -1,0 +1,177 @@
+import type { PortalSessionShellState } from '@canopy/protocol/portal';
+import type {
+  PortalMergePrProgress,
+  PortalMergePrStep,
+} from '@canopy/protocol/portal';
+import type { MergePrProgressEvent } from '@canopy/desktop-shared/types/github';
+import { schedulePortalStructuralSync } from '../portal/portal-structural-sync';
+import { emitPrStatusDelta } from './portal-pr-delta';
+
+type MergeProjection = Pick<
+  PortalSessionShellState['worktrees'][number],
+  'mergingPr' | 'mergePrPhase'
+>;
+
+// Runtime state survives remote disconnects, but never a desktop restart.
+// Merge requests for a worktree are serialized by runCancellableGitAction.
+const progress = new Map<string, MergeProjection>();
+// The step feed projected to the portal as `pr_status.mergeProgress`. Kept
+// separate from `progress` because the worktree projection is a boolean plus
+// current phase, while the portal feed is an accumulating checklist whose
+// errored state outlives the operation.
+const feed = new Map<string, PortalMergePrProgress>();
+let lastMergeGeneration = 0;
+const key = (workspaceId: string, worktreeId: string): string =>
+  JSON.stringify([workspaceId, worktreeId]);
+
+export function beginPrMergeProgress(
+  workspaceId: string,
+  worktreeId: string,
+): void {
+  const id = key(workspaceId, worktreeId);
+  progress.set(id, {
+    mergingPr: true,
+    mergePrPhase: 'checking_mergeability',
+  });
+  lastMergeGeneration = Math.max(Date.now(), lastMergeGeneration + 1);
+  feed.set(id, {
+    generation: lastMergeGeneration,
+    steps: [],
+    currentPhase: 'checking_mergeability',
+  });
+  schedulePortalStructuralSync();
+  emitPrStatusDelta(workspaceId, worktreeId, { mergeProgress: feed.get(id) });
+}
+
+export function recordPrMergeProgress(event: MergePrProgressEvent): void {
+  const id = key(event.projectId, event.worktreeId);
+  // Per-repo errors/completion must not finish a multi-repo operation. The
+  // request's finally block owns cleanup, including cancellation and no-ops.
+  if (!progress.has(id)) return;
+
+  const isTerminal = event.phase === 'done' || event.phase === 'error';
+  if (event.phase !== 'done' && event.phase !== 'error') {
+    progress.set(id, { mergingPr: true, mergePrPhase: event.phase });
+    schedulePortalStructuralSync();
+  }
+
+  const existing = feed.get(id);
+  if (existing !== undefined) {
+    const step: PortalMergePrStep = { phase: event.phase };
+    if (event.repoId !== undefined) step.repoId = event.repoId;
+    if (event.repoName !== undefined) step.repoName = event.repoName;
+    if (event.queuePosition !== undefined)
+      step.queuePosition = event.queuePosition;
+    if (event.queueLength !== undefined) step.queueLength = event.queueLength;
+    if (event.retryDelayMs !== undefined)
+      step.retryDelayMs = event.retryDelayMs;
+    if (event.error !== undefined) step.error = event.error;
+
+    // A per-repo terminal step records without ending the overall merge.
+    // Every real emission in `ipc/github.ts` that names a repo carries
+    // `repoName` (including in a single-repo workspace); only the outer
+    // `refreshing_pr_status` / `done` pair is global.
+    const isPerRepoTerminal = isTerminal && event.repoName !== undefined;
+    const steps = [...existing.steps, step];
+    // Mirrors `recordPrCreationProgress`: a global `done` that follows a
+    // per-repo failure settles the whole operation in `error`, so a
+    // partially successful multi-repo merge does not read as a clean success.
+    const isGlobalDone = event.phase === 'done' && event.repoName === undefined;
+    const hasPerRepoError = steps.some(
+      (recorded) => recorded.phase === 'error' && recorded.repoName != null,
+    );
+    const next: PortalMergePrProgress = {
+      generation: existing.generation,
+      steps,
+      currentPhase: isPerRepoTerminal
+        ? existing.currentPhase
+        : isGlobalDone && hasPerRepoError
+          ? 'error'
+          : event.phase,
+    };
+    feed.set(id, next);
+    emitPrStatusDelta(event.projectId, event.worktreeId, {
+      mergeProgress: next,
+    });
+  }
+}
+
+export function finishPrMergeProgress(
+  workspaceId: string,
+  worktreeId: string,
+): void {
+  const id = key(workspaceId, worktreeId);
+  const hadProgress = progress.delete(id);
+  // A failed merge emits no global terminal event at all: the outer
+  // `refreshing_pr_status` / `done` pair only fires when at least one repo
+  // merged, and every per-repo `error` is held back by the multi-repo guard
+  // above. Resolve the overall failure here, once the operation is over and
+  // no further repo can still succeed, rather than at the per-repo `error`
+  // step — flipping the card to `Failed` mid-run would be wrong for a
+  // multi-repo merge whose remaining repos are still merging.
+  const settled = feed.get(id);
+  if (
+    settled !== undefined &&
+    settled.currentPhase !== 'done' &&
+    settled.currentPhase !== 'error' &&
+    settled.steps.some((step) => step.phase === 'error')
+  ) {
+    const errored: PortalMergePrProgress = {
+      generation: settled.generation,
+      steps: settled.steps,
+      currentPhase: 'error',
+    };
+    feed.set(id, errored);
+    emitPrStatusDelta(workspaceId, worktreeId, { mergeProgress: errored });
+  }
+  // Keep terminal feeds so the card can render `Failed` or `Merged` after the
+  // operation ends; the next `beginPrMergeProgress` resets either one. Active
+  // feeds still need a tombstone on cancellation or an early refusal.
+  const finalPhase = feed.get(id)?.currentPhase;
+  if (finalPhase !== 'error' && finalPhase !== 'done') {
+    if (feed.delete(id)) {
+      emitPrStatusDelta(workspaceId, worktreeId, { mergeProgress: null });
+    }
+  }
+  if (hadProgress) schedulePortalStructuralSync();
+}
+
+export function getPrMergeProgress(
+  workspaceId: string,
+  worktreeId: string,
+): MergeProjection {
+  return (
+    progress.get(key(workspaceId, worktreeId)) ?? {
+      mergingPr: false,
+      mergePrPhase: null,
+    }
+  );
+}
+
+/** Read the accumulated merge feed for the worktree, if any. */
+export function getPrMergeProgressFeed(
+  workspaceId: string,
+  worktreeId: string,
+): PortalMergePrProgress | undefined {
+  return feed.get(key(workspaceId, worktreeId));
+}
+
+/** Retire a feed from the previous PR lifecycle before creation starts. */
+export function clearPrMergeProgressFeed(
+  workspaceId: string,
+  worktreeId: string,
+): void {
+  if (feed.delete(key(workspaceId, worktreeId))) {
+    emitPrStatusDelta(workspaceId, worktreeId, { mergeProgress: null });
+  }
+}
+
+/** Drop every merge map entry for a worktree (deletion / cleanup paths). */
+export function clearPrMergeTracking(
+  workspaceId: string,
+  worktreeId: string,
+): void {
+  const id = key(workspaceId, worktreeId);
+  progress.delete(id);
+  feed.delete(id);
+}

@@ -1,0 +1,870 @@
+import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
+import { useLinearAvailability } from '@/hooks/useLinearStatus';
+import { useContextScopedWorkspaces } from '@/hooks/useContextScopedWorkspaces';
+import { useWorkspaceContextReset } from '@/hooks/useWorkspaceContextReset';
+import { DialogModal } from '../shared/DialogModal';
+import { LoadingSpinner } from '../shared/loading';
+import type {
+  BranchEntry,
+  LinearTicketSearchResult,
+  ResolvePullRequestResponse,
+} from '@canopy/desktop-shared/types';
+import {
+  parsePullRequestReference,
+  type CreateFromMode,
+} from '@canopy/desktop-shared/lib/create-from-reference';
+import {
+  buildLinearTaskText,
+  createOptionsForBranch,
+  createOptionsForLinear,
+  createOptionsForPr,
+  isWorkspaceEligibleForCreateFrom,
+  replaceGeneratedTaskText,
+  resolveCreateFromReferenceInput,
+  type CreateFromOptions,
+} from '@/lib/createFromSource';
+import {
+  collapseBranchDuplicates,
+  filterBranchesBySearch,
+  getBranchProvenanceBadge,
+  type BranchOption,
+} from './branch-options';
+import { ChatIcon, PipelineIcon, PlanModeIcon } from '@canopy/ui-shared/icons';
+import { WordBoundaryTruncatedText } from '@canopy/ui-shared/components';
+import { WorkspaceDropdown } from '../shared/WorkspaceDropdown';
+import { useSettingsLocationLabel } from '@/lib/navigation/settings-destinations';
+
+interface CreateTaskModalProps {
+  onClose: () => void;
+  onChooseChat: (
+    workspaceId: string,
+    taskText: string,
+    createOptions?: CreateFromOptions,
+  ) => void;
+  onChoosePlan: (
+    workspaceId: string,
+    taskText: string,
+    createOptions?: CreateFromOptions,
+  ) => void;
+  onChoosePipeline: (
+    workspaceId: string,
+    taskText: string,
+    createOptions?: CreateFromOptions,
+  ) => void;
+}
+
+const SEARCH_DEBOUNCE_MS = 300;
+
+interface CreateFromPillProps {
+  mode: CreateFromMode;
+  linearAvailable: boolean;
+  onChange: (mode: CreateFromMode) => void;
+}
+
+function CreateFromPill({
+  mode,
+  linearAvailable,
+  onChange,
+}: CreateFromPillProps): JSX.Element {
+  const linearSettingsLocation = useSettingsLocationLabel('integrations');
+  const baseButtonClass =
+    'focus-ring inline-flex items-center justify-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition';
+  const activeClass = 'bg-accent fg-emphasis';
+  const inactiveClass = 'fg-secondary hover:bg-fg-primary/[0.06]';
+  const disabledClass = 'fg-secondary/50 cursor-not-allowed';
+
+  const pillClass = (target: CreateFromMode): string =>
+    `${baseButtonClass} ${mode === target ? activeClass : inactiveClass}`;
+  const linearButtonClass = `${baseButtonClass} ${
+    !linearAvailable
+      ? disabledClass
+      : mode === 'linear'
+        ? activeClass
+        : inactiveClass
+  }`;
+
+  return (
+    <div>
+      <span className="mb-1.5 block text-xs fg-secondary">Create from</span>
+      <div className="inline-flex items-center gap-1 rounded-full border bg-base p-1">
+        <button
+          type="button"
+          onClick={() => onChange('new')}
+          aria-pressed={mode === 'new'}
+          data-testid="create-task-mode-new"
+          className={pillClass('new')}
+        >
+          New
+        </button>
+        <button
+          type="button"
+          onClick={() => onChange('branch')}
+          aria-pressed={mode === 'branch'}
+          data-testid="create-task-mode-branch"
+          className={pillClass('branch')}
+        >
+          Branch
+        </button>
+        <button
+          type="button"
+          onClick={() => onChange('pr')}
+          aria-pressed={mode === 'pr'}
+          data-testid="create-task-mode-pr"
+          className={pillClass('pr')}
+        >
+          PR
+        </button>
+        <div className="group relative">
+          <button
+            type="button"
+            onClick={() => onChange('linear')}
+            aria-pressed={mode === 'linear'}
+            aria-describedby={
+              linearAvailable ? undefined : 'create-task-linear-tooltip'
+            }
+            disabled={!linearAvailable}
+            data-testid="create-task-mode-linear"
+            className={linearButtonClass}
+          >
+            Linear
+          </button>
+          {!linearAvailable && (
+            <div
+              id="create-task-linear-tooltip"
+              role="tooltip"
+              className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-2 w-64 -translate-x-1/2 rounded-md bg-popover p-3 opacity-0 shadow-tooltip transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100"
+            >
+              <p className="text-xs fg-primary">
+                Linear tasks require an API key. Add one in{' '}
+                {linearSettingsLocation}.
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+interface LinearTicketCardProps {
+  ticket: LinearTicketSearchResult;
+  onClear: () => void;
+}
+
+function LinearTicketCard({
+  ticket,
+  onClear,
+}: LinearTicketCardProps): JSX.Element {
+  const description = ticket.description?.trim() ?? '';
+  return (
+    <div className="rounded-lg border bg-base p-3">
+      <div className="flex items-start gap-2">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="rounded bg-fg-primary/[0.08] px-1.5 py-0.5 font-mono text-2xs fg-primary">
+              {ticket.identifier}
+            </span>
+            <span className="min-w-0 flex-1 text-s font-medium fg-primary">
+              <WordBoundaryTruncatedText
+                text={ticket.title}
+                hoverTitle
+                className="block"
+              />
+            </span>
+          </div>
+          {description.length > 0 && (
+            <p className="mt-2 line-clamp-6 whitespace-pre-wrap text-xs fg-secondary">
+              {description}
+            </p>
+          )}
+          <a
+            href={ticket.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-2 inline-block break-all text-xs fg-info hover:underline"
+          >
+            {ticket.url}
+          </a>
+        </div>
+        <button
+          type="button"
+          onClick={onClear}
+          className="focus-ring shrink-0 rounded-md border px-2 py-1 text-xs fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary"
+        >
+          Change ticket
+        </button>
+      </div>
+    </div>
+  );
+}
+
+interface LinearSearchProps {
+  query: string;
+  onQueryChange: (value: string) => void;
+  results: LinearTicketSearchResult[];
+  searching: boolean;
+  onSelect: (ticket: LinearTicketSearchResult) => void;
+}
+
+function LinearSearch({
+  query,
+  onQueryChange,
+  results,
+  searching,
+  onSelect,
+}: LinearSearchProps): JSX.Element {
+  const trimmedQuery = query.trim();
+  let dropdownContent: JSX.Element | null = null;
+  if (trimmedQuery.length > 0) {
+    if (searching) {
+      dropdownContent = (
+        <div
+          className="flex items-center justify-center px-3 py-3 fg-secondary"
+          data-testid="create-task-linear-searching"
+        >
+          <LoadingSpinner />
+        </div>
+      );
+    } else if (results.length === 0) {
+      dropdownContent = (
+        <p className="px-3 py-2 text-xs fg-secondary">No matching tickets</p>
+      );
+    } else {
+      dropdownContent = (
+        <ul>
+          {results.map((ticket) => {
+            const description = ticket.description?.trim() ?? '';
+            return (
+              <li key={ticket.id}>
+                <button
+                  type="button"
+                  onClick={() => onSelect(ticket)}
+                  data-testid={`create-task-linear-result-${ticket.id}`}
+                  className="focus-ring flex w-full flex-col items-start gap-0.5 border-b px-3 py-2 text-left transition last:border-b-0 hover:bg-fg-primary/[0.04]"
+                >
+                  <span className="flex w-full min-w-0 items-center gap-2">
+                    <span className="rounded bg-fg-primary/[0.08] px-1.5 py-0.5 font-mono text-2xs fg-primary">
+                      {ticket.identifier}
+                    </span>
+                    <span className="min-w-0 flex-1 text-s fg-primary">
+                      <WordBoundaryTruncatedText
+                        text={ticket.title}
+                        hoverTitle
+                        className="block"
+                      />
+                    </span>
+                  </span>
+                  {description.length > 0 && (
+                    <span className="line-clamp-1 w-full truncate text-xs fg-secondary">
+                      {description}
+                    </span>
+                  )}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      );
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <input
+        type="text"
+        value={query}
+        onChange={(event) => onQueryChange(event.target.value)}
+        placeholder="Search Linear by id or title…"
+        data-testid="create-task-linear-search"
+        className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s"
+      />
+      {dropdownContent && (
+        <div className="max-h-64 overflow-y-auto rounded-lg border bg-base">
+          {dropdownContent}
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface BranchResultsProps {
+  loading: boolean;
+  options: BranchOption[];
+  onSelect: (name: string) => void;
+}
+
+function BranchResults({
+  loading,
+  options,
+  onSelect,
+}: BranchResultsProps): JSX.Element {
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center rounded-lg border bg-base px-3 py-3 fg-secondary">
+        <LoadingSpinner />
+      </div>
+    );
+  }
+  if (options.length === 0) {
+    return (
+      <p className="rounded-lg border bg-base px-3 py-2 text-xs fg-secondary">
+        No matching branches
+      </p>
+    );
+  }
+  return (
+    <ul className="max-h-64 overflow-y-auto rounded-lg border bg-base">
+      {options.map((option) => {
+        const badge = getBranchProvenanceBadge(option);
+        return (
+          <li key={option.name}>
+            <button
+              type="button"
+              onClick={() => onSelect(option.name)}
+              data-testid={`create-from-branch-result-${option.name}`}
+              className="focus-ring flex w-full items-center gap-2 border-b px-3 py-2 text-left transition last:border-b-0 hover:bg-fg-primary/[0.04]"
+            >
+              <span className="min-w-0 flex-1 truncate font-mono text-sm fg-primary">
+                {option.name}
+              </span>
+              {badge && (
+                <span className="shrink-0 rounded bg-fg-primary/[0.08] px-1.5 py-0.5 text-2xs fg-secondary">
+                  {badge}
+                </span>
+              )}
+            </button>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+interface PrPreviewProps {
+  resolving: boolean;
+  error: string | null;
+  pr: ResolvePullRequestResponse | null;
+}
+
+function PrPreview({
+  resolving,
+  error,
+  pr,
+}: PrPreviewProps): JSX.Element | null {
+  if (resolving) {
+    return (
+      <div className="flex items-center justify-center rounded-lg border bg-base px-3 py-3 fg-secondary">
+        <LoadingSpinner />
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <p
+        data-testid="create-from-pr-error"
+        className="rounded-lg border bg-base px-3 py-2 text-xs fg-destructive"
+      >
+        {error}
+      </p>
+    );
+  }
+  if (!pr) {
+    return null;
+  }
+  return (
+    <div
+      data-testid="create-from-pr-card"
+      className="rounded-lg border bg-base p-3"
+    >
+      <div className="flex items-center gap-2">
+        <span className="rounded bg-fg-primary/[0.08] px-1.5 py-0.5 font-mono text-2xs fg-primary">
+          #{pr.number}
+        </span>
+        <span className="min-w-0 flex-1 truncate text-sm font-medium fg-primary">
+          {pr.title}
+        </span>
+      </div>
+      <p className="mt-2 text-xs fg-secondary">
+        Checks out <span className="font-mono">{pr.headRefName}</span> (into{' '}
+        <span className="font-mono">{pr.baseRefName}</span>)
+      </p>
+    </div>
+  );
+}
+
+export function CreateTaskModal({
+  onClose,
+  onChooseChat,
+  onChoosePlan,
+  onChoosePipeline,
+}: CreateTaskModalProps): JSX.Element {
+  const { workspaces: projects } = useContextScopedWorkspaces();
+
+  const eligibleWorkspaces = useMemo(
+    () =>
+      [...projects]
+        .filter(isWorkspaceEligibleForCreateFrom)
+        .sort((a, b) => a.order - b.order),
+    [projects],
+  );
+
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>(
+    () => eligibleWorkspaces[0]?.id ?? '',
+  );
+  const [taskText, setTaskText] = useState('');
+  const [mode, setMode] = useState<CreateFromMode>('new');
+  const [referenceQuery, setReferenceQuery] = useState('');
+  const [selectedTicket, setSelectedTicket] =
+    useState<LinearTicketSearchResult | null>(null);
+  const [searchResults, setSearchResults] = useState<
+    LinearTicketSearchResult[]
+  >([]);
+  const [searching, setSearching] = useState(false);
+  const [branchTargets, setBranchTargets] = useState<BranchEntry[]>([]);
+  const [branchTargetsLoading, setBranchTargetsLoading] = useState(false);
+  const [selectedBranch, setSelectedBranch] = useState<string | null>(null);
+  const [resolvedPr, setResolvedPr] =
+    useState<ResolvePullRequestResponse | null>(null);
+  const [prResolving, setPrResolving] = useState(false);
+  const [prError, setPrError] = useState<string | null>(null);
+  const [contextChanged, setContextChanged] = useState(false);
+  const lastGeneratedTaskTextRef = useRef('');
+
+  const { available: linearAvailable } = useLinearAvailability();
+
+  useWorkspaceContextReset((): void => {
+    setSelectedWorkspaceId('');
+    setTaskText('');
+    setMode('new');
+    setReferenceQuery('');
+    setSelectedTicket(null);
+    setSearchResults([]);
+    setSelectedBranch(null);
+    setResolvedPr(null);
+    setPrError(null);
+    setContextChanged(true);
+  });
+
+  // Keep the selected workspace valid if the projects list changes while open.
+  useEffect(() => {
+    if (
+      selectedWorkspaceId &&
+      !eligibleWorkspaces.some((w) => w.id === selectedWorkspaceId)
+    ) {
+      setSelectedWorkspaceId(eligibleWorkspaces[0]?.id ?? '');
+    } else if (!selectedWorkspaceId && eligibleWorkspaces.length > 0) {
+      setSelectedWorkspaceId(eligibleWorkspaces[0].id);
+    }
+  }, [eligibleWorkspaces, selectedWorkspaceId]);
+
+  // Debounced Linear search. A monotonically increasing sequence number
+  // ensures that a slow earlier response cannot overwrite results from a
+  // later query.
+  const searchSeqRef = useRef(0);
+  useEffect(() => {
+    if (mode !== 'linear') {
+      return;
+    }
+    const trimmed = referenceQuery.trim();
+    if (trimmed.length === 0) {
+      // Skip the IPC call entirely when input is empty.
+      searchSeqRef.current += 1;
+      setSearching(false);
+      setSearchResults([]);
+      return;
+    }
+
+    const seq = ++searchSeqRef.current;
+    setSearching(true);
+    const timer = window.setTimeout(() => {
+      void (async (): Promise<void> => {
+        let results: LinearTicketSearchResult[] = [];
+        try {
+          results = await window.api.searchLinearIssues(trimmed);
+        } catch {
+          results = [];
+        }
+        if (searchSeqRef.current !== seq) {
+          return;
+        }
+        setSearchResults(results);
+        setSearching(false);
+      })();
+    }, SEARCH_DEBOUNCE_MS);
+
+    return (): void => {
+      searchSeqRef.current += 1;
+      window.clearTimeout(timer);
+    };
+  }, [mode, referenceQuery]);
+
+  // Branch targets for the selected workspace power both the Branch-mode list
+  // and the Linear existing-vs-new-branch decision.
+  useEffect(() => {
+    setSelectedBranch(null);
+    setResolvedPr(null);
+    setPrError(null);
+    if (!selectedWorkspaceId) {
+      setBranchTargets([]);
+      setBranchTargetsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setBranchTargetsLoading(true);
+    window.api
+      .homeListBranchTargets({ workspaceId: selectedWorkspaceId })
+      .then((response) => {
+        if (cancelled) return;
+        setBranchTargets(response.supported ? response.branches : []);
+      })
+      .catch(() => {
+        if (!cancelled) setBranchTargets([]);
+      })
+      .finally(() => {
+        if (!cancelled) setBranchTargetsLoading(false);
+      });
+    return (): void => {
+      cancelled = true;
+    };
+  }, [selectedWorkspaceId]);
+
+  // Debounced PR resolution with a sequence guard (mirrors the Linear search).
+  const prSeqRef = useRef(0);
+  useEffect(() => {
+    if (mode !== 'pr') return;
+    const seq = ++prSeqRef.current;
+    setResolvedPr(null);
+    setPrError(null);
+    const parsed = parsePullRequestReference(referenceQuery);
+    if (!parsed) {
+      setPrResolving(false);
+      return;
+    }
+    const workspace = eligibleWorkspaces.find(
+      (candidate) => candidate.id === selectedWorkspaceId,
+    );
+    const repoPath =
+      workspace?.type === 'single-repo'
+        ? workspace.repoPath
+        : workspace?.type === 'multi-repo'
+          ? (workspace.sourceRepoPath ?? null)
+          : null;
+    if (!repoPath) {
+      setPrError(
+        'This project has no repository to resolve a pull request against.',
+      );
+      setPrResolving(false);
+      return;
+    }
+    setPrResolving(true);
+    const timer = window.setTimeout(() => {
+      void (async (): Promise<void> => {
+        try {
+          const pr = await window.api.resolvePullRequest({
+            repoPath,
+            reference: referenceQuery.trim(),
+          });
+          if (prSeqRef.current !== seq) return;
+          setResolvedPr(pr);
+          setPrResolving(false);
+          const previousGeneratedTaskText = lastGeneratedTaskTextRef.current;
+          setTaskText((current) =>
+            replaceGeneratedTaskText(
+              current,
+              previousGeneratedTaskText,
+              pr.title,
+            ),
+          );
+          lastGeneratedTaskTextRef.current = pr.title;
+        } catch (error) {
+          if (prSeqRef.current !== seq) return;
+          setPrError(
+            error instanceof Error
+              ? error.message
+              : 'Failed to resolve the pull request.',
+          );
+          setPrResolving(false);
+        }
+      })();
+    }, SEARCH_DEBOUNCE_MS);
+    // Bump the sequence in cleanup so any dispatched-but-unresolved IPC is
+    // invalidated on mode switch, unmount, or dependency change — a late
+    // response can no longer set resolvedPr/taskText after the user leaves PR
+    // mode. Cleanup runs before the next effect invocation, so it also covers
+    // the early-return paths.
+    return (): void => {
+      prSeqRef.current += 1;
+      window.clearTimeout(timer);
+    };
+  }, [mode, referenceQuery, selectedWorkspaceId, eligibleWorkspaces]);
+
+  const handleModeChange = (next: CreateFromMode): void => {
+    // Per-mode selections are intentionally preserved so pill round-trips are
+    // non-destructive (matches the previous Manual ↔ Linear behavior).
+    setMode(next);
+  };
+
+  // Auto-detect the source from the typed/pasted reference and flip the pill.
+  // This runs only from the branch/PR reference input's onChange, so Linear
+  // search typing is naturally excluded and clicking a pill (no text change)
+  // never re-triggers detection — making manual overrides stick.
+  const handleReferenceQueryChange = (value: string): void => {
+    const { detected, referenceQuery: nextReferenceQuery } =
+      resolveCreateFromReferenceInput(value, linearAvailable);
+    setReferenceQuery(nextReferenceQuery);
+    if (!detected) {
+      return;
+    }
+    if (detected.mode === 'linear' && linearAvailable) {
+      setMode('linear');
+      return;
+    }
+    if (detected.mode !== 'linear' && detected.mode !== mode) {
+      setMode(detected.mode);
+    }
+  };
+
+  const branchOptions = useMemo(() => {
+    const available = branchTargets.filter(
+      (entry) => !entry.isUsedByWorktree && !entry.isCurrent,
+    );
+    return filterBranchesBySearch(
+      collapseBranchDuplicates(available),
+      referenceQuery,
+    ).slice(0, 50);
+  }, [branchTargets, referenceQuery]);
+
+  const trimmedText = taskText.trim();
+
+  const createOptions = useMemo((): CreateFromOptions | undefined => {
+    if (mode === 'branch' && selectedBranch) {
+      return createOptionsForBranch(selectedBranch);
+    }
+    if (mode === 'pr' && resolvedPr) {
+      return createOptionsForPr(resolvedPr);
+    }
+    if (mode === 'linear' && selectedTicket) {
+      return createOptionsForLinear(selectedTicket);
+    }
+    return undefined;
+  }, [mode, selectedBranch, resolvedPr, selectedTicket]);
+
+  const effectiveTaskText = useMemo(() => {
+    if (mode === 'linear' && selectedTicket && trimmedText.length === 0) {
+      return buildLinearTaskText(selectedTicket);
+    }
+    return trimmedText;
+  }, [mode, selectedTicket, trimmedText]);
+
+  const canSubmit =
+    Boolean(selectedWorkspaceId) &&
+    (mode === 'new'
+      ? trimmedText.length > 0
+      : mode === 'branch'
+        ? selectedBranch !== null
+        : mode === 'pr'
+          ? resolvedPr !== null
+          : selectedTicket !== null);
+  // Pipelines consume the task text (`task_ready`), so it must be non-empty.
+  const canSubmitPipeline = canSubmit && effectiveTaskText.length > 0;
+
+  const handleChat = (): void => {
+    if (!canSubmit) return;
+    onChooseChat(selectedWorkspaceId, effectiveTaskText, createOptions);
+  };
+
+  const handlePlan = (): void => {
+    if (!canSubmit) return;
+    onChoosePlan(selectedWorkspaceId, effectiveTaskText, createOptions);
+  };
+
+  const handlePipeline = (): void => {
+    if (!canSubmitPipeline) return;
+    onChoosePipeline(selectedWorkspaceId, effectiveTaskText, createOptions);
+  };
+
+  return (
+    <DialogModal
+      onClose={onClose}
+      title="Create task"
+      subtitle="Describe the task and choose how to start work"
+      titleId="create-task-title"
+      maxWidth="lg"
+      dataTestId="create-task-modal"
+    >
+      <div className="flex-1 space-y-4 overflow-y-auto px-5 py-4 text-s">
+        {eligibleWorkspaces.length === 0 ? (
+          <div className="rounded-lg border border-dashed bg-secondary/10 p-4 text-s fg-secondary">
+            No eligible projects available. Add a single-repo project or attach
+            a source repository to a multi-repo project to create a task.
+          </div>
+        ) : (
+          <>
+            {contextChanged && (
+              <p
+                role="status"
+                data-testid="create-task-context-changed"
+                className="rounded-md border px-3 py-2 text-xs fg-secondary"
+              >
+                The project and task draft were reset for the selected context.
+              </p>
+            )}
+            <div>
+              <span className="mb-1.5 block text-xs fg-secondary">Project</span>
+              <WorkspaceDropdown
+                workspaces={eligibleWorkspaces}
+                selectedWorkspaceId={selectedWorkspaceId}
+                onSelect={setSelectedWorkspaceId}
+                testIdPrefix="create-task-workspace"
+              />
+            </div>
+
+            <CreateFromPill
+              mode={mode}
+              linearAvailable={linearAvailable}
+              onChange={handleModeChange}
+            />
+
+            {mode !== 'new' && mode !== 'linear' && (
+              <div className="space-y-2">
+                <input
+                  type="text"
+                  value={referenceQuery}
+                  onChange={(event) =>
+                    handleReferenceQueryChange(event.target.value)
+                  }
+                  placeholder="Paste a branch, PR link/#, or Linear issue…"
+                  data-testid="create-from-reference-input"
+                  aria-label="Branch, PR, or Linear reference"
+                  className="focus-ring w-full resize-y rounded-lg border bg-base px-3 py-2 text-s"
+                />
+                {mode === 'branch' &&
+                  (selectedBranch ? (
+                    <div
+                      data-testid="create-from-branch-selected"
+                      className="flex items-center gap-2 rounded-lg border bg-base p-3"
+                    >
+                      <span className="min-w-0 flex-1 truncate font-mono text-sm fg-primary">
+                        {selectedBranch}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedBranch(null)}
+                        className="focus-ring shrink-0 rounded-md border px-2 py-1 text-xs fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary"
+                      >
+                        Change branch
+                      </button>
+                    </div>
+                  ) : (
+                    <BranchResults
+                      loading={branchTargetsLoading}
+                      options={branchOptions}
+                      onSelect={setSelectedBranch}
+                    />
+                  ))}
+                {mode === 'pr' && (
+                  <PrPreview
+                    resolving={prResolving}
+                    error={prError}
+                    pr={resolvedPr}
+                  />
+                )}
+              </div>
+            )}
+
+            {mode === 'linear' && (
+              <div>
+                <span className="mb-1.5 block text-xs fg-secondary">
+                  Linear ticket
+                </span>
+                {selectedTicket ? (
+                  <LinearTicketCard
+                    ticket={selectedTicket}
+                    onClear={() => setSelectedTicket(null)}
+                  />
+                ) : (
+                  <LinearSearch
+                    query={referenceQuery}
+                    onQueryChange={setReferenceQuery}
+                    results={searchResults}
+                    searching={searching}
+                    onSelect={(ticket) => {
+                      setSelectedTicket(ticket);
+                      const generatedTaskText = buildLinearTaskText(ticket);
+                      const previousGeneratedTaskText =
+                        lastGeneratedTaskTextRef.current;
+                      setTaskText((current) =>
+                        replaceGeneratedTaskText(
+                          current,
+                          previousGeneratedTaskText,
+                          generatedTaskText,
+                        ),
+                      );
+                      lastGeneratedTaskTextRef.current = generatedTaskText;
+                    }}
+                  />
+                )}
+              </div>
+            )}
+
+            <label className="block">
+              <span className="mb-1.5 block text-xs fg-secondary">
+                {mode === 'new'
+                  ? 'Task description'
+                  : 'Task description (optional)'}
+              </span>
+              <textarea
+                value={taskText}
+                onChange={(event) => setTaskText(event.target.value)}
+                placeholder="Describe the task in natural language…"
+                rows={mode === 'new' ? 6 : 3}
+                data-testid="create-task-text"
+                className="focus-ring w-full resize-y rounded-lg border bg-base px-3 py-2 text-sm"
+              />
+            </label>
+          </>
+        )}
+      </div>
+
+      <div className="flex items-center justify-end gap-2 border-t px-5 py-3">
+        <button
+          type="button"
+          onClick={onClose}
+          className="rounded-lg px-4 py-1.5 text-s fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={handlePipeline}
+          disabled={!canSubmitPipeline}
+          data-testid="create-task-pipeline-button"
+          className="focus-ring inline-flex items-center gap-1.5 rounded-lg border bg-secondary px-4 py-1.5 text-s font-medium fg-primary transition hover:bg-accent-subtle disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <PipelineIcon width={14} height={14} />
+          Pipeline
+        </button>
+        <button
+          type="button"
+          onClick={handlePlan}
+          disabled={!canSubmit}
+          data-testid="create-task-plan-button"
+          className="focus-ring inline-flex items-center gap-1.5 rounded-lg border bg-secondary px-4 py-1.5 text-s font-medium fg-primary transition hover:bg-accent-subtle disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <PlanModeIcon width={14} height={14} />
+          Plan
+        </button>
+        <button
+          type="button"
+          onClick={handleChat}
+          disabled={!canSubmit}
+          data-testid="create-task-chat-button"
+          className="focus-ring inline-flex items-center gap-1.5 rounded-lg bg-accent px-4 py-1.5 text-s font-medium fg-emphasis transition hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <ChatIcon width={14} height={14} />
+          Chat
+        </button>
+      </div>
+    </DialogModal>
+  );
+}

@@ -1,0 +1,39 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Shadow roots</title>
+  </head>
+  <body>
+    <x-card id="open-host">
+      <input id="slotted-input" value="slotted value">
+      <span slot="nowhere"><input id="unslotted-input" value="unslotted value"></span>
+      <button id="slotted-button" type="button">Slotted <b>action</b></button>
+    </x-card>
+    <x-card id="closed-host" role="button">Save draft</x-card>
+    <section id="nest-host"></section>
+    <script>
+      (() => {
+        // Seeds are concatenated so the script's own text never contains one.
+        const seed = (name, number) => 'SEED-SHADOW-' + name + '-' + number;
+        const open = document.querySelector('#open-host').attachShadow({ mode: 'open' });
+        open.innerHTML =
+          '<label for="note">Note</label> <input id="note" value="' + seed('OPEN', 1188) + '">' +
+          '<button id="shadow-button" type="button">Open <i>action</i></button>' +
+          '<label>Saved password: ' + seed('LABEL', 5150) + ' <input id="shadow-revealed" type="password" value="' + seed('LABEL', 5150) + '"></label>' +
+          '<textarea id="shadow-textarea">' + seed('TEXTAREA', 6262) + '</textarea>' +
+          '<textarea id="shadow-secret-note" autocomplete="one-time-code"></textarea>' +
+          '<slot></slot>';
+        open.querySelector('#shadow-revealed').type = 'text';
+        open.querySelector('#shadow-secret-note').value = seed('OTP', 9090);
+        const closed = document.querySelector('#closed-host').attachShadow({ mode: 'closed' });
+        closed.innerHTML =
+          '<span>Closed text</span><input id="closed-input" aria-label="Closed field" value="' + seed('CLOSED', 2299) + '">' +
+          '<select id="closed-select"><option>' + seed('OPTION', 7373) + '</option></select>';
+        const outer = document.querySelector('#nest-host').attachShadow({ mode: 'open' });
+        outer.innerHTML = '<div id="inner-host"></div>';
+        const inner = outer.querySelector('#inner-host').attachShadow({ mode: 'closed' });
+        inner.innerHTML = '<button type="button" id="deep">Two levels deep</button>';
+      })();
+    </script>
+  </body>
+</html>

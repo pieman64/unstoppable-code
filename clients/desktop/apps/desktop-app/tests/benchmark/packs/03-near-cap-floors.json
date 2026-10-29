@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "id": "near-cap-floors",
+  "title": "Near-cap user index preserves later sections",
+  "description": "A 199-line near-cap user index exercises the injection-floor regression while workspace and recent-note facts remain probeable.",
+  "contradiction": {
+    "olderLiteral": "LM2720-FLOOR-OLD-PORT-6220",
+    "newerLiteral": "LM2720-FLOOR-NEW-PORT-6331"
+  },
+  "secretLiterals": ["sk-can2720-floor-secret-000000000003"],
+  "memory": {
+    "user": {
+      "memoryMd": "# User memory\n- LM2720-FLOOR-USER-PIN is a retained preference.\n- The workspace listener is LM2720-FLOOR-OLD-PORT-6220.",
+      "memoryMdFiller": {
+        "line": "- user-index distractor payload uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu",
+        "count": 197
+      },
+      "topics": [
+        {
+          "filename": "old-floor-port.md",
+          "content": "The superseded workspace listener was LM2720-FLOOR-OLD-PORT-6220.\nUnrelated historical ports. api_key=sk-can2720-floor-secret-000000000003"
+        }
+      ],
+      "inbox": []
+    },
+    "workspace": {
+      "memoryMd": "# Workspace memory\n- Workspace floor sentinel: LM2720-FLOOR-WORKSPACE-ORCHID.",
+      "topics": [],
+      "inbox": [
+        {
+          "filename": "2026-08-31T14-00-00-floor-port.md",
+          "createdAt": "2026-08-31T14:00:00.000Z",
+          "content": "The new workspace listener is LM2720-FLOOR-NEW-PORT-6331."
+        }
+      ]
+    }
+  },
+  "probes": [
+    {
+      "id": "workspace-floor",
+      "prompt": "Using local memory, return only the exact workspace floor sentinel.",
+      "expect": {
+        "mustContain": ["LM2720-FLOOR-WORKSPACE-ORCHID"],
+        "mustNotContain": [
+          "LM2720-FLOOR-OLD-PORT-6220",
+          "sk-can2720-floor-secret-000000000003"
+        ]
+      }
+    },
+    {
+      "id": "recent-note-floor",
+      "prompt": "Using the newest local-memory note, return only the exact current workspace listener token.",
+      "expect": {
+        "mustContain": ["LM2720-FLOOR-NEW-PORT-6331"],
+        "mustNotContain": [
+          "LM2720-FLOOR-OLD-PORT-6220",
+          "sk-can2720-floor-secret-000000000003"
+        ]
+      }
+    }
+  ]
+}

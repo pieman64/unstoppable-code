@@ -1,0 +1,473 @@
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type JSX,
+  type KeyboardEvent,
+} from 'react';
+import type { BranchEntry } from '@canopy/desktop-shared/types';
+import {
+  collapseBranchDuplicates,
+  filterBranchesBySearch,
+  getBranchProvenanceBadge,
+  type BranchOption,
+} from './branch-options';
+import { resolveBranchPickerBaseSelection } from './branch-picker-base-selection';
+import { Tooltip } from '@canopy/ui-shared';
+import {
+  PlusIcon as AppCatalogPlusIcon,
+  ChevronLeftMediumIcon as AppCatalogChevronLeftMediumIcon,
+} from '@canopy/ui-shared/icons/AppIcons';
+
+interface BranchPickerProps {
+  projectId: string;
+  worktreeId: string;
+  repoId?: string;
+  currentBranch: string;
+  baseBranch?: string | null;
+  onBranchSwitched: (newBranch: string) => void;
+  onBranchCreated: (newBranch: string, baseBranch: string) => void;
+  onClose: () => void;
+}
+
+type PickerView = 'list' | 'create';
+
+export function BranchPicker({
+  projectId,
+  worktreeId,
+  repoId,
+  currentBranch,
+  baseBranch,
+  onBranchSwitched,
+  onBranchCreated,
+  onClose,
+}: BranchPickerProps): JSX.Element {
+  const [view, setView] = useState<PickerView>('list');
+  const [branches, setBranches] = useState<BranchEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const [switching, setSwitching] = useState<string | null>(null);
+
+  // Create branch state
+  const [newBranchName, setNewBranchName] = useState('');
+  const [newBaseBranch, setNewBaseBranch] = useState('');
+  const [newBaseBranchIsRemote, setNewBaseBranchIsRemote] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [showBasePicker, setShowBasePicker] = useState(false);
+
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const newBranchInputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  // Fetch branches on mount
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    window.api
+      .listBranches({ projectId, worktreeId, repoId })
+      .then((response) => {
+        if (cancelled) return;
+        const initialBaseSelection = resolveBranchPickerBaseSelection(
+          response.branches,
+          baseBranch,
+          response.defaultBranch,
+        );
+        setBranches(response.branches);
+        setNewBaseBranch(initialBaseSelection.name);
+        setNewBaseBranchIsRemote(initialBaseSelection.isRemote);
+        setLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setError(
+          err instanceof Error ? err.message : 'Failed to load branches',
+        );
+        setLoading(false);
+      });
+    return (): void => {
+      cancelled = true;
+    };
+  }, [projectId, worktreeId, repoId, baseBranch]);
+
+  // Focus search input when list view opens
+  useEffect(() => {
+    if (view === 'list' && !loading) {
+      setTimeout(() => searchInputRef.current?.focus(), 0);
+    }
+  }, [view, loading]);
+
+  // Focus new branch input when create view opens
+  useEffect(() => {
+    if (view === 'create') {
+      setTimeout(() => newBranchInputRef.current?.focus(), 0);
+    }
+  }, [view]);
+
+  // Filter branches: hide remote entries when a same-name local exists
+  const filteredBranches = useMemo(() => {
+    return filterBranchesBySearch(collapseBranchDuplicates(branches), search);
+  }, [branches, search]);
+
+  const localBranches = useMemo(
+    () => filteredBranches.filter((b) => b.hasLocalRef),
+    [filteredBranches],
+  );
+
+  const remoteBranches = useMemo(
+    () => filteredBranches.filter((b) => !b.hasLocalRef && b.hasRemoteRef),
+    [filteredBranches],
+  );
+
+  const handleSwitch = useCallback(
+    async (branch: BranchEntry) => {
+      if (branch.isCurrent || branch.isUsedByWorktree) return;
+      setSwitching(branch.name);
+      setError(null);
+      try {
+        const response = await window.api.switchBranch({
+          projectId,
+          worktreeId,
+          branchName: branch.name,
+          isRemote: branch.isRemote,
+          repoId,
+        });
+        if (response.success) {
+          onBranchSwitched(response.branchName);
+        }
+      } catch (err: unknown) {
+        setError(
+          err instanceof Error ? err.message : 'Failed to switch branch',
+        );
+      } finally {
+        setSwitching(null);
+      }
+    },
+    [projectId, worktreeId, repoId, onBranchSwitched],
+  );
+
+  const handleCreate = useCallback(async () => {
+    const trimmedName = newBranchName.trim();
+    if (!trimmedName) return;
+    setCreating(true);
+    setCreateError(null);
+    try {
+      const response = await window.api.createBranch({
+        projectId,
+        worktreeId,
+        newBranchName: trimmedName,
+        baseBranch: newBaseBranch,
+        baseBranchIsRemote: newBaseBranchIsRemote,
+        repoId,
+      });
+      if (response.success) {
+        onBranchCreated(response.branchName, newBaseBranch);
+      }
+    } catch (err: unknown) {
+      setCreateError(
+        err instanceof Error ? err.message : 'Failed to create branch',
+      );
+    } finally {
+      setCreating(false);
+    }
+  }, [
+    projectId,
+    worktreeId,
+    repoId,
+    newBranchName,
+    newBaseBranch,
+    newBaseBranchIsRemote,
+    onBranchCreated,
+  ]);
+
+  // Base branch picker filter for the create view
+  const baseFilteredBranches = useMemo(() => {
+    if (!showBasePicker) return [];
+    return filterBranchesBySearch(
+      collapseBranchDuplicates(branches),
+      newBaseBranch,
+    );
+  }, [branches, newBaseBranch, showBasePicker]);
+
+  const renderBranchItem = (branch: BranchOption): JSX.Element => {
+    const isSwitching = switching === branch.name;
+    const isDisabled = branch.isCurrent || branch.isUsedByWorktree;
+    const provenanceBadge = getBranchProvenanceBadge(branch);
+
+    return (
+      <Tooltip
+        key={`${branch.isRemote ? 'remote' : 'local'}-${branch.name}`}
+        label={
+          branch.isUsedByWorktree
+            ? 'Used by another worktree'
+            : branch.isCurrent
+              ? 'Current branch'
+              : `Switch to ${branch.name}`
+        }
+        disabled={!branch.isUsedByWorktree && !branch.isCurrent}
+        className="w-full"
+      >
+        <button
+          type="button"
+          disabled={isDisabled || isSwitching}
+          onClick={() => void handleSwitch(branch)}
+          className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors ${
+            branch.isCurrent
+              ? 'bg-accent-subtle fg-accent'
+              : branch.isUsedByWorktree
+                ? 'cursor-not-allowed opacity-50'
+                : 'fg-primary hover:bg-fg-primary/5'
+          } ${isSwitching ? 'opacity-70' : ''}`}
+        >
+          <span className="min-w-0 flex-1 truncate font-mono">
+            {branch.name}
+          </span>
+          {branch.isCurrent && (
+            <span className="shrink-0 rounded bg-accent-subtle px-1.5 py-0.5 text-3xs font-medium fg-accent">
+              current
+            </span>
+          )}
+          {branch.isUsedByWorktree && !branch.isCurrent && (
+            <span className="shrink-0 rounded bg-warning-subtle px-1.5 py-0.5 text-3xs font-medium fg-warning">
+              in use
+            </span>
+          )}
+          {provenanceBadge && (
+            <span className="shrink-0 rounded bg-fg-primary/5 px-1.5 py-0.5 text-3xs fg-secondary">
+              {provenanceBadge}
+            </span>
+          )}
+          {isSwitching && (
+            <span className="shrink-0 text-3xs fg-secondary">switching…</span>
+          )}
+        </button>
+      </Tooltip>
+    );
+  };
+
+  return (
+    <div className="mt-1 w-full rounded-lg bg-card shadow-lg">
+      {view === 'list' && (
+        <>
+          {/* Search input */}
+          <div className="border-b p-2">
+            <input
+              ref={searchInputRef}
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => {
+                if (e.key === 'Escape') {
+                  if (search) {
+                    setSearch('');
+                  } else {
+                    onClose();
+                  }
+                }
+              }}
+              placeholder={`Search branches (on ${currentBranch})…`}
+              className="w-full rounded border bg-fg-primary/5 px-2 py-1 text-xs fg-primary outline-none placeholder:fg-secondary focus:border-line-accent"
+            />
+          </div>
+
+          {/* Branch list */}
+          <div ref={listRef} className="max-h-60 overflow-y-auto p-1">
+            {loading && (
+              <div className="flex items-center justify-center py-4">
+                <span className="text-xs fg-secondary">Loading branches…</span>
+              </div>
+            )}
+
+            {!loading && filteredBranches.length === 0 && (
+              <div className="py-3 text-center text-xs fg-secondary">
+                {search ? 'No matching branches' : 'No branches found'}
+              </div>
+            )}
+
+            {!loading && localBranches.length > 0 && (
+              <div>
+                <div className="px-2 py-1 text-3xs font-semibold fg-secondary">
+                  Local
+                </div>
+                {localBranches.map(renderBranchItem)}
+              </div>
+            )}
+
+            {!loading && remoteBranches.length > 0 && (
+              <div className={localBranches.length > 0 ? 'mt-1' : ''}>
+                <div className="px-2 py-1 text-3xs font-semibold fg-secondary">
+                  Remote
+                </div>
+                {remoteBranches.map(renderBranchItem)}
+              </div>
+            )}
+          </div>
+
+          {/* Error display */}
+          {error && (
+            <div className="border-t px-2 py-1.5">
+              <p className="text-xs fg-destructive">{error}</p>
+            </div>
+          )}
+
+          {/* New branch option */}
+          <div className="border-t p-1">
+            <button
+              type="button"
+              onClick={() => {
+                setView('create');
+                setCreateError(null);
+              }}
+              className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-xs fg-secondary transition-colors hover:bg-fg-primary/5 hover:fg-primary"
+            >
+              <AppCatalogPlusIcon width="12" height="12" />
+              New branch…
+            </button>
+          </div>
+        </>
+      )}
+
+      {view === 'create' && (
+        <div className="p-3">
+          <div className="mb-2 flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => {
+                setView('list');
+                setCreateError(null);
+              }}
+              className="focus-ring shrink-0 rounded p-0.5 fg-secondary transition-colors hover:fg-primary"
+              aria-label="Back to branch list"
+            >
+              <AppCatalogChevronLeftMediumIcon width="14" height="14" />
+            </button>
+            <span className="text-xs font-semibold fg-primary">
+              Create new branch
+            </span>
+          </div>
+
+          {/* Branch name input */}
+          <div className="space-y-2">
+            <div>
+              <label className="mb-1 block text-3xs font-medium fg-secondary">
+                Branch name
+              </label>
+              <input
+                ref={newBranchInputRef}
+                type="text"
+                value={newBranchName}
+                onChange={(e) => {
+                  setNewBranchName(e.target.value);
+                  setCreateError(null);
+                }}
+                onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => {
+                  if (e.key === 'Enter') {
+                    void handleCreate();
+                  } else if (e.key === 'Escape') {
+                    setView('list');
+                    setCreateError(null);
+                  }
+                }}
+                placeholder="feature/my-branch"
+                disabled={creating}
+                className="w-full rounded border bg-fg-primary/5 px-2 py-1 font-mono text-xs fg-primary outline-none placeholder:fg-secondary focus:border-line-accent disabled:opacity-60"
+              />
+            </div>
+
+            {/* Base branch input */}
+            <div className="relative">
+              <label className="mb-1 block text-3xs font-medium fg-secondary">
+                From base branch
+              </label>
+              <input
+                type="text"
+                value={newBaseBranch}
+                onChange={(e) => {
+                  const nextBaseSelection = resolveBranchPickerBaseSelection(
+                    branches,
+                    e.target.value,
+                    null,
+                  );
+                  setNewBaseBranch(nextBaseSelection.name);
+                  setNewBaseBranchIsRemote(nextBaseSelection.isRemote);
+                  setShowBasePicker(true);
+                }}
+                onFocus={() => setShowBasePicker(true)}
+                onBlur={() => {
+                  // Delay to allow click on picker item
+                  setTimeout(() => setShowBasePicker(false), 150);
+                }}
+                onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => {
+                  if (e.key === 'Escape') {
+                    setShowBasePicker(false);
+                  }
+                }}
+                disabled={creating}
+                className="w-full rounded border bg-fg-primary/5 px-2 py-1 font-mono text-xs fg-primary outline-none placeholder:fg-secondary focus:border-line-accent disabled:opacity-60"
+              />
+              {showBasePicker && baseFilteredBranches.length > 0 && (
+                <div className="absolute left-0 right-0 top-full z-10 mt-1 max-h-40 overflow-y-auto rounded bg-card shadow-lg">
+                  {baseFilteredBranches.map((b) => {
+                    const provenanceBadge = getBranchProvenanceBadge(b);
+                    return (
+                      <button
+                        key={`base-${b.isRemote ? 'remote' : 'local'}-${b.name}`}
+                        type="button"
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          setNewBaseBranch(b.name);
+                          setNewBaseBranchIsRemote(b.hasRemoteRef);
+                          setShowBasePicker(false);
+                        }}
+                        className="flex w-full items-center gap-2 px-2 py-1 text-left text-xs fg-primary hover:bg-fg-primary/5"
+                      >
+                        <span className="min-w-0 flex-1 truncate font-mono">
+                          {b.name}
+                        </span>
+                        {provenanceBadge && (
+                          <span className="shrink-0 text-3xs fg-secondary">
+                            {provenanceBadge}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {createError && (
+              <p className="text-xs fg-destructive">{createError}</p>
+            )}
+
+            <div className="flex justify-end gap-1.5">
+              <button
+                type="button"
+                onClick={() => {
+                  setView('list');
+                  setCreateError(null);
+                }}
+                disabled={creating}
+                className="focus-ring shrink-0 rounded-md border px-2 py-1 text-xs fg-secondary hover:bg-secondary hover:fg-primary disabled:opacity-60"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={creating || !newBranchName.trim()}
+                onClick={() => void handleCreate()}
+                className="focus-ring shrink-0 rounded-md bg-accent px-2 py-1 text-xs font-medium fg-emphasis hover:bg-accent/90 disabled:opacity-60"
+              >
+                {creating ? 'Creating…' : 'Create'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

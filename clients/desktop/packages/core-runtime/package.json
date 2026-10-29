@@ -1,0 +1,25 @@
+{
+  "name": "@canopy/core-runtime",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Portable in-process Canopy dispatcher, operation errors, lifecycle, and typed client.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./storage": "./src/storage/index.ts",
+    "./node": "./src/node/index.ts",
+    "./node/w5/commit-log": "./src/node/w5/commit-log/index.ts",
+    "./node/w5/commit-log/errors": "./src/node/w5/commit-log/errors.ts",
+    "./node/w5/commit-log/fingerprint": "./src/node/w5/commit-log/fingerprint.ts",
+    "./node/w5/commit-log/reservation-diagnostics": "./src/node/w5/commit-log/reservation-diagnostics.ts",
+    "./node/w5/commit-log/worker-contract": "./src/node/w5/commit-log/worker-contract.ts"
+  },
+  "dependencies": {
+    "@canopy/core-transport": "workspace:*",
+    "@canopy/protocol": "workspace:*",
+    "picomatch": "^4.0.4"
+  }
+}

@@ -1,0 +1,26 @@
+name: Plan Path Validation
+description: Validate and normalize plan file paths.
+inputs:
+  paths:
+    description: JSON array of relative paths to validate.
+    required: false
+    default: "[]"
+  paths_file:
+    description: Path to a file containing a JSON array of paths.
+    required: false
+  base_directory:
+    description: Base directory used to validate relative paths.
+    required: false
+    default: .
+outputs:
+  valid:
+    description: Whether all paths were valid.
+  invalid_count:
+    description: Number of rejected paths.
+  invalid_paths:
+    description: JSON array of invalid paths.
+  normalized_paths:
+    description: JSON array of normalized relative paths.
+runs:
+  using: node
+  main: index.js

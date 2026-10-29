@@ -1,0 +1,28 @@
+{
+  "id": "C0123",
+  "description": "One tool call (AskUserQuestion) then a final text answer.",
+  "defaultUsage": {
+    "inputTokens": 1200,
+    "outputTokens": 40,
+    "cacheReadInputTokens": 800
+  },
+  "steps": [
+    {
+      "thinking": "Deciding what to ask.",
+      "toolCalls": [
+        {
+          "name": "mcp__canopy__AskUserQuestion",
+          "input": { "question": "Pick a color", "options": ["Red", "Blue"] }
+        }
+      ],
+      "stopReason": "tool_use",
+      "streamMs": 600
+    },
+    {
+      "text": "Thanks — recorded your choice. Done.",
+      "stopReason": "end_turn",
+      "usage": { "outputTokens": 18 },
+      "streamMs": 1200
+    }
+  ]
+}

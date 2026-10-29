@@ -1,0 +1,367 @@
+import { mkdir, rm } from 'node:fs/promises';
+import { dirname } from 'node:path';
+import {
+  isHookTriggerName,
+  normalizeHookInputMap,
+  type HookInputMap,
+} from '@canopy/desktop-shared/hooks';
+import {
+  normalizeScriptInputMap,
+  type ScriptDefinition,
+  type ScriptInputMap,
+} from '@canopy/desktop-shared/scripts';
+import {
+  getShareablePluginRefKey,
+  type ShareablePluginRef,
+} from '@canopy/desktop-shared/plugin-refs';
+import type {
+  CanopyJsonFile,
+  ProjectApplySourceChangesRequest,
+  ProjectApplySourceChangesResponse,
+  ProjectSourceChangesAppliedEvent,
+  WorktreeData,
+} from '@canopy/desktop-shared/types';
+import type { BrowserWindow } from 'electron';
+import { isProjectStartPage } from '@canopy/protocol/start-page';
+import { generateUniqueAnimalName } from './animals';
+import {
+  getCanopyJsonPath,
+  readCanopyJson,
+  writeCanopyJson,
+} from './canopy-json';
+import {
+  bestEffortPruneWorktrees,
+  createWorktree,
+  removeWorktree,
+} from './git';
+import { getWorktreeDataDir, getWorktreeDir } from './paths';
+import { resolveProjectReferenceRepoPath } from './project-reference-repo';
+import { startProjectWorktreePostCreateSetup } from './project-worktree-runtime';
+import { detachedWorkCallback } from '@canopy/desktop-shared/node/lib/detached-work';
+import { validateAbsolutePath } from './validation';
+import { WORKTREE_LIST_STORAGE, withStorageAdmission } from './w5-storage';
+import {
+  readWorkspaceConfig,
+  readWorkspaceWorktrees,
+  removeWorkspaceWorktrees,
+  updateWorkspaceWorktrees,
+} from './workspace-persistence';
+import { WorkspaceSourceChangesRefusedError } from './workspace-source-change-refusal';
+
+interface TargetProjectContext {
+  worktreeId: string;
+  branchName: string;
+  createdWorktree: boolean;
+  referenceRepoPath: string;
+  worktreePath: string;
+}
+
+function applyProjectManifestScripts(
+  manifest: CanopyJsonFile,
+  scripts: ScriptInputMap | undefined,
+): void {
+  if (scripts === undefined) {
+    return;
+  }
+
+  const normalizedScripts = normalizeScriptInputMap(scripts);
+  if (!normalizedScripts) {
+    delete manifest.scripts;
+    return;
+  }
+
+  const entries = Object.entries(normalizedScripts).filter(
+    (entry): entry is [string, string | ScriptDefinition] => entry[1] !== null,
+  );
+  if (entries.length === 0) {
+    delete manifest.scripts;
+    return;
+  }
+
+  manifest.scripts = Object.fromEntries(entries);
+}
+
+function applyProjectManifestHooks(
+  manifest: CanopyJsonFile,
+  hooks: HookInputMap | undefined,
+): void {
+  if (hooks === undefined) {
+    return;
+  }
+
+  const normalizedHooks = normalizeHookInputMap(hooks);
+  if (!normalizedHooks) {
+    delete manifest.hooks;
+    return;
+  }
+
+  const nextHooks: NonNullable<CanopyJsonFile['hooks']> = {};
+  for (const [triggerName, actions] of Object.entries(normalizedHooks)) {
+    if (isHookTriggerName(triggerName) && Array.isArray(actions)) {
+      nextHooks[triggerName] = actions;
+    }
+  }
+  if (Object.keys(nextHooks).length === 0) {
+    delete manifest.hooks;
+    return;
+  }
+
+  manifest.hooks = nextHooks;
+}
+
+function dedupeShareablePluginRefs(
+  plugins: readonly ShareablePluginRef[],
+): ShareablePluginRef[] {
+  const seenKeys = new Set<string>();
+  const result: ShareablePluginRef[] = [];
+  for (const plugin of plugins) {
+    const key = getShareablePluginRefKey(plugin);
+    if (seenKeys.has(key)) {
+      continue;
+    }
+    seenKeys.add(key);
+    result.push(plugin);
+  }
+  return result;
+}
+
+function applyProjectManifestPlugins(
+  manifest: CanopyJsonFile,
+  plugins: ShareablePluginRef[] | undefined,
+): void {
+  if (plugins === undefined) {
+    return;
+  }
+
+  const nextPlugins = dedupeShareablePluginRefs(plugins);
+  if (nextPlugins.length === 0) {
+    delete manifest.plugins;
+    return;
+  }
+
+  manifest.plugins = nextPlugins;
+}
+
+function applyProjectManifestStartPage(
+  manifest: CanopyJsonFile,
+  startPage: ProjectApplySourceChangesRequest['startPage'],
+): void {
+  if (startPage === undefined) return;
+  if (startPage === null) {
+    delete manifest.startPage;
+    return;
+  }
+  if (!isProjectStartPage(startPage)) {
+    throw new WorkspaceSourceChangesRefusedError(
+      'invalid-request',
+      'Invalid start page',
+    );
+  }
+  manifest.startPage = startPage;
+}
+
+async function rollbackCreatedProjectWorktree(
+  projectId: string,
+  context: TargetProjectContext,
+): Promise<void> {
+  try {
+    await removeWorktree(context.referenceRepoPath, context.worktreePath);
+  } catch {
+    await rm(context.worktreePath, { recursive: true, force: true });
+    bestEffortPruneWorktrees(
+      context.referenceRepoPath,
+      'project-source-change-apply rollbackCreatedProjectWorktree',
+    );
+  }
+
+  await removeWorkspaceWorktrees(
+    projectId,
+    (worktree) => worktree.id === context.worktreeId,
+  );
+}
+
+/**
+ * Records a target worktree created for a source change: one row appended to
+ * the list read under its lock, so rows written while the checkout was made
+ * are kept as they are (CAN-3819). An id taken in the meantime is refused.
+ */
+async function appendTargetWorktree(
+  projectId: string,
+  row: WorktreeData,
+): Promise<void> {
+  await updateWorkspaceWorktrees(projectId, (current) => {
+    if (current.some((worktree) => worktree.id === row.id)) {
+      throw new Error(`Project worktree ${row.id} already exists`);
+    }
+    return [...current, row];
+  });
+}
+
+async function ensureTargetProjectWorktree(
+  request: ProjectApplySourceChangesRequest,
+  referenceRepoPath: string,
+): Promise<TargetProjectContext> {
+  const worktrees = await readWorkspaceWorktrees(request.projectId);
+  if (request.target.mode === 'existing') {
+    const target = request.target;
+    const worktree = worktrees.find((entry) => entry.id === target.worktreeId);
+    if (!worktree) {
+      throw new WorkspaceSourceChangesRefusedError(
+        'not-found',
+        `Project worktree ${target.worktreeId} was not found`,
+      );
+    }
+
+    return {
+      worktreeId: worktree.id,
+      branchName: worktree.branchName,
+      createdWorktree: false,
+      referenceRepoPath,
+      worktreePath: getWorktreeDir(request.projectId, worktree.id),
+    };
+  }
+
+  const existingIds = new Set<string>(request.target.existingWorktreeIds);
+  for (const worktree of worktrees) {
+    existingIds.add(worktree.id);
+  }
+
+  const worktreeId = generateUniqueAnimalName(existingIds);
+  const worktreePath = getWorktreeDir(request.projectId, worktreeId);
+
+  await mkdir(dirname(worktreePath), { recursive: true });
+  await mkdir(getWorktreeDataDir(request.projectId, worktreeId), {
+    recursive: true,
+  });
+  const branchName = await createWorktree(
+    referenceRepoPath,
+    worktreePath,
+    worktreeId,
+  );
+  const targetContext: TargetProjectContext = {
+    worktreeId,
+    branchName,
+    createdWorktree: true,
+    referenceRepoPath,
+    worktreePath,
+  };
+
+  try {
+    await appendTargetWorktree(request.projectId, {
+      id: worktreeId,
+      branchName,
+      createdAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    await rollbackCreatedProjectWorktree(request.projectId, targetContext);
+    throw error;
+  }
+
+  return targetContext;
+}
+
+function isRecoverableTargetManifestError(
+  repoPath: string,
+  error: unknown,
+): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const canopyJsonPath = getCanopyJsonPath(repoPath);
+  return error.message.startsWith(`${canopyJsonPath}:`);
+}
+
+export function applyProjectSourceChangesToWorktree(
+  ...args: Parameters<typeof applyAdmittedProjectSourceChanges>
+): Promise<ProjectApplySourceChangesResponse> {
+  const [request] = args;
+  return withStorageAdmission(
+    request.target.mode === 'new' ? [WORKTREE_LIST_STORAGE] : [],
+    () => applyAdmittedProjectSourceChanges(...args),
+  );
+}
+
+async function applyAdmittedProjectSourceChanges(
+  request: ProjectApplySourceChangesRequest,
+  getWindow: () => BrowserWindow | null,
+  onApplied?: (event: ProjectSourceChangesAppliedEvent) => void,
+): Promise<ProjectApplySourceChangesResponse> {
+  const config = await readWorkspaceConfig(request.projectId);
+  if (config.type !== 'single-repo' || !config.repoPath) {
+    throw new WorkspaceSourceChangesRefusedError(
+      'not-single-repo',
+      `Project ${request.projectId} is not a single-repo project`,
+    );
+  }
+  validateAbsolutePath(config.repoPath, 'repoPath');
+
+  const referenceRepoPath = await resolveProjectReferenceRepoPath(
+    config.repoPath,
+  );
+  const targetContext = await ensureTargetProjectWorktree(
+    request,
+    referenceRepoPath,
+  );
+  await mkdir(getWorktreeDataDir(request.projectId, targetContext.worktreeId), {
+    recursive: true,
+  });
+
+  let manifest: CanopyJsonFile;
+  try {
+    manifest = (await readCanopyJson(targetContext.worktreePath)) ?? {
+      version: 1,
+    };
+  } catch (error) {
+    if (!isRecoverableTargetManifestError(targetContext.worktreePath, error)) {
+      throw error;
+    }
+
+    manifest = {
+      version: 1,
+    };
+  }
+
+  try {
+    applyProjectManifestScripts(manifest, request.scripts);
+    applyProjectManifestHooks(manifest, request.hooks);
+    applyProjectManifestPlugins(manifest, request.plugins);
+    applyProjectManifestStartPage(manifest, request.startPage);
+    await writeCanopyJson(targetContext.worktreePath, manifest);
+    onApplied?.({
+      clientRequestId: request.clientRequestId,
+      projectId: request.projectId,
+      worktreeId: targetContext.worktreeId,
+      branchName: targetContext.branchName,
+      createdWorktree: targetContext.createdWorktree,
+    });
+
+    if (targetContext.createdWorktree) {
+      const project = { repoPath: config.repoPath, scripts: config.scripts };
+      detachedWorkCallback(() =>
+        startProjectWorktreePostCreateSetup({
+          projectId: request.projectId,
+          worktreeId: targetContext.worktreeId,
+          project,
+          getWindow,
+        }),
+      )();
+    }
+
+    return {
+      worktreeId: targetContext.worktreeId,
+      branchName: targetContext.branchName,
+      createdWorktree: targetContext.createdWorktree,
+      referenceRepoPath,
+    };
+  } catch (error) {
+    if (targetContext.createdWorktree) {
+      await rollbackCreatedProjectWorktree(
+        request.projectId,
+        targetContext,
+      ).catch(() => {});
+    }
+
+    throw error instanceof Error ? error : new Error(String(error));
+  }
+}

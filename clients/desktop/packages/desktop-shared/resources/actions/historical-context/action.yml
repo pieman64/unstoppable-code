@@ -1,0 +1,25 @@
+name: Historical Context
+description: Retrieve prior context and patterns for the repo.
+log_format_hint: agent
+inputs:
+  model:
+    description: Optional Claude model override.
+    required: false
+outputs:
+  text_response:
+    description: Historical context summary.
+    value: ${{ steps.history.outputs.text_response }}
+  transcript_file:
+    description: Historical context transcript file.
+    value: ${{ steps.history.outputs.transcript_file }}
+runs:
+  using: composite
+  steps:
+    - id: history
+      uses: builtin/agent-prompt
+      with:
+        model: ${{ inputs.model }}
+        permission_preset: read_only
+        prompt: |
+          Review the repository for prior patterns, conventions, and adjacent implementation
+          examples that should influence new work. Summarize the highest-signal findings only.

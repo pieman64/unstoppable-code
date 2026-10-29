@@ -1,0 +1,49 @@
+import type { JSX, ReactNode } from 'react';
+import { DropdownMenuItem, DropdownMenuItemIcon } from '@canopy/ui-shared';
+import type { DevServerHit } from '@/lib/scriptDevServerDetection';
+import {
+  getDevServerMenuItemText,
+  openDevServerHit,
+  type DevServerOpenContext,
+} from './devServerOpen';
+import { RichHoverTooltip } from '@/components/shared/RichHoverTooltip';
+
+interface DevServerMenuItemProps {
+  hit: DevServerHit;
+  context: DevServerOpenContext;
+  /**
+   * The row's leading icon. Every URL row opens a dev server, so only the
+   * first row of a group shows it; the rest pass `null` and keep the empty
+   * slot so the labels stay aligned.
+   */
+  icon: ReactNode;
+  onSelect: () => void;
+}
+
+export function DevServerMenuItem({
+  hit,
+  context,
+  icon,
+  onSelect,
+}: DevServerMenuItemProps): JSX.Element {
+  return (
+    <RichHoverTooltip
+      content={hit.url}
+      triggerWrapperClassName="w-full"
+      surfaceClassName="w-max max-w-96"
+      surfacePadding="compact"
+    >
+      <DropdownMenuItem
+        onClick={(): void => {
+          openDevServerHit(hit, context);
+          onSelect();
+        }}
+      >
+        <DropdownMenuItemIcon>{icon}</DropdownMenuItemIcon>
+        <span className="min-w-0 truncate">
+          {getDevServerMenuItemText(hit)}
+        </span>
+      </DropdownMenuItem>
+    </RichHoverTooltip>
+  );
+}

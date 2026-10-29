@@ -1,0 +1,20 @@
+name: Discover Review Tracks
+description: Validate repository Markdown review tracks and emit an include matrix.
+scope: [directory, worktree]
+inputs:
+  repository_root:
+    description: Root of the repository being reviewed, from git-workspace-details.
+    required: true
+  tracks_directory:
+    description: Repository-relative directory containing Markdown review tracks.
+    required: true
+outputs:
+  matrix:
+    description: JSON include matrix with one entry per track and model.
+  reviewer_count:
+    description: Number of reviewer variants discovered.
+  track_count:
+    description: Number of Markdown tracks discovered.
+runs:
+  using: node
+  main: index.js

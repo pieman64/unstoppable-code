@@ -1,0 +1,5456 @@
+import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
+import { getSharedPipelineForExecutionContext } from '../pipelines/canopy-server-client';
+import { readChatTabsFile } from '../lib/chat-tabs-reader';
+import { loadExecutionState } from '@canopy/desktop-shared/node/pipelines/executor';
+import type { ChildPipelineAuthorization } from '@canopy/desktop-shared/node/pipelines/executor/child-pipeline-resolver';
+import {
+  backgroundExecutionDeniedMessage,
+  backgroundExecutionRetryMessage,
+  backgroundExecutionUnavailableMessage,
+  pipelineContextResources,
+  localPipelineContextResources,
+} from '@canopy/desktop-shared/node/background-execution-context';
+import type { ResourceContextDecision } from '@canopy/desktop-shared/lib/resource-context-policy';
+import {
+  resourceContextEnabled,
+  resourceContextSnapshot,
+  assertResourceContextSnapshot,
+  assertResourceContext,
+  assertResourceContextForContext,
+  resourceAccountSnapshot,
+  assertResourceAccountSnapshot,
+} from '../lib/resource-context';
+import { ResourceContextUnavailableError } from '../lib/resource-context-error';
+import {
+  assertInstalledResourceContext,
+  recordResourceInstall,
+} from '../lib/resource-install-context';
+import { getSharedAutomation } from './canopy-server-client';
+import {
+  recordSharedItemInstall,
+  recordSharedItemUninstall,
+} from '../canopy-cloud/shared-item-subscriptions';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import type { BrowserWindow } from 'electron';
+import { BRAND } from '@canopy/brand/current';
+import {
+  getExecutionHarnessForModel,
+  getModelSource,
+  isInheritingAgentModel,
+  IPC_CHANNELS,
+  APP_ADVISOR_PROJECT_ID,
+  APP_ADVISOR_WORKTREE_ID,
+  STANDALONE_CHAT_PROJECT_ID,
+  COWORK_HOME_WORKTREE_ID,
+  WORKSPACE_ROOT_REPO_ID,
+  hasAnySelections,
+  resolveKnownModel,
+  resolveProviderModelConfig,
+  requireProviderForModel,
+  type AgentScheduledSend,
+  type AgentModelConfig,
+  type AgentProviderType,
+  type ApprovalMode,
+  type AppAdvisorWindowCommand,
+  type AppAdvisorWindowOpenRequest,
+  type AppAdvisorWindowState,
+  type AutomationAction,
+  type ApproveAutomationSharedPipelineReviewRequest,
+  type ApproveAutomationSharedPipelineReviewResponse,
+  type AutomationCreateRequest,
+  type AutomationCancelRunRequest,
+  type AutomationDeleteRequest,
+  type AutomationIfCommandIdempotencyScope,
+  type AutomationMutationResponse,
+  type AutomationRunHistoryRequest,
+  type AutomationRunHistoryResponse,
+  type AutomationRunTrigger,
+  type AutomationRemoteMetadata,
+  type AutomationRunNowRequest,
+  type AutomationSkipReason,
+  type AutomationUpdateRequest,
+  type AutomationsListResponse,
+  type ChatProjectData,
+  type ChatModel,
+  type ModelDefaultsByProvider,
+  type PreferencesData,
+  type ChatTabPluginSelections,
+  type ThinkingLevel,
+  type ScheduledActivity,
+  type ScheduledActivityRun,
+} from '@canopy/desktop-shared/types';
+import type { PipelineShareInstallPin } from '@canopy/protocol/pipelines';
+import {
+  projectKindToTargetContext,
+  validateSharedAutomationTargetRequirement,
+} from '@canopy/protocol/automations';
+import type { SidebarItemGroupScope } from '@canopy/protocol/sidebar';
+import {
+  automationTargetBindingChanged,
+  automationTargetMismatchMessage,
+  resolveLocalAutomationTargetRequirement,
+} from '@canopy/desktop-shared/lib/automation-target';
+import {
+  resolveAppAdvisorDefaultModel,
+  resolveOptionalLaneAwareDefaultSelection,
+  type LaneCredentialScope,
+} from '../lib/default-model-lane-resolver';
+import { resolveCoworkWorkspaceId } from '../lib/cowork-migration-map';
+import type { ShareablePluginRef } from '@canopy/desktop-shared/plugin-refs';
+import { getTriggerTypes } from '@canopy/desktop-shared/types/pipeline';
+import { getPersistedClaudeChatInterfaceMode } from '../lib/claude-tui-chats';
+import {
+  getNextCronRun,
+  getNextAutomationTriggerRun,
+  interpolateAutomationActionIfCommandOutput,
+  parseAutomationIfCommandOutput,
+  normalizeAutomationSharedPipelineReview,
+  automationPipelineSpeedError,
+  validateAutomationAction,
+  validateAutomationActionForWrite,
+  validateAutomationCreateRequest,
+  validateAutomationIfCommand,
+  validateAutomationSharedPipelineReview,
+  validateAutomationTrigger,
+} from '@canopy/desktop-shared/lib/automations';
+import { mergeAgentModelConfig } from '@canopy/desktop-shared/lib/codex-speed';
+import {
+  accountMayRunIn,
+  authorizeBackgroundExecution,
+  automationActionDestination,
+  backgroundExecutionContextEnabled,
+  automationBindingContext,
+  automationContextRefusal,
+  captureBackgroundExecutionContext,
+  describeAutomationContextMismatch,
+  backgroundDestinationWorkspaceId,
+  persistedPipelineContextResources,
+  resolveMovedTargetOwnershipChange,
+} from '../services/background-execution-context';
+import {
+  parseWorkspaceContext,
+  serializeWorkspaceContext,
+  type WorkspaceContext,
+} from '@canopy/protocol/workspace-context';
+import { runAutomationIfCommand } from './if-command-runner';
+import { decideIfCommandGate } from './if-command-gate';
+import {
+  automationDefinitionResource,
+  isContextOwnedInstall,
+  publicInstallOwner,
+} from './activity-owner';
+import { getAutomationRunArchive } from './run-archive';
+import {
+  getDataDir,
+  getAutomationsFilePath,
+  getChatProjectsFilePath,
+} from '../lib/paths';
+import { logMainProcessError } from '../lib/main-process-logging';
+import { isCursorRuntimeAvailable } from '../cursor/runtime-availability';
+import { rebindAgentSenderRequest } from '../agent-messaging/sender-context';
+import {
+  assertOpenCodeConnectionGeneration,
+  assertOpenCodeModelAvailable,
+  getOpenCodeConnectionGeneration,
+} from '../opencode/connection';
+import { sendStandaloneChatMessage } from '../services/standalone-chat-service';
+import { sidebarItemGroupsService } from '../services/sidebar-item-groups-service';
+import {
+  buildExistingTabDispatchOptions,
+  ExistingTabDispatchTargetNotFoundError,
+  sendWorktreeChatMessage,
+} from '../services/chat-service';
+import {
+  archiveMultiRepoWorktree,
+  archiveSingleRepoWorktree,
+  createMultiRepoWorktree,
+  createSingleRepoWorktree,
+} from '../lib/worktree-service';
+import { readAllSidebarItems } from '../lib/sidebar-items';
+import { resolveWorkspaceReferenceRepoPath } from '../lib/workspace-reference-repo';
+import { sendToWindow } from '../lib/window-send';
+import { reserveWorkspaceTargetRuntimeStart } from '../lib/workspace-target-exclusion';
+import {
+  getCoworkWorkspaceRootDir,
+  getWorkspaceWorktreeRepoDir,
+  getWorkspaceWorktreeRootRepoDir,
+} from '../lib/paths';
+import {
+  executionContextSatisfies,
+  normalizePipelineScopes,
+} from '@canopy/desktop-shared/pipelines/scope';
+import {
+  discoverProjectPipelines,
+  loadProjectPipelineFromDisk,
+} from '../pipelines/project-pipeline-discovery';
+import { startPipelineExecutionFromMain } from '../pipelines/pipeline-handlers';
+import { normalizePipelinePluginCollectionPreferences } from '../pipelines/plugin-collection-store';
+import { resumePipelineExecutionFromMain } from '../pipelines/pipeline-resume-service';
+import * as pipelineStore from '../pipelines/pipeline-service';
+import type {
+  Pipeline,
+  PipelineAgentAuthor,
+  PipelineAgentChatAddress,
+  PipelineData,
+  PipelineExecutionInitiator,
+  PipelinePreferenceLocator,
+  PipelineModelAliasPreference,
+  PipelinePluginCollectionPreference,
+} from '@canopy/desktop-shared/types/pipeline';
+import { readPreferencesFile } from '../lib/preferences-store';
+import {
+  assertAgentRouteModel,
+  formatInheritedAgentRoute,
+  resolveSendModelPin,
+} from '../agents/agent-default-model';
+import {
+  readApprovalPreferencesForSurface,
+  resolveApprovalMode,
+  surfaceForChat,
+} from '../lib/approval-mode-resolution';
+import { readWorkspaceApprovals } from '../lib/approvals-persistence';
+import { readWorkspaceApprovalsManifest } from '../lib/workspace-approvals-manifest';
+import { mergePluginSelections } from '../lib/plugin-selection-utils';
+import { resolveBackgroundChatPluginSelections } from '../plugins/global-plugin-overlay';
+import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { resolveConfiguredPrompt } from '../lib/configured-prompt-resolution';
+import {
+  loadShareablePluginCatalog,
+  resolveShareablePluginRefs,
+} from '../plugins/shareable-plugin-resolution';
+import { loadStandaloneProject } from '../lib/standalone-project-state';
+import { isRecord } from '../lib/type-guards';
+import { isE2eBuild } from '../lib/e2e-gate';
+import {
+  isRealisticStartupPerformanceEnabled,
+  recordRealisticStartupPerformanceEvent,
+} from '../lib/realistic-startup-performance';
+import {
+  getActiveSessionInfos,
+  subscribeChatSessionActivity,
+} from '../agents/session-manager';
+import {
+  removeAutomationCapabilityPackageInstall,
+  resolveInstalledAutomationPackageOverlay,
+  resolveInstalledAutomationPipelinePackage,
+  SharedPipelinePinMismatchError,
+  assertSharedPipelineMatchesAutomationInstallPin,
+  verifySharedPipelineAutomationInstallPin,
+} from '../pipelines/pipeline-package-service';
+
+interface AutomationsFile {
+  version: 1;
+  updatedAt: string;
+  activities: ScheduledActivity[];
+  recentRuns: ScheduledActivityRun[];
+}
+
+const SHARED_PIPELINE_REVIEW_MESSAGE =
+  'This pipeline was updated, so take a look before it runs again.';
+
+class SharedPipelineReviewRequiredError extends Error {
+  readonly remoteId: string;
+  readonly pipelineName?: string;
+  readonly installPin: PipelineShareInstallPin;
+
+  constructor(
+    remoteId: string,
+    installPin: PipelineShareInstallPin,
+    pipelineName?: string,
+  ) {
+    super(SHARED_PIPELINE_REVIEW_MESSAGE);
+    this.name = 'SharedPipelineReviewRequiredError';
+    this.remoteId = remoteId;
+    this.installPin = installPin;
+    this.pipelineName = pipelineName;
+  }
+}
+
+interface SharedPipelineReviewOutcome {
+  review: NonNullable<ScheduledActivity['sharedPipelineReview']>;
+  installPin: PipelineShareInstallPin;
+  enabledIntentRevision: number;
+}
+
+function actionMatchesSharedPipelineReviewOutcome(
+  action: AutomationAction,
+  outcome: SharedPipelineReviewOutcome,
+): boolean {
+  if (
+    action.type !== 'worktree_pipeline' ||
+    action.pipelineSource !== 'shared' ||
+    action.sharedPipeline?.remoteId !== outcome.review.remoteId
+  ) {
+    return false;
+  }
+  const currentPin = action.sharedPipeline.installPin;
+  if (!currentPin) return false;
+  return (
+    currentPin.pipelineContentHash === outcome.installPin.pipelineContentHash &&
+    currentPin.distributionMode === outcome.installPin.distributionMode &&
+    currentPin.packageDigest === outcome.installPin.packageDigest
+  );
+}
+
+async function resolveAutomationApprovalMode(
+  projectId: string,
+  override: ApprovalMode | undefined,
+): Promise<ApprovalMode> {
+  const surface = surfaceForChat(projectId);
+  const [workspaceApprovals, manifestApprovals, approvalPreferences] =
+    await Promise.all([
+      readWorkspaceApprovals(projectId),
+      readWorkspaceApprovalsManifest(projectId),
+      readApprovalPreferencesForSurface(surface),
+    ]);
+  return resolveApprovalMode({
+    // Scheduled activities are locally authored by the user, so an explicit
+    // activity choice is authoritative like a per-tab mode. Repository hook
+    // modes use `hookMode` and are clamped by `resolveApprovalMode`.
+    tabMode: override,
+    workspaceDefault: workspaceApprovals.defaultMode,
+    canopyJsonDefault: manifestApprovals.defaultMode,
+    surface,
+    defaults: approvalPreferences.defaults,
+  });
+}
+
+function isPipelineModelAliasPreference(
+  value: unknown,
+): value is PipelineModelAliasPreference {
+  if (!isRecord(value)) return false;
+  if (value.mode === 'reset') return true;
+  if (value.mode === 'agent') return typeof value.agent_id === 'string';
+  return (
+    value.mode === 'inline' &&
+    typeof value.base === 'string' &&
+    (value.instructions === undefined ||
+      typeof value.instructions === 'string') &&
+    (value.plugin_collection_id === undefined ||
+      typeof value.plugin_collection_id === 'string')
+  );
+}
+
+function isPipelineModelAliasPreferences(
+  value: Record<string, unknown>,
+): value is Record<string, PipelineModelAliasPreference> {
+  return Object.values(value).every(isPipelineModelAliasPreference);
+}
+
+function pipelineExecutionPreferences(
+  action: Extract<AutomationAction, { type: 'worktree_pipeline' }>,
+): {
+  pluginCollectionPreferences?: Record<
+    string,
+    PipelinePluginCollectionPreference
+  >;
+  modelAliasPreferences?: Record<string, PipelineModelAliasPreference>;
+} {
+  const modelAliasPreferences = action.modelAliasPreferences;
+  if (
+    modelAliasPreferences &&
+    !isPipelineModelAliasPreferences(modelAliasPreferences)
+  ) {
+    throw new Error('Automation model alias preferences are invalid.');
+  }
+  return {
+    ...(action.pluginCollectionPreferences
+      ? {
+          pluginCollectionPreferences:
+            normalizePipelinePluginCollectionPreferences(
+              action.pluginCollectionPreferences,
+            ),
+        }
+      : {}),
+    ...(modelAliasPreferences ? { modelAliasPreferences } : {}),
+  };
+}
+
+interface ReadyWorktree {
+  id: string;
+  createdAt: string;
+  workspaceType: 'single-repo' | 'multi-repo';
+}
+
+interface IfCommandAbortController {
+  readonly signal: AbortSignal;
+  abort(): void;
+}
+
+export interface AutomationsServiceSurfaces {
+  getMainWindow: () => BrowserWindow | null;
+  getAppAdvisorWindow?: () => BrowserWindow | null;
+  openAppAdvisorWindow?: (
+    request?: AppAdvisorWindowOpenRequest,
+  ) => Promise<AppAdvisorWindowState>;
+  ensureAppAdvisorWindow: (
+    request?: AppAdvisorWindowOpenRequest,
+  ) => Promise<AppAdvisorWindowState>;
+  sendAppAdvisorWindowCommand: (command: AppAdvisorWindowCommand) => void;
+  onChange?: (snapshot: AutomationsListResponse) => void;
+}
+
+const TICK_INTERVAL_MS = 30_000;
+const RECENT_RUN_LIMIT = 100;
+const MAX_MISSED_BACKFILL_RUNS = 50;
+const MISSED_BACKFILL_TIME_BUDGET_MS = 50;
+const IF_COMMAND_OUTPUT_MAX_CHARS = 4_000;
+const WORKTREE_GIT_READY_TIMEOUT_MS = 10 * 60 * 1000;
+
+function missedOccurrenceRunId(
+  activityId: string,
+  scheduledFor: string,
+): string {
+  const digest = createHash('sha256')
+    .update(JSON.stringify([activityId, scheduledFor]))
+    .digest('hex');
+  return `missed-${digest}`;
+}
+
+/** Facts main records from a trusted caller, never from a request body. */
+export interface AutomationTrustedWrite {
+  agentAuthor?: PipelineAgentAuthor | null;
+}
+
+/** A trusted create: the write's facts, an agent sender and its guard. */
+export interface AutomationTrustedCreate extends AutomationTrustedWrite {
+  agentScheduledSend?: AgentScheduledSend;
+  /** Rechecked inside the queue, so an owner change while waiting is seen. */
+  authorize?: () => Promise<boolean>;
+}
+
+/**
+ * The context a new automation is bound to: an explicit owner the account
+ * may run in, else the selected one. Nothing is bound while organization
+ * projects are off; an explicit organization is refused then.
+ */
+async function automationCreateOwner(
+  explicit: string | undefined,
+): Promise<{ context: string | undefined } | { error: string }> {
+  if (explicit === undefined)
+    return { context: await captureBackgroundExecutionContext() };
+  const parsed = parseWorkspaceContext(explicit);
+  if (!parsed)
+    return { error: backgroundExecutionDeniedMessage('unsupported-target') };
+  if (!backgroundExecutionContextEnabled())
+    return parsed.kind === 'personal'
+      ? { context: undefined }
+      : { error: backgroundExecutionDeniedMessage('unsupported-target') };
+  if (!(await accountMayRunIn(parsed)))
+    return { error: backgroundExecutionDeniedMessage('access-removed') };
+  return { context: serializeWorkspaceContext(parsed) };
+}
+
+interface AutomationRunIdentity {
+  initiator: PipelineExecutionInitiator;
+  agentOrigin?: PipelineAgentChatAddress;
+}
+
+/** Who started an automation's pipeline run, recorded on the run. */
+function automationRunIdentity(
+  activity: Pick<ScheduledActivity, 'id' | 'name' | 'agentAuthor'>,
+): AutomationRunIdentity {
+  return {
+    initiator: {
+      kind: 'automation',
+      automationId: activity.id,
+      automationName: activity.name,
+    },
+    ...(activity.agentAuthor ? { agentOrigin: activity.agentAuthor.chat } : {}),
+  };
+}
+
+function emptyAutomationsFile(): AutomationsFile {
+  return {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    activities: [],
+    recentRuns: [],
+  };
+}
+
+function isValidIsoString(value: unknown): value is string {
+  return typeof value === 'string' && Number.isFinite(Date.parse(value));
+}
+
+function cloneActivity(activity: ScheduledActivity): ScheduledActivity {
+  return JSON.parse(JSON.stringify(activity)) as ScheduledActivity;
+}
+
+function cloneRun(run: ScheduledActivityRun): ScheduledActivityRun {
+  return JSON.parse(JSON.stringify(run)) as ScheduledActivityRun;
+}
+
+function truncateCommandOutput(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  if (value.length <= IF_COMMAND_OUTPUT_MAX_CHARS) return value;
+  const marker = '\n[output truncated]';
+  return `${value.slice(0, IF_COMMAND_OUTPUT_MAX_CHARS - marker.length)}${marker}`;
+}
+
+function targetForActivity(
+  activity: ScheduledActivity,
+): ScheduledActivityRun['target'] {
+  const action = activity.action;
+  switch (action.type) {
+    case 'worktree_prompt':
+      return {
+        workspaceId: action.workspaceId,
+        ...(action.existingWorktreeId
+          ? { worktreeId: action.existingWorktreeId }
+          : {}),
+      };
+    case 'worktree_session_prompt':
+      return {
+        workspaceId: action.workspaceId,
+        worktreeId: action.worktreeId,
+        chatId: action.chatId,
+      };
+    case 'standalone_prompt':
+      return {
+        workspaceId: resolveCoworkWorkspaceId(action.chatProjectId),
+        ...(action.workEntryId ? { worktreeId: action.workEntryId } : {}),
+      };
+    case 'app_advisor_prompt':
+      return action.workEntryId
+        ? {
+            workspaceId: APP_ADVISOR_PROJECT_ID,
+            worktreeId: action.workEntryId,
+          }
+        : undefined;
+    case 'worktree_pipeline':
+      return {
+        workspaceId: action.workspaceId,
+        ...(action.baseWorktreeId ? { worktreeId: action.baseWorktreeId } : {}),
+        ...(action.repoId ? { repoId: action.repoId } : {}),
+      };
+    case 'pipeline_execution_resume':
+      return {
+        ...(action.projectId ? { workspaceId: action.projectId } : {}),
+        ...(action.worktreeId ? { worktreeId: action.worktreeId } : {}),
+      };
+    default:
+      return undefined;
+  }
+}
+
+async function assignNewAutomationItemToSidebarGroup(args: {
+  scope: SidebarItemGroupScope;
+  itemId: string;
+  name: string | undefined;
+}): Promise<void> {
+  if (!args.name?.trim()) return;
+  try {
+    await sidebarItemGroupsService.assignItemToNamedGroup({
+      scope: args.scope,
+      itemId: args.itemId,
+      name: args.name,
+    });
+  } catch {
+    // Do not log the group name or service error: either may contain user text.
+    logMainProcessError('Automation sidebar group assignment failed', {
+      operation: 'assign-sidebar-group',
+    });
+  }
+}
+
+async function contextSnapshot(
+  file: AutomationsFile,
+): Promise<AutomationsListResponse> {
+  if (!resourceContextEnabled()) return cloneSnapshot(file);
+  const snapshot = await resourceContextSnapshot();
+  const allowed = await Promise.all(
+    file.activities.map(async (activity): Promise<boolean> => {
+      try {
+        await assertAutomationContext(activity);
+        return true;
+      } catch {
+        return false;
+      }
+    }),
+  );
+  await assertResourceContextSnapshot(snapshot);
+  const activities = file.activities.filter(
+    (_activity, index) => allowed[index],
+  );
+  const ids = new Set(activities.map((activity) => activity.id));
+  return {
+    activities: activities.map(cloneActivity),
+    recentRuns: file.recentRuns
+      .filter((run) => ids.has(run.activityId))
+      .map(cloneRun),
+  };
+}
+
+async function contextSnapshotForContext(
+  file: AutomationsFile,
+  context: WorkspaceContext,
+): Promise<AutomationsListResponse> {
+  if (!resourceContextEnabled()) return cloneSnapshot(file);
+  // The caller context, not the sidebar, authorizes rows; only the account
+  // must stay the same while they are checked.
+  const account = await resourceAccountSnapshot();
+  const allowed = await Promise.all(
+    file.activities.map(async (activity): Promise<boolean> => {
+      try {
+        await assertAutomationContext(activity, context);
+        return true;
+      } catch {
+        return false;
+      }
+    }),
+  );
+  await assertResourceAccountSnapshot(account);
+  const activities = file.activities.filter(
+    (_activity, index) => allowed[index],
+  );
+  const ids = new Set(activities.map((activity) => activity.id));
+  return {
+    activities: activities.map(cloneActivity),
+    recentRuns: file.recentRuns
+      .filter((run) => ids.has(run.activityId))
+      .map(cloneRun),
+  };
+}
+
+/**
+ * The install subscription an automation's provenance names, or `undefined`
+ * for a local or curated automation. Bundled pipelines are part of the
+ * automation install and are never registered on their own.
+ */
+function automationSubscriptionSource(
+  installedFrom: ScheduledActivity['installedFrom'],
+):
+  | {
+      remoteId: string;
+      sourceKind: 'shared' | 'public';
+      contentHash: string | null;
+    }
+  | undefined {
+  if (!installedFrom || installedFrom.sourceKind === 'curated')
+    return undefined;
+  return {
+    remoteId: installedFrom.remoteId,
+    sourceKind: installedFrom.sourceKind === 'public' ? 'public' : 'shared',
+    contentHash:
+      installedFrom.contentHash.length > 0 ? installedFrom.contentHash : null,
+  };
+}
+
+function registerAutomationInstall(activity: ScheduledActivity): void {
+  const source = automationSubscriptionSource(activity.installedFrom);
+  if (source)
+    recordSharedItemInstall({
+      kind: 'automation',
+      ...source,
+      localId: activity.id,
+    });
+}
+
+function unregisterAutomationInstall(
+  activityId: string,
+  installedFrom: ScheduledActivity['installedFrom'],
+): void {
+  const source = automationSubscriptionSource(installedFrom);
+  if (source)
+    recordSharedItemUninstall({
+      kind: 'automation',
+      remoteId: source.remoteId,
+      sourceKind: source.sourceKind,
+      localId: activityId,
+    });
+}
+
+async function assertAutomationContext(
+  activity: ScheduledActivity,
+  context?: WorkspaceContext,
+): Promise<void> {
+  if (!resourceContextEnabled()) return;
+  if (context !== undefined) {
+    if (isContextOwnedInstall(activity.installedFrom)) {
+      await assertResourceContextForContext(
+        { owner: publicInstallOwner(activity) },
+        context,
+      );
+      return;
+    }
+    await assertInstalledResourceContext(
+      'automations',
+      activity.id,
+      (remoteId) => getSharedAutomation(remoteId, context),
+      context,
+    );
+    if (!activity.installedFrom) return;
+    // Fetching with the caller context also authorizes the owner for it.
+    await getSharedAutomation(activity.installedFrom.remoteId, context);
+    return;
+  }
+  if (isContextOwnedInstall(activity.installedFrom)) {
+    // Public and curated installs belong to the context they were installed in.
+    await assertResourceContext({ owner: publicInstallOwner(activity) });
+  } else {
+    await assertInstalledResourceContext(
+      'automations',
+      activity.id,
+      getSharedAutomation,
+    );
+    if (!activity.installedFrom) return;
+    const detail = await getSharedAutomation(activity.installedFrom.remoteId);
+    await recordResourceInstall('automations', detail, [activity.id]);
+  }
+}
+
+/**
+ * Record the host-captured context in scope at install; the caller never
+ * supplies it. Synchronous so a failed capture cannot leave a half-applied
+ * update behind.
+ */
+function applyPublicInstallContext(
+  activity: ScheduledActivity,
+  context: string | undefined,
+): void {
+  delete activity.publicInstallContext;
+  if (isContextOwnedInstall(activity.installedFrom) && context !== undefined)
+    activity.publicInstallContext = context;
+}
+
+/** The persisted execution a resume action targets; `null` for other actions. */
+async function resumeExecutionState(
+  action: AutomationAction,
+): Promise<Awaited<ReturnType<typeof loadExecutionState>>> {
+  return action.type === 'pipeline_execution_resume'
+    ? loadExecutionState(
+        action.executionId,
+        join(getDataDir(), 'pipeline-executions'),
+      )
+    : null;
+}
+
+/** Where `action` runs; a resume action follows its persisted execution. */
+function automationRunDestination(
+  action: AutomationAction,
+  executionState: Awaited<ReturnType<typeof resumeExecutionState>>,
+): { projectId: string; worktreeId?: string } {
+  return {
+    projectId:
+      'workspaceId' in action
+        ? action.workspaceId
+        : action.type === 'standalone_prompt'
+          ? resolveCoworkWorkspaceId(action.chatProjectId)
+          : action.type === 'app_advisor_prompt'
+            ? APP_ADVISOR_PROJECT_ID
+            : action.type === 'pipeline_execution_resume'
+              ? executionState
+                ? (executionState.project_id ?? '')
+                : (action.projectId ?? '')
+              : '',
+    ...(action.type === 'pipeline_execution_resume'
+      ? {
+          worktreeId: executionState
+            ? executionState.worktree_id
+            : action.worktreeId,
+        }
+      : {}),
+  };
+}
+
+/** The context turning `action` on binds it to while `selectedContext` is selected. */
+async function bindingContextForAction(
+  action: AutomationAction,
+  selectedContext: string,
+): Promise<string> {
+  return automationBindingContext(
+    automationRunDestination(action, await resumeExecutionState(action)),
+    selectedContext,
+  );
+}
+
+/** Whether two automation actions run against the same workspace and worktree. */
+function sameAutomationDestination(
+  a: ReturnType<typeof automationActionDestination>,
+  b: ReturnType<typeof automationActionDestination>,
+): boolean {
+  return (
+    a?.projectId === b?.projectId &&
+    (a?.worktreeId ?? null) === (b?.worktreeId ?? null)
+  );
+}
+
+/** Updating (or rolling back) the same public share keeps its install context. */
+function isSameContextOwnedShare(
+  current: ScheduledActivity['installedFrom'],
+  next: NonNullable<ScheduledActivity['installedFrom']>,
+): boolean {
+  return (
+    isContextOwnedInstall(next) &&
+    current !== undefined &&
+    next.sourceKind === current?.sourceKind &&
+    current.remoteId === next.remoteId
+  );
+}
+
+function cloneSnapshot(file: AutomationsFile): AutomationsListResponse {
+  return {
+    activities: file.activities.map(cloneActivity),
+    recentRuns: file.recentRuns.map(cloneRun),
+  };
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
+}
+
+function isPipelineAgentAuthor(value: unknown): value is PipelineAgentAuthor {
+  return (
+    isRecord(value) &&
+    isRecord(value.chat) &&
+    isNonEmptyString(value.chat.projectId) &&
+    isNonEmptyString(value.chat.worktreeId) &&
+    isNonEmptyString(value.chat.chatId) &&
+    isNonEmptyString(value.recordedAt)
+  );
+}
+
+function isPersistedActivity(value: unknown): value is ScheduledActivity {
+  if (!isRecord(value)) return false;
+  // A malformed agent marker is dropped; the automation itself stays valid.
+  if (
+    value.agentAuthor !== undefined &&
+    !isPipelineAgentAuthor(value.agentAuthor)
+  )
+    delete value.agentAuthor;
+  if (
+    value.executionContext !== undefined &&
+    typeof value.executionContext !== 'string'
+  )
+    return false;
+  if (
+    value.publicInstallContext !== undefined &&
+    typeof value.publicInstallContext !== 'string'
+  )
+    return false;
+  if (value.version !== 1) return false;
+  if (typeof value.id !== 'string') return false;
+  if (typeof value.name !== 'string' || value.name.trim() === '') return false;
+  if (typeof value.enabled !== 'boolean') return false;
+  if (validateAutomationTrigger(value.schedule)) {
+    return false;
+  }
+  if (
+    !isRecord(value.action) ||
+    validateAutomationAction(value.action as never)
+  ) {
+    return false;
+  }
+  if (!isValidIsoString(value.createdAt)) return false;
+  if (!isValidIsoString(value.updatedAt)) return false;
+  if (value.lastRunAt !== undefined && !isValidIsoString(value.lastRunAt)) {
+    return false;
+  }
+  if (value.nextRunAt !== undefined && !isValidIsoString(value.nextRunAt)) {
+    return false;
+  }
+  if (
+    value.lastScheduledFor !== undefined &&
+    !isValidIsoString(value.lastScheduledFor)
+  ) {
+    return false;
+  }
+  if (validateAutomationSharedPipelineReview(value.sharedPipelineReview)) {
+    return false;
+  }
+  if (
+    value.targetRequirement !== undefined &&
+    !validateSharedAutomationTargetRequirement(value.targetRequirement).ok
+  )
+    return false;
+  if (
+    value.targetRequirementCleared !== undefined &&
+    value.targetRequirementCleared !== true
+  )
+    return false;
+  return typeof value.failureCount === 'number' && value.failureCount >= 0;
+}
+
+function isKnownRunStatus(value: unknown): boolean {
+  return (
+    value === 'running' ||
+    value === 'success' ||
+    value === 'failure' ||
+    value === 'skipped' ||
+    value === 'canceled' ||
+    value === 'missed'
+  );
+}
+
+function isKnownSkipReason(value: unknown): value is AutomationSkipReason {
+  return (
+    value === 'if_command_exit' ||
+    value === 'idempotency' ||
+    value === 'already_running'
+  );
+}
+
+function isPersistedRun(value: unknown): value is ScheduledActivityRun {
+  if (!isRecord(value)) return false;
+  if (
+    value.executionContext !== undefined &&
+    typeof value.executionContext !== 'string'
+  )
+    return false;
+  if (typeof value.id !== 'string') return false;
+  if (typeof value.activityId !== 'string') return false;
+  if (typeof value.activityName !== 'string') return false;
+  if (!isValidIsoString(value.scheduledFor)) return false;
+  if (typeof value.manual !== 'boolean') return false;
+  if (!isKnownRunStatus(value.status)) return false;
+  if (!isValidIsoString(value.startedAt)) return false;
+  if (value.completedAt !== undefined && !isValidIsoString(value.completedAt)) {
+    return false;
+  }
+  if (value.trigger !== undefined) {
+    if (
+      value.trigger !== 'scheduled' &&
+      value.trigger !== 'manual' &&
+      value.trigger !== 'catch_up'
+    ) {
+      return false;
+    }
+  }
+  if (
+    value.executionLocation !== undefined &&
+    value.executionLocation !== 'local'
+  ) {
+    return false;
+  }
+  if (value.recovered !== undefined && typeof value.recovered !== 'boolean') {
+    return false;
+  }
+  if (
+    value.cancellable !== undefined &&
+    typeof value.cancellable !== 'boolean'
+  ) {
+    return false;
+  }
+  if (
+    value.durationMs !== undefined &&
+    (typeof value.durationMs !== 'number' || value.durationMs < 0)
+  ) {
+    return false;
+  }
+  if (
+    value.ifCommandOutput !== undefined &&
+    typeof value.ifCommandOutput !== 'string'
+  ) {
+    return false;
+  }
+  if (
+    value.ifCommandError !== undefined &&
+    typeof value.ifCommandError !== 'string'
+  ) {
+    return false;
+  }
+  if (
+    value.omittedCount !== undefined &&
+    (typeof value.omittedCount !== 'number' ||
+      !Number.isInteger(value.omittedCount) ||
+      value.omittedCount < 1)
+  ) {
+    return false;
+  }
+  if (
+    value.missedOccurrencesTruncated !== undefined &&
+    typeof value.missedOccurrencesTruncated !== 'boolean'
+  ) {
+    return false;
+  }
+  if (value.error !== undefined && typeof value.error !== 'string') {
+    return false;
+  }
+  if (value.skipReason !== undefined && !isKnownSkipReason(value.skipReason)) {
+    return false;
+  }
+  if (
+    value.idempotencyKey !== undefined &&
+    typeof value.idempotencyKey !== 'string'
+  ) {
+    return false;
+  }
+  if (
+    value.idempotencyScope !== undefined &&
+    value.idempotencyScope !== 'global' &&
+    value.idempotencyScope !== 'self'
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function trimRecentRuns(runs: ScheduledActivityRun[]): ScheduledActivityRun[] {
+  const running = runs.filter((run) => run.status === 'running');
+  const terminal = runs
+    .filter((run) => run.status !== 'running')
+    .sort((left, right) => right.startedAt.localeCompare(left.startedAt))
+    .slice(0, RECENT_RUN_LIMIT);
+  return [...running, ...terminal].sort((left, right) =>
+    right.startedAt.localeCompare(left.startedAt),
+  );
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isIdempotencyScopeMatch(
+  current: {
+    activityId: string;
+    key: string;
+    scope: AutomationIfCommandIdempotencyScope;
+  },
+  candidate: ScheduledActivityRun,
+): boolean {
+  if (candidate.idempotencyKey !== current.key) return false;
+  if (candidate.status !== 'running' && candidate.status !== 'success') {
+    return false;
+  }
+  if (current.scope === 'global' || candidate.idempotencyScope === 'global') {
+    return true;
+  }
+  return candidate.activityId === current.activityId;
+}
+
+function getAutomationProviderForModel(model: ChatModel): AgentProviderType {
+  if (!getModelSource(model) && /^gpt-|^o\d|^codex/i.test(model)) {
+    return 'codex';
+  }
+  return requireProviderForModel(model);
+}
+
+function isActivityRunning(file: AutomationsFile, activityId: string): boolean {
+  return file.recentRuns.some(
+    (run) => run.activityId === activityId && run.status === 'running',
+  );
+}
+
+function hasRunForOccurrence(
+  file: AutomationsFile,
+  activityId: string,
+  scheduledFor: string,
+): boolean {
+  return file.recentRuns.some(
+    (run) =>
+      run.activityId === activityId &&
+      run.scheduledFor === scheduledFor &&
+      (run.status === 'running' ||
+        run.status === 'success' ||
+        run.status === 'failure' ||
+        run.status === 'skipped'),
+  );
+}
+
+function isWorktreeSessionPromptTargetBusy(
+  action: Extract<AutomationAction, { type: 'worktree_session_prompt' }>,
+): boolean {
+  return getActiveSessionInfos(action.workspaceId, action.worktreeId).some(
+    (session) =>
+      session.chatId === action.chatId &&
+      (session.turnActive ||
+        session.pendingMessageCount > 0 ||
+        (session.activeBackgroundTaskCount ?? 0) > 0),
+  );
+}
+
+function computeNextRunAt(
+  activity: ScheduledActivity,
+  after: Date,
+): string | undefined {
+  const next = getNextAutomationTriggerRun(activity.schedule, after);
+  return next?.toISOString();
+}
+
+function computeNextAfterScheduledWindow(
+  activity: ScheduledActivity,
+  scheduledFor: string,
+  now: Date,
+): string | undefined {
+  if (activity.schedule.kind !== 'cron') return undefined;
+  const scheduledTime = Date.parse(scheduledFor);
+  const baseTime = Math.max(
+    Number.isFinite(scheduledTime) ? scheduledTime : now.getTime(),
+    now.getTime(),
+  );
+  return getNextCronRun(
+    activity.schedule.expression,
+    new Date(baseTime),
+  )?.toISOString();
+}
+
+function triggerForScheduledOccurrence(
+  activity: ScheduledActivity,
+  scheduledFor: string,
+  now: Date,
+): AutomationRunTrigger {
+  if (activity.schedule.kind !== 'cron') return 'scheduled';
+  const next = getNextCronRun(
+    activity.schedule.expression,
+    new Date(scheduledFor),
+  );
+  return next && next.getTime() <= now.getTime() ? 'catch_up' : 'scheduled';
+}
+
+function nextRunForEnabledActivity(
+  activity: ScheduledActivity,
+  file: AutomationsFile,
+  now: Date,
+  options: { preserveExistingCronNextRun?: boolean } = {},
+): string | undefined {
+  if (!activity.enabled) return undefined;
+  if (activity.schedule.kind === 'one_time') {
+    const runAt = activity.schedule.runAt;
+    if (activity.sharedPipelineReview && activity.lastScheduledFor === runAt) {
+      return undefined;
+    }
+    if (hasRunForOccurrence(file, activity.id, runAt)) {
+      return undefined;
+    }
+    return runAt;
+  }
+  if (
+    options.preserveExistingCronNextRun !== false &&
+    activity.nextRunAt &&
+    Number.isFinite(Date.parse(activity.nextRunAt))
+  ) {
+    return activity.nextRunAt;
+  }
+  return computeNextRunAt(activity, now);
+}
+
+function defaultPluginSelections(
+  selections: ChatTabPluginSelections | undefined,
+): ChatTabPluginSelections | undefined {
+  return selections && hasAnySelections(selections) ? selections : undefined;
+}
+
+async function resolveWorkspaceDefaultPluginSelections(
+  workspaceId: string,
+): Promise<ChatTabPluginSelections | undefined> {
+  const { items } = await readAllSidebarItems();
+  const workspace = items.find((item) => item.id === workspaceId);
+  return defaultPluginSelections(workspace?.defaultPluginSelections);
+}
+
+async function resolveStandaloneDefaultPluginSelections(
+  chatProjectId: string,
+): Promise<ChatTabPluginSelections | undefined> {
+  try {
+    const raw = await readFile(getChatProjectsFilePath(), 'utf8');
+    const parsed = JSON.parse(raw) as { projects?: ChatProjectData[] };
+    const indexProject = Array.isArray(parsed.projects)
+      ? parsed.projects.find((project) => project.id === chatProjectId)
+      : undefined;
+    if (!indexProject) return undefined;
+    const { mergedProject } = await loadStandaloneProject(indexProject);
+    return defaultPluginSelections(mergedProject.defaultPluginSelections);
+  } catch {
+    return undefined;
+  }
+}
+
+/** What a created chat will resolve: its own selections plus the defaults it inherits. */
+function withInheritedDefaults(
+  inherited: ChatTabPluginSelections | undefined,
+  selections: ChatTabPluginSelections | undefined,
+): ChatTabPluginSelections | undefined {
+  return selections ? mergePluginSelections(inherited, selections) : inherited;
+}
+
+async function resolveAutomationPromptPlugins(
+  defaults: ChatTabPluginSelections | undefined,
+  plugins: ShareablePluginRef[] | undefined,
+  directSelections: ChatTabPluginSelections | undefined,
+): Promise<ChatTabPluginSelections | undefined> {
+  const baseSelections = directSelections
+    ? mergePluginSelections(
+        defaults,
+        normalizePluginSelections(directSelections),
+      )
+    : defaults;
+  if (!plugins || plugins.length === 0) {
+    return baseSelections;
+  }
+
+  const catalog = await loadShareablePluginCatalog();
+  const matches = resolveShareablePluginRefs(plugins, catalog);
+  const extras: ChatTabPluginSelections = {
+    collectionIds: [],
+    skillRefs: [],
+    pluginRefs: [],
+    mcpServerRefs: [],
+    mcpHttpAuthPreferences: [],
+  };
+
+  for (const match of matches) {
+    if (match.matchState !== 'matched') {
+      // Missing optional activity plugins should not stop scheduled work.
+      // The created chat still gets workspace defaults and every available
+      // selected plugin, matching hook-chat behavior.
+      continue;
+    }
+    if (match.selection.kind === 'skill') {
+      extras.skillRefs.push({
+        sourceId: match.selection.sourceId,
+        skillName: match.selection.skillName,
+      });
+    } else {
+      extras.pluginRefs.push({
+        marketplaceId: match.selection.marketplaceId,
+        pluginName: match.selection.pluginName,
+      });
+    }
+  }
+
+  return mergePluginSelections(baseSelections, extras);
+}
+
+type AutomationPromptAction = Extract<
+  AutomationAction,
+  { type: 'app_advisor_prompt' | 'standalone_prompt' | 'worktree_prompt' }
+>;
+
+function normalizeAutomationAction(action: AutomationAction): AutomationAction {
+  if (
+    action.type !== 'app_advisor_prompt' &&
+    action.type !== 'standalone_prompt' &&
+    action.type !== 'worktree_prompt'
+  ) {
+    return action;
+  }
+
+  const actionWithoutPluginSelections = { ...action };
+  delete actionWithoutPluginSelections.pluginSelections;
+  if (!action.pluginSelections) {
+    return actionWithoutPluginSelections;
+  }
+
+  const pluginSelections = normalizePluginSelections(action.pluginSelections);
+  return hasAnySelections(pluginSelections)
+    ? { ...actionWithoutPluginSelections, pluginSelections }
+    : actionWithoutPluginSelections;
+}
+
+function sharedPipelineBindingChanged(
+  current: AutomationAction,
+  next: AutomationAction,
+): boolean {
+  if (
+    current.type !== 'worktree_pipeline' ||
+    next.type !== 'worktree_pipeline'
+  ) {
+    return current.type !== next.type;
+  }
+  if (current.pipelineSource !== next.pipelineSource) return true;
+  if (current.pipelineSource !== 'shared' || next.pipelineSource !== 'shared') {
+    return false;
+  }
+  const currentShared = current.sharedPipeline;
+  const nextShared = next.sharedPipeline;
+  if (!currentShared || !nextShared) return currentShared !== nextShared;
+  if (
+    currentShared.serverId !== nextShared.serverId ||
+    currentShared.remoteId !== nextShared.remoteId
+  ) {
+    return true;
+  }
+  const currentPin = currentShared.installPin;
+  const nextPin = nextShared.installPin;
+  return (
+    currentPin?.pipelineContentHash !== nextPin?.pipelineContentHash ||
+    currentPin?.distributionMode !== nextPin?.distributionMode ||
+    currentPin?.packageDigest !== nextPin?.packageDigest
+  );
+}
+
+/**
+ * Lane default for an automation, resolved ONLY when the action needs one.
+ *
+ * Lane resolution awaits both native auth probes, the AI Credits lookup, and
+ * policy evaluation; on a cold cache that is ~20s and can spin up a Codex
+ * app-server. An automation that names its own model never consumes the
+ * default, so the branch happens before the await, not after it. The
+ * thinking-level fallback then comes from the configured provider default — a
+ * pure preference read.
+ */
+async function resolveAutomationLaneDefault(
+  action: AutomationPromptAction,
+  preferences: PreferencesData,
+  scope: 'chat' | 'worktree',
+  // Parity with the spawn this automation will perform. Required rather than
+  // optional so a new prompt action cannot silently resolve against the global
+  // Environments slot while dispatching into a workspace that overrides it.
+  credentialScope: LaneCredentialScope,
+): Promise<
+  | {
+      selection: { model: ChatModel; thinkingLevel: ThinkingLevel } | undefined;
+      requireModel: () => { model: ChatModel; thinkingLevel: ThinkingLevel };
+    }
+  | undefined
+> {
+  // `undefined` — not a pair whose `requireModel` throws. Returning a throwing
+  // stub made correctness depend on `resolveAutomationPromptModelSettings`
+  // independently re-testing the same `action.model` condition; two copies of
+  // one condition drift, and the failure mode was a misleading billing error
+  // for an automation that HAD an explicit model. Absent is unambiguous.
+  //
+  // The thinking-level fallback for an explicit model is recovered separately,
+  // from the NAMED model's provider — see `resolveAutomationPromptModelSettings`.
+  // An Agent that inherits the default model still needs it.
+  if (namesConcreteAutomationModel(action)) return undefined;
+  return resolveOptionalLaneAwareDefaultSelection(
+    preferences,
+    scope,
+    credentialScope,
+  );
+}
+
+/** The model an automation names, as validation and resolution read it. */
+function namedAutomationModel(
+  action: AutomationPromptAction,
+): string | undefined {
+  return action.model?.trim() || undefined;
+}
+
+function namesConcreteAutomationModel(action: AutomationPromptAction): boolean {
+  const named = namedAutomationModel(action);
+  return named !== undefined && !isInheritingAgentModel(named);
+}
+
+function namesInheritingAutomationAgent(
+  action: AutomationPromptAction,
+): boolean {
+  const named = namedAutomationModel(action);
+  return named !== undefined && isInheritingAgentModel(named);
+}
+
+function resolveAutomationPromptModelSettings(
+  action: AutomationPromptAction,
+  // Lazy on purpose: an automation configured with an explicit model never
+  // needed a lane default, so `requireModel()` must not be evaluated for it.
+  defaults:
+    | {
+        selection:
+          | { model: ChatModel; thinkingLevel: ThinkingLevel }
+          | undefined;
+        requireModel: () => { model: ChatModel; thinkingLevel: ThinkingLevel };
+      }
+    | undefined,
+  // Configured per-provider defaults for THIS surface, used only to recover the
+  // thinking level for an explicitly named model. Keyed on the named model's
+  // own provider, never the surface's preferred one.
+  byProvider: ModelDefaultsByProvider | undefined,
+  // A SURFACE-level thinking setting that applies regardless of which model the
+  // surface ends up running (App Advisor's `appAdvisorThinkingLevel` is the only
+  // one today — the renderer applies it unconditionally in `resolveTabDefaults`).
+  // Because it is not provider-keyed, the cross-provider hazard that justifies
+  // ignoring the preferred provider's level does not apply to it, so it takes
+  // precedence over the per-provider fallback below.
+  surfaceThinkingLevel: ThinkingLevel | undefined,
+  providerDefaults:
+    | Partial<Record<AgentProviderType, AgentModelConfig>>
+    | undefined,
+): {
+  model: ChatModel;
+  providerType: AgentProviderType;
+  executionHarness: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode';
+  modelConfig: ReturnType<typeof resolveProviderModelConfig>;
+} {
+  const namedModel = namedAutomationModel(action);
+  if (namedModel) assertAgentRouteModel(namedModel);
+  const defaultModel =
+    namesConcreteAutomationModel(action) || !defaults
+      ? undefined
+      : defaults.requireModel().model;
+  // The created chat keeps the route an inheriting Agent resolved here. Such
+  // actions come from `automation.create` and imports; the automation editor
+  // still hides Agents until its separate product decision (out of CAN-3999).
+  const requestedModel =
+    namedModel && isInheritingAgentModel(namedModel)
+      ? defaultModel && formatInheritedAgentRoute(namedModel, defaultModel)
+      : namedModel || defaultModel;
+  if (!requestedModel) {
+    throw new Error('No dispatchable model is available (billing-lane).');
+  }
+  const model = resolveKnownModel(requestedModel) ?? requestedModel;
+  const providerType = getAutomationProviderForModel(model);
+  const executionHarness =
+    getExecutionHarnessForModel(model) ??
+    (providerType === 'codex' ? 'codex' : 'claude');
+  // Every caller gates a Cursor dispatch itself, once the harness is known:
+  // `isCursorRuntimeAvailable()` does fs `lstat`s, reads preferences,
+  // dynamically imports the runtime module and mutates a shared availability
+  // cache, so it is never charged to a Claude or Codex dispatch.
+  const modelConfig = resolveProviderModelConfig(
+    executionHarness,
+    {
+      // Falls back to the configured level for the NAMED model's provider.
+      // Removing this fallback outright (round 3) fixed the cross-provider bug
+      // but also dropped the user's own setting for the same-provider case: a
+      // user who set their default Claude model to `low` and wrote a hook
+      // naming another Claude model silently got `high` back.
+      thinkingLevel:
+        action.modelConfig?.thinkingLevel ??
+        action.thinking ??
+        defaults?.selection?.thinkingLevel ??
+        surfaceThinkingLevel ??
+        byProvider?.[providerType]?.thinkingLevel,
+      modelConfig: action.modelConfig,
+    },
+    providerDefaults,
+  );
+
+  return { model, providerType, executionHarness, modelConfig };
+}
+
+function automationTarget(
+  action: AutomationAction,
+): { projectId: string; worktreeId: string } | null {
+  if (action.type === 'worktree_session_prompt') {
+    return { projectId: action.workspaceId, worktreeId: action.worktreeId };
+  }
+  if (action.type === 'worktree_prompt') {
+    const worktreeId = action.existingWorktreeId ?? action.baseWorktreeId;
+    if (worktreeId) {
+      return { projectId: action.workspaceId, worktreeId };
+    }
+    return null;
+  }
+  if (action.type === 'worktree_pipeline' && action.baseWorktreeId) {
+    return {
+      projectId: action.workspaceId,
+      worktreeId: action.baseWorktreeId,
+    };
+  }
+  if (action.type === 'standalone_prompt' && action.workEntryId) {
+    return {
+      projectId: resolveCoworkWorkspaceId(action.chatProjectId),
+      worktreeId: action.workEntryId,
+    };
+  }
+  if (action.type === 'app_advisor_prompt' && action.workEntryId) {
+    return {
+      projectId: APP_ADVISOR_PROJECT_ID,
+      worktreeId: action.workEntryId,
+    };
+  }
+  if (
+    action.type === 'pipeline_execution_resume' &&
+    action.projectId &&
+    action.worktreeId
+  ) {
+    return { projectId: action.projectId, worktreeId: action.worktreeId };
+  }
+  return null;
+}
+
+function reserveAutomationTargetStart(action: AutomationAction): () => void {
+  const target = automationTarget(action);
+  return target
+    ? reserveWorkspaceTargetRuntimeStart(target.projectId, target.worktreeId)
+    : (): void => undefined;
+}
+
+/** A pipeline an automation resolved to run, as its authorization sees it. */
+interface ResolvedPipelineSelection {
+  pipeline: Pipeline;
+  pipelineFilePath?: string;
+  owner?: unknown;
+  pipelinePreferenceLocator?: PipelinePreferenceLocator;
+  /** Install receipts are keyed by the remote id of an installed copy. */
+  storedPipelineRemoteId?: string;
+  sharedPipeline?: Extract<
+    AutomationAction,
+    { type: 'worktree_pipeline' }
+  >['sharedPipeline'];
+}
+
+/** The resources a resolved pipeline and its children run with. */
+function resolvedPipelineContextResources(
+  selection: ResolvedPipelineSelection,
+  cwd: string,
+  preferences: ReturnType<typeof pipelineExecutionPreferences>,
+): ReturnType<typeof pipelineContextResources> {
+  // Project files are caller-authored.
+  if (selection.pipelineFilePath)
+    return localPipelineContextResources(selection.pipeline, {
+      cwd,
+      pipelineFileDir: dirname(selection.pipelineFilePath),
+      pipelinePreferenceLocator: selection.pipelinePreferenceLocator,
+      ...preferences,
+    });
+  const storedPipelineId =
+    selection.pipelinePreferenceLocator?.type === 'stored'
+      ? selection.pipelinePreferenceLocator.value
+      : undefined;
+  return pipelineContextResources(
+    selection.pipeline,
+    selection.owner,
+    {
+      cwd,
+      pipelinePreferenceLocator: selection.pipelinePreferenceLocator,
+      ...preferences,
+      pipelineId: storedPipelineId,
+    },
+    selection.storedPipelineRemoteId ?? storedPipelineId,
+  );
+}
+
+/**
+ * The verdict a failed account-bound shared pipeline read carries: a
+ * retryable Cloud failure is a transient refusal that keeps the automation
+ * on, and a validated 403/404, sign-out or account change means access was
+ * removed. Any other failure has no verdict.
+ */
+async function sharedPipelineReadDecision(
+  error: unknown,
+): Promise<Extract<ResourceContextDecision, { allow: false }> | null> {
+  const { CanopyCloudClientError, isTransientCanopyCloudFailure } =
+    await import('../canopy-cloud/client');
+  if (isTransientCanopyCloudFailure(error))
+    return { allow: false, reason: 'unknown-provenance', transient: true };
+  if (
+    (error instanceof CanopyCloudClientError &&
+      error.isValidatedServerError &&
+      (error.status === 403 || error.status === 404)) ||
+    // The bound read reports sign-out or an account change this way.
+    (error instanceof Error &&
+      error.message === 'Pipeline unavailable (access-removed)')
+  )
+    return { allow: false, reason: 'access-removed' };
+  return null;
+}
+
+export class AutomationsService {
+  private surfaces: AutomationsServiceSurfaces | null = null;
+  private file: AutomationsFile | null = null;
+  private writeQueue: Promise<unknown> = Promise.resolve();
+  private interval: ReturnType<typeof setInterval> | null = null;
+  private sessionActivityUnsubscribe: (() => void) | null = null;
+  private dueCheckRunning = false;
+  private dueCheckRequested = false;
+  private ifCommandAbortHandlers: Set<() => void> = new Set();
+  private cancellableRuns = new Map<string, IfCommandAbortController>();
+  private enabledIntentRevisions = new Map<string, number>();
+  private readonly archive = getAutomationRunArchive();
+  private pendingArchiveWrites: Promise<void>[] = [];
+  private archiveMaintenance: Promise<void> = Promise.resolve();
+
+  configure(surfaces: AutomationsServiceSurfaces): void {
+    this.surfaces = surfaces;
+  }
+
+  async start(): Promise<void> {
+    // Under the UI-automation/E2E build, never start the scheduler: due-checks
+    // run on a 30s tick and on every chat-session-activity event and can fire
+    // real automation actions (create worktrees, send messages, run pipelines),
+    // mutating persisted state mid-test. Build-gated, so production is
+    // unaffected. Activities remain listable/editable via the IPC handlers,
+    // which read the file directly.
+    if (isE2eBuild() && !isRealisticStartupPerformanceEnabled()) {
+      return;
+    }
+    recordRealisticStartupPerformanceEvent('startup:automations:started');
+    if (this.interval !== null) {
+      return;
+    }
+    const file = await this.readFile();
+    this.archiveMaintenance = this.archiveMaintenance
+      .then(async () => {
+        const preferences = await readPreferencesFile();
+        await this.archive.pruneAll(
+          preferences.automationRunRetentionDays ?? 90,
+        );
+      })
+      .catch((error) =>
+        logMainProcessError('Failed to prune automation run history', error),
+      );
+    const reconciledFile = await this.reconcileArchivedTerminalRuns(file);
+    const normalizedFile = this.normalizeFile(reconciledFile);
+    await this.flushPendingArchiveWrites();
+    this.file = normalizedFile;
+    if (JSON.stringify(file) !== JSON.stringify(normalizedFile)) {
+      await this.writeFile(normalizedFile);
+    }
+    await this.runDueCheck();
+    this.interval = setInterval(() => {
+      void this.runDueCheck().catch(() => undefined);
+    }, TICK_INTERVAL_MS);
+    this.interval.unref?.();
+    this.sessionActivityUnsubscribe = subscribeChatSessionActivity(() => {
+      void this.runDueCheck().catch(() => undefined);
+    });
+  }
+
+  stop(): void {
+    if (this.interval !== null) {
+      clearInterval(this.interval);
+      this.interval = null;
+    }
+    this.sessionActivityUnsubscribe?.();
+    this.sessionActivityUnsubscribe = null;
+    this.dueCheckRunning = false;
+    this.dueCheckRequested = false;
+    this.ifCommandAbortHandlers.forEach((abortIfCommand: () => void) => {
+      abortIfCommand();
+    });
+    this.ifCommandAbortHandlers.clear();
+    this.cancellableRuns.clear();
+  }
+
+  async assertActivityResourceContext(id: string): Promise<void> {
+    if (!resourceContextEnabled()) return;
+    const file = await this.ensureFile();
+    const activity = file.activities.find((entry) => entry.id === id);
+    if (!activity)
+      throw new Error('Automation unavailable (unsupported-target)');
+    await assertAutomationContext(activity);
+  }
+
+  /**
+   * Unfiltered read for background gates, which authorize the definition
+   * against its persisted binding instead of the foreground context.
+   */
+  async findActivityForBackgroundAuthorization(
+    id: string,
+  ): Promise<ScheduledActivity | undefined> {
+    const activity = (await this.ensureFile()).activities.find(
+      (entry) => entry.id === id,
+    );
+    return activity ? cloneActivity(activity) : undefined;
+  }
+
+  /**
+   * Every activity installed from a share, across all contexts, for the
+   * one-time install subscription backfill. Unfiltered and side-effect free:
+   * the backfill only reports provenance and grants nothing.
+   */
+  async listInstalledActivitiesForSubscriptionBackfill(): Promise<
+    ScheduledActivity[]
+  > {
+    const file = await this.ensureFile();
+    return file.activities
+      .filter((activity) => activity.installedFrom !== undefined)
+      .map(cloneActivity);
+  }
+
+  async list(): Promise<AutomationsListResponse> {
+    const file = await this.ensureFile();
+    return contextSnapshot(file);
+  }
+
+  /** Read activity visibility using a trusted caller's owner context. */
+  async listForContext(
+    context: WorkspaceContext,
+  ): Promise<AutomationsListResponse> {
+    const file = await this.ensureFile();
+    return contextSnapshotForContext(file, context);
+  }
+
+  /**
+   * Rebind activities whose destination is a workspace that changed owner
+   * (CAN-3543): those bound to the previous owner, or never bound, follow the
+   * workspace. Activities bound anywhere else keep their binding.
+   */
+  async rebindWorkspaceExecutionContexts(input: {
+    workspaceId: string;
+    previousContext: string;
+    nextContext: string;
+  }): Promise<string[]> {
+    return this.enqueueMutation(async (): Promise<string[]> => {
+      const file = await this.ensureFile();
+      const rebound: string[] = [];
+      const updatedAt = new Date().toISOString();
+      for (const activity of file.activities) {
+        const destination = automationActionDestination(activity.action);
+        if (
+          !destination ||
+          backgroundDestinationWorkspaceId(destination) !== input.workspaceId
+        )
+          continue;
+        if (
+          activity.executionContext !== undefined &&
+          activity.executionContext !== input.previousContext
+        )
+          continue;
+        activity.executionContext = input.nextContext;
+        activity.updatedAt = updatedAt;
+        rebound.push(activity.id);
+      }
+      if (rebound.length > 0) await this.persistAndNotify(file);
+      return rebound;
+    });
+  }
+
+  /**
+   * The resource graph and destination a background run of `activity`
+   * authorizes: the definition, its plugins, model and inherited selections,
+   * and its pipeline. Turning an automation on checks the same graph.
+   */
+  private async backgroundAuthorizationInput(
+    activity: ScheduledActivity,
+  ): Promise<{
+    resources: ReturnType<typeof pipelineContextResources>;
+    destination: { projectId: string; worktreeId?: string };
+    /**
+     * The shared pipeline could not be read, so `resources` is incomplete
+     * and must not be authorized. `decision` is the read's verdict, when the
+     * failure carries one.
+     */
+    sharedPipelineReadFailure?: {
+      error: unknown;
+      decision: Extract<ResourceContextDecision, { allow: false }> | null;
+    };
+  }> {
+    const action = activity.action;
+    const resources: ReturnType<typeof pipelineContextResources> = [
+      automationDefinitionResource(activity),
+      {
+        owner: undefined,
+        requiresHostAuthorization: true,
+        capabilities: {
+          ...('plugins' in action ? { plugins: action.plugins } : {}),
+          ...('pluginSelections' in action
+            ? { selections: action.pluginSelections }
+            : {}),
+          ...('model' in action ? { model: action.model } : {}),
+        },
+      },
+    ];
+    let sharedPipelineReadFailure:
+      | {
+          error: unknown;
+          decision: Extract<ResourceContextDecision, { allow: false }> | null;
+        }
+      | undefined;
+    let inheritedPlugins: ChatTabPluginSelections | undefined;
+    if (action.type === 'app_advisor_prompt')
+      inheritedPlugins = defaultPluginSelections(
+        (await readPreferencesFile()).appAdvisorPluginSelections,
+      );
+    else if (action.type === 'standalone_prompt')
+      inheritedPlugins = await resolveStandaloneDefaultPluginSelections(
+        action.chatProjectId,
+      );
+    else if (action.type === 'worktree_prompt')
+      inheritedPlugins = await resolveWorkspaceDefaultPluginSelections(
+        action.workspaceId,
+      );
+    else if (action.type === 'worktree_session_prompt') {
+      const tab = (
+        await readChatTabsFile(action.workspaceId, action.worktreeId)
+      ).tabs.find((candidate) => candidate.id === action.chatId);
+      if (tab)
+        inheritedPlugins = await resolveBackgroundChatPluginSelections(
+          tab.pluginSelections,
+          {
+            projectId: action.workspaceId,
+            worktreeId: action.worktreeId,
+            chatId: action.chatId,
+          },
+        );
+    }
+    if (inheritedPlugins && hasAnySelections(inheritedPlugins))
+      resources.push({
+        owner: undefined,
+        requiresHostAuthorization: true,
+        capabilities: { selections: inheritedPlugins },
+      });
+    if (action.type === 'worktree_pipeline') {
+      const storedSource =
+        action.pipelineSource === 'bundled' ||
+        action.pipelineSource === 'user' ||
+        action.pipelineSource === 'curated'
+          ? action.pipelineSource
+          : undefined;
+      let stored =
+        storedSource === 'bundled' || storedSource === 'user'
+          ? pipelineStore.getStoredPipelineBySource(
+              storedSource,
+              action.pipelineId,
+            )
+          : undefined;
+      if (storedSource === 'curated') {
+        const { getManagedCuratedPipeline } =
+          await import('../pipelines/curated-pipeline-catalog');
+        stored = {
+          success: true,
+          data: await getManagedCuratedPipeline(action.pipelineId),
+        };
+      }
+      if (storedSource && stored?.success && stored.data)
+        resources.push(
+          ...pipelineContextResources(
+            stored.data.content,
+            stored.data.info.owner ??
+              (stored.data.info.source === 'bundled' ||
+              stored.data.info.source === 'curated'
+                ? { type: 'system' }
+                : stored.data.info.source === 'user'
+                  ? { shareScope: 'private' }
+                  : undefined),
+            {
+              cwd: process.cwd(),
+              pipelineId: stored.data.info.id,
+              pipelinePreferenceLocator: {
+                type: 'stored',
+                source: storedSource,
+                value: stored.data.info.id,
+              },
+              pluginCollectionPreferences: action.pluginCollectionPreferences,
+              modelAliasPreferences: action.modelAliasPreferences,
+            },
+            stored.data.info.remoteId ?? stored.data.info.id,
+            // Children need the actual execution cwd, available at the resolved dispatch gate.
+          ).filter((resource) => !resource.childPipeline),
+        );
+      else if (action.pipelineSource === 'shared' && action.sharedPipeline) {
+        try {
+          const detail = await getSharedPipelineForExecutionContext(
+            action.sharedPipeline.remoteId,
+          );
+          resources.push(
+            ...pipelineContextResources(
+              parsePipelineText(detail.rawPipeline),
+              detail.owner ?? { shareScope: detail.shareScope },
+              {
+                cwd: process.cwd(),
+                pipelinePreferenceLocator: {
+                  type: 'shared',
+                  value: `${action.sharedPipeline.serverId}:${action.sharedPipeline.remoteId}`,
+                },
+                ...pipelineExecutionPreferences(action),
+              },
+              detail.id,
+            ).filter((resource) => !resource.childPipeline),
+          );
+        } catch (error) {
+          sharedPipelineReadFailure = {
+            error,
+            decision: await sharedPipelineReadDecision(error),
+          };
+        }
+      } else if (
+        action.pipelineSource !== 'project' &&
+        action.pipelineSource !== undefined
+      )
+        resources.push({ owner: undefined });
+    }
+    const executionState = await resumeExecutionState(action);
+    if (action.type === 'pipeline_execution_resume')
+      resources.push(
+        ...persistedPipelineContextResources(
+          executionState,
+          pipelineStore.getStoredPipelineBySource,
+        ),
+      );
+    const destination = automationRunDestination(action, executionState);
+    return {
+      resources,
+      destination,
+      ...(sharedPipelineReadFailure ? { sharedPipelineReadFailure } : {}),
+    };
+  }
+
+  /**
+   * `savedContext` is the binding of an automation that stays on and keeps
+   * it; otherwise the check starts from the selected context, as turning it
+   * on does.
+   */
+  private async targetCompatibilityRefusal(
+    activity: ScheduledActivity,
+    savedContext?: string,
+  ): Promise<string | null> {
+    try {
+      await this.assertTargetCompatibility(activity, false, savedContext);
+      return null;
+    } catch (error) {
+      const decision = await sharedPipelineReadDecision(error);
+      if (decision) return backgroundExecutionDeniedMessage(decision.reason);
+      return error instanceof SharedPipelinePinMismatchError
+        ? 'Review the selected pipeline before saving this automation.'
+        : error instanceof Error
+          ? error.message
+          : 'Edit this automation and choose an accessible target.';
+    }
+  }
+
+  private async assertTargetCompatibility(
+    activity: ScheduledActivity,
+    running = false,
+    savedContext?: string,
+  ): Promise<void> {
+    const action = activity.action;
+    if (action.type === 'pipeline_execution_resume') {
+      const result = resolveLocalAutomationTargetRequirement(
+        action,
+        undefined,
+        activity.targetRequirement,
+      );
+      if (result.status === 'error') throw new Error(result.error);
+      return;
+    }
+    let kind: unknown;
+    let workspaceId: string | undefined;
+    let pipelineCwd: string | undefined;
+    if (
+      action.type === 'app_advisor_prompt' ||
+      (action.type === 'worktree_session_prompt' &&
+        action.workspaceId === APP_ADVISOR_PROJECT_ID)
+    ) {
+      kind = 'app_advisor';
+    } else {
+      workspaceId =
+        action.type === 'standalone_prompt'
+          ? resolveCoworkWorkspaceId(action.chatProjectId)
+          : action.type === 'worktree_session_prompt' &&
+              action.workspaceId === STANDALONE_CHAT_PROJECT_ID
+            ? resolveCoworkWorkspaceId(action.worktreeId)
+            : action.workspaceId;
+      const { items } = await readAllSidebarItems();
+      const workspace = items.find((item) => item.id === workspaceId);
+      if (
+        !workspace &&
+        (action.type === 'standalone_prompt' ||
+          action.type === 'worktree_session_prompt')
+      ) {
+        let legacyTargetExists = false;
+        try {
+          const raw: unknown = JSON.parse(
+            await readFile(getChatProjectsFilePath(), 'utf8'),
+          );
+          legacyTargetExists =
+            isRecord(raw) &&
+            raw.version === 1 &&
+            Array.isArray(raw.projects) &&
+            raw.projects.some(
+              (project: unknown) =>
+                isRecord(project) &&
+                project.id === workspaceId &&
+                typeof project.name === 'string' &&
+                typeof project.createdAt === 'string',
+            );
+        } catch {
+          // An unreadable legacy index is not evidence of a valid target.
+        }
+        if (!legacyTargetExists) {
+          throw new Error(
+            'Choose an accessible project in the automation editor.',
+          );
+        }
+        kind = 'cowork';
+      } else if (!workspace)
+        throw new Error(
+          'Choose an accessible project in the automation editor.',
+        );
+      else {
+        kind = workspace.type;
+        // Caller-provided project kinds are ignored. The owner is a workspace
+        // binding, not ResourceOwner provenance, and an automation binds to its
+        // target's owner (CAN-3598), so the selected context does not gate the
+        // target here. Sidebar owners are already normalized, so a malformed
+        // binding reads as Personal there; check the persisted read instead.
+        // At run time resolveBackgroundWorkspaceTarget refuses it the same way.
+        if (!running && resourceContextEnabled()) {
+          const { readWorkspaceConfigDetailed } =
+            await import('../lib/workspace-persistence');
+          if ((await readWorkspaceConfigDetailed(workspace.id)).ownerMalformed)
+            throw new ResourceContextUnavailableError('unknown-provenance');
+        }
+        if (workspace.type !== 'cowork') {
+          const worktreeId =
+            action.type === 'worktree_session_prompt'
+              ? action.worktreeId
+              : action.type === 'worktree_prompt'
+                ? (action.existingWorktreeId ?? action.baseWorktreeId)
+                : action.type === 'worktree_pipeline'
+                  ? action.baseWorktreeId
+                  : undefined;
+          if (
+            worktreeId &&
+            !workspace.worktrees.some((entry) => entry.id === worktreeId)
+          ) {
+            throw new Error(
+              'Choose an existing chat or worktree in the automation editor.',
+            );
+          }
+        }
+        if (workspace.type === 'cowork') {
+          pipelineCwd = getCoworkWorkspaceRootDir(workspace.id);
+        } else if (workspace.type === 'single-repo') {
+          pipelineCwd = workspace.repoPath;
+        } else if (
+          action.type === 'worktree_pipeline' &&
+          action.repoId &&
+          action.repoId !== WORKSPACE_ROOT_REPO_ID
+        ) {
+          pipelineCwd = workspace.repos.find(
+            (repo) => repo.id === action.repoId,
+          )?.repoPath;
+          if (!pipelineCwd)
+            throw new Error(
+              'Choose an existing repository in the automation editor.',
+            );
+        } else if (workspace.sourceRepoPath) {
+          pipelineCwd = await resolveWorkspaceReferenceRepoPath(
+            workspace.sourceRepoPath,
+          );
+        }
+      }
+    }
+    const context = projectKindToTargetContext(kind);
+    if (!context)
+      throw new Error('Choose an accessible project in the automation editor.');
+    const implied = resolveLocalAutomationTargetRequirement(
+      action,
+      kind,
+      activity.targetRequirement,
+    );
+    if (implied.status === 'error') throw new Error(implied.error);
+    if (!implied.contexts.includes(context))
+      throw new Error(automationTargetMismatchMessage(implied.contexts));
+    if (action.type === 'worktree_session_prompt') {
+      const tabs = await readChatTabsFile(
+        action.workspaceId,
+        action.worktreeId,
+      );
+      if (!tabs.tabs.some((tab) => tab.id === action.chatId)) {
+        throw new Error('Choose an existing chat in the automation editor.');
+      }
+    }
+    if (action.type === 'worktree_pipeline') {
+      let pipeline: Pipeline;
+      if (action.pipelineSource === 'shared') {
+        if (!action.sharedPipeline)
+          throw new Error(
+            'Verify the selected pipeline before saving or enabling this automation.',
+          );
+        const detail = await getSharedPipelineForExecutionContext(
+          action.sharedPipeline.remoteId,
+        );
+        // Authored and legacy bindings may be unpinned. Their current trusted
+        // definition still has to satisfy the target policy below.
+        if (action.sharedPipeline.installPin) {
+          try {
+            assertSharedPipelineMatchesAutomationInstallPin(
+              detail,
+              action.sharedPipeline.installPin,
+            );
+          } catch (error) {
+            if (running && error instanceof SharedPipelinePinMismatchError) {
+              throw new SharedPipelineReviewRequiredError(
+                action.sharedPipeline.remoteId,
+                action.sharedPipeline.installPin,
+                action.pipelineName,
+              );
+            }
+            throw error;
+          }
+        }
+        pipeline = parsePipelineText(detail.rawPipeline);
+      } else {
+        const cwd = action.baseWorktreeId
+          ? this.resolveWorktreeCwd(
+              action.workspaceId,
+              action.baseWorktreeId,
+              action.repoId,
+            )
+          : (pipelineCwd ?? '');
+        const selection = await this.resolvePipelineSelection(action, cwd);
+        pipeline = selection.pipeline;
+        if (running)
+          await this.authorizeResolvedPipeline(
+            activity.id,
+            activity.executionContext,
+            selection,
+            cwd,
+            action.workspaceId,
+            pipelineExecutionPreferences(action),
+          );
+        else {
+          // Authorize a stored pipeline in the context the automation runs in:
+          // its saved binding while its target still runs there, otherwise the
+          // context that owns its target (CAN-3598), never just the selected
+          // one. Like turning it on, this leaves the target, children,
+          // caller-authored project files, and checks that cannot complete to
+          // each run.
+          let refusal: string | null = null;
+          try {
+            const fromContext = backgroundExecutionContextEnabled()
+              ? (savedContext ?? (await captureBackgroundExecutionContext()))
+              : undefined;
+            if (fromContext !== undefined && !selection.pipelineFilePath) {
+              const bindingContext = await bindingContextForAction(
+                action,
+                fromContext,
+              );
+              refusal = await this.backgroundRefusalMessage(
+                action,
+                bindingContext,
+                await authorizeBackgroundExecution(
+                  bindingContext,
+                  resolvedPipelineContextResources(
+                    selection,
+                    cwd,
+                    pipelineExecutionPreferences(action),
+                  ).filter((resource) => !resource.childPipeline),
+                  { scope: 'global' },
+                ),
+              );
+            }
+          } catch (error) {
+            logMainProcessError(
+              'Failed to check an automation pipeline before saving:',
+              error,
+            );
+            refusal = null;
+          }
+          if (refusal) throw new Error(refusal);
+        }
+      }
+      if (!getTriggerTypes(pipeline.on).includes('dispatch')) {
+        throw new Error('Pipeline does not support dispatch triggers.');
+      }
+      const resolved = resolveLocalAutomationTargetRequirement(
+        action,
+        kind,
+        activity.targetRequirement,
+        { status: 'resolved', scopes: pipeline.scope },
+      );
+      if (resolved.status !== 'resolved')
+        throw new Error(
+          resolved.status === 'error'
+            ? resolved.error
+            : 'Verify the selected pipeline in the automation editor.',
+        );
+      if (!resolved.contexts.includes(context))
+        throw new Error(automationTargetMismatchMessage(resolved.contexts));
+    }
+  }
+
+  private assertResolvedPipelineTarget(
+    activity: Pick<ScheduledActivity, 'action' | 'targetRequirement'>,
+    kind: unknown,
+    pipeline: Pipeline,
+  ): void {
+    const context = projectKindToTargetContext(kind);
+    const resolved = resolveLocalAutomationTargetRequirement(
+      activity.action,
+      kind,
+      activity.targetRequirement,
+      { status: 'resolved', scopes: pipeline.scope },
+    );
+    if (resolved.status !== 'resolved')
+      throw new Error(
+        resolved.status === 'error'
+          ? resolved.error
+          : 'Verify the selected pipeline in the automation editor.',
+      );
+    if (!context || !resolved.contexts.includes(context))
+      throw new Error(automationTargetMismatchMessage(resolved.contexts));
+  }
+
+  /**
+   * Refusal copy when turning `activity` on in `executionContext` would only
+   * have its first run denied (plugins, model, pipeline or destination), or
+   * `null`. A check that cannot complete (offline, a transient cloud error)
+   * does not block turning it on: every run checks again.
+   */
+  private async enablingBackgroundRefusal(
+    activity: ScheduledActivity,
+    executionContext: string | undefined,
+  ): Promise<string | null> {
+    if (!backgroundExecutionContextEnabled()) return null;
+    let decision: ResourceContextDecision;
+    try {
+      const { resources, destination, sharedPipelineReadFailure } =
+        await this.backgroundAuthorizationInput(activity);
+      // A failed shared pipeline read refuses only with a verdict (access
+      // removed); a read that could not finish leaves the next run to check.
+      if (sharedPipelineReadFailure) {
+        if (!sharedPipelineReadFailure.decision) return null;
+        decision = sharedPipelineReadFailure.decision;
+      } else {
+        decision = await authorizeBackgroundExecution(
+          executionContext,
+          resources,
+          destination,
+        );
+      }
+    } catch {
+      return null;
+    }
+    return this.backgroundRefusalMessage(
+      activity.action,
+      executionContext,
+      decision,
+    );
+  }
+
+  /**
+   * Refusal copy for a background authorization `decision` in
+   * `executionContext`, or `null` when it allows the automation or could not
+   * complete.
+   */
+  private async backgroundRefusalMessage(
+    action: AutomationAction,
+    executionContext: string | undefined,
+    decision: ResourceContextDecision,
+  ): Promise<string | null> {
+    if (decision.allow || decision.transient) return null;
+    const mismatch =
+      decision.reason === 'context-mismatch'
+        ? await describeAutomationContextMismatch(
+            action,
+            executionContext,
+          ).catch((): null => null)
+        : null;
+    return backgroundExecutionDeniedMessage(decision.reason, {
+      ...(mismatch ? { mismatch } : {}),
+      ...(decision.subject ? { subject: decision.subject } : {}),
+    });
+  }
+
+  /**
+   * Records why turning `activity` on was refused, for main.log and App
+   * Advisor. Error level on purpose: the user's action failed. Logs
+   * identifiers and the refusal copy, which may name the target, but no
+   * prompt text or action payload.
+   */
+  private logEnableRefusal(activity: ScheduledActivity, refusal: string): void {
+    logMainProcessError('Automation enable refused', {
+      activityId: activity.id,
+      refusal,
+      ...(activity.installedFrom?.remoteId !== undefined
+        ? { remoteId: activity.installedFrom.remoteId }
+        : {}),
+    });
+  }
+
+  /**
+   * A run was refused because its target is in another context. When the
+   * target moved (conversion or move back) from the context this automation
+   * is bound to, and the account may run in the new owner, move this
+   * workspace's background items with it and return the new binding.
+   */
+  private async followMovedTarget(
+    activityId: string,
+    runId: string,
+    activity: ScheduledActivity,
+  ): Promise<string | null> {
+    const change = await resolveMovedTargetOwnershipChange(
+      activity.action,
+      activity.executionContext,
+    ).catch((): null => null);
+    if (!change) return null;
+    const nextContext = serializeWorkspaceContext(change.to);
+    const { getBackgroundExecutionContextRebinder } =
+      await import('../services/background-execution-rebinding');
+    // Other items are best effort; this automation is rebound below anyway.
+    await getBackgroundExecutionContextRebinder()
+      .rebindWorkspace(change, 'runtime-mismatch')
+      .catch((error: unknown): void => {
+        logMainProcessError(
+          'Failed to move background items with a moved automation target:',
+          error,
+        );
+      });
+    await this.enqueueMutation(async (): Promise<void> => {
+      const file = await this.ensureFile();
+      const run = file.recentRuns.find((entry) => entry.id === runId);
+      if (run) run.executionContext = nextContext;
+      const stored = file.activities.find((entry) => entry.id === activityId);
+      if (stored) stored.executionContext = nextContext;
+      await this.persistAndNotify(file);
+    });
+    return nextContext;
+  }
+
+  /** Internal impact scan; callers must redact activities outside the active context. */
+  async listActivitiesForSharedPipelineImpact(): Promise<
+    Array<{
+      activity: ScheduledActivity;
+      visibleInCurrentContext: boolean;
+    }>
+  > {
+    const file = await this.ensureFile();
+    if (!resourceContextEnabled()) {
+      return file.activities.map((activity) => ({
+        activity: cloneActivity(activity),
+        visibleInCurrentContext: true,
+      }));
+    }
+    const visibleIds = new Set(
+      (await contextSnapshot(file)).activities.map((activity) => activity.id),
+    );
+    return file.activities.map((activity) => ({
+      activity: cloneActivity(activity),
+      visibleInCurrentContext: visibleIds.has(activity.id),
+    }));
+  }
+
+  async listRuns(
+    request: AutomationRunHistoryRequest,
+    callerContext?: WorkspaceContext,
+  ): Promise<AutomationRunHistoryResponse> {
+    if (resourceContextEnabled()) {
+      const file = await this.ensureFile();
+      const activity = file.activities.find(
+        (entry) => entry.id === request.activityId,
+      );
+      if (activity) await assertAutomationContext(activity, callerContext);
+      else
+        await assertInstalledResourceContext(
+          'automations',
+          request.activityId,
+          (remoteId) => getSharedAutomation(remoteId, callerContext),
+          callerContext,
+        );
+    }
+    return this.archive.readRuns(request.activityId, {
+      ...(request.cursor ? { cursor: request.cursor } : {}),
+      ...(request.limit !== undefined ? { limit: request.limit } : {}),
+      ...(request.statuses ? { statuses: request.statuses } : {}),
+      ...(request.triggers ? { triggers: request.triggers } : {}),
+    });
+  }
+
+  /**
+   * `trusted` carries facts only main may record, never the request body:
+   * an agent marker object sets it, `null` clears it, `undefined` leaves it.
+   */
+  async create(
+    request: AutomationCreateRequest,
+    trusted: AutomationTrustedCreate = {},
+  ): Promise<AutomationMutationResponse> {
+    const validationError = validateAutomationCreateRequest(request);
+    if (validationError) return { ok: false, error: validationError };
+
+    return this.enqueueMutation(async () => {
+      if (trusted.authorize && !(await trusted.authorize()))
+        return { ok: false, error: 'Automation creation was not authorized.' };
+      const releaseTarget =
+        request.enabled === false
+          ? (): void => undefined
+          : reserveAutomationTargetStart(request.action);
+      try {
+        const file = await this.ensureFile();
+        const resumeAction =
+          request.action.type === 'pipeline_execution_resume'
+            ? request.action
+            : null;
+        if (resumeAction) {
+          const requestedIds = [...resumeAction.statusReasonIds].sort();
+          const existing = file.activities.find((candidate) => {
+            if (
+              !candidate.enabled ||
+              candidate.action.type !== 'pipeline_execution_resume' ||
+              candidate.action.executionId !== resumeAction.executionId ||
+              candidate.action.provider !== resumeAction.provider
+            ) {
+              return false;
+            }
+            const candidateIds = [...candidate.action.statusReasonIds].sort();
+            return (
+              requestedIds.length === candidateIds.length &&
+              requestedIds.every((id, index) => id === candidateIds[index])
+            );
+          });
+          if (existing) {
+            return { ok: true, activity: cloneActivity(existing) };
+          }
+        }
+        const now = new Date();
+        const timestamp = now.toISOString();
+        const activity: ScheduledActivity = {
+          version: 1,
+          id: randomUUID(),
+          name: request.name.trim(),
+          enabled: request.enabled !== false,
+          schedule: request.schedule,
+          action: normalizeAutomationAction(request.action),
+          ...(request.targetRequirement
+            ? { targetRequirement: request.targetRequirement }
+            : {}),
+          ...(request.ifCommand && request.ifCommand.trim().length > 0
+            ? { ifCommand: request.ifCommand }
+            : {}),
+          ...(request.installedFrom
+            ? { installedFrom: request.installedFrom }
+            : {}),
+          ...(trusted.agentAuthor ? { agentAuthor: trusted.agentAuthor } : {}),
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          failureCount: 0,
+          ...(trusted.agentScheduledSend
+            ? {
+                agentScheduledSend: structuredClone(trusted.agentScheduledSend),
+              }
+            : {}),
+        };
+        const targetRefusal = await this.targetCompatibilityRefusal(activity);
+        if (targetRefusal) return { ok: false, error: targetRefusal };
+        // Every automation gets an owner while organization projects are on,
+        // whether or not it starts enabled.
+        const owner = await automationCreateOwner(request.executionContext);
+        if ('error' in owner) return { ok: false, error: owner.error };
+        const context = owner.context;
+        if (context !== undefined) {
+          const bindingContext = await bindingContextForAction(
+            activity.action,
+            context,
+          );
+          // Refuse before persisting: the first run would only be denied.
+          if (activity.enabled) {
+            const refusal = await automationContextRefusal(
+              activity.action,
+              bindingContext,
+              'enable',
+            );
+            if (refusal) return { ok: false, error: refusal };
+          }
+          activity.executionContext = bindingContext;
+        }
+        // Before preflight, so a public install is checked as the owner it is saved with.
+        applyPublicInstallContext(activity, context);
+        if (activity.enabled) {
+          const refusal = await this.enablingBackgroundRefusal(
+            activity,
+            activity.executionContext,
+          );
+          if (refusal) return { ok: false, error: refusal };
+        }
+        await assertAutomationContext(activity);
+        activity.nextRunAt = nextRunForEnabledActivity(activity, file, now);
+        file.activities.push(activity);
+        await this.persistAndNotify(file);
+        registerAutomationInstall(activity);
+        return { ok: true, activity: cloneActivity(activity) };
+      } finally {
+        releaseTarget();
+      }
+    });
+  }
+
+  async update(
+    request: AutomationUpdateRequest,
+    authorize?: (activity: ScheduledActivity) => Promise<boolean>,
+    callerContext?: WorkspaceContext,
+    trusted: AutomationTrustedWrite = {},
+  ): Promise<AutomationMutationResponse> {
+    if (!isRecord(request) || typeof request.id !== 'string') {
+      return { ok: false, error: 'Automation id is required.' };
+    }
+    if (request.name !== undefined && request.name.trim() === '') {
+      return {
+        ok: false,
+        error: 'Automation name must be a non-empty string.',
+      };
+    }
+    if (request.enabled !== undefined && typeof request.enabled !== 'boolean') {
+      return { ok: false, error: 'Automation enabled must be a boolean.' };
+    }
+    if (request.schedule !== undefined) {
+      const scheduleError = validateAutomationTrigger(request.schedule);
+      if (scheduleError) return { ok: false, error: scheduleError };
+    }
+    if (request.action !== undefined) {
+      const actionError = validateAutomationActionForWrite(request.action);
+      if (actionError) return { ok: false, error: actionError };
+    }
+    if (request.ifCommand !== undefined) {
+      const ifCommandError = validateAutomationIfCommand(request.ifCommand);
+      if (ifCommandError) return { ok: false, error: ifCommandError };
+    }
+    if (
+      request.targetRequirement !== undefined &&
+      request.targetRequirement !== null
+    ) {
+      const validation = validateSharedAutomationTargetRequirement(
+        request.targetRequirement,
+      );
+      if (!validation.ok) return { ok: false, error: validation.error };
+    }
+
+    return this.enqueueMutation(async () => {
+      const file = await this.ensureFile();
+      const activity = file.activities.find((entry) => entry.id === request.id);
+      if (!activity) return { ok: false, error: 'Activity not found.' };
+      if (authorize && !(await authorize(cloneActivity(activity))))
+        return { ok: false, error: 'Activity not found.' };
+      // Only session prompts carry the agent sender; other types would drop it.
+      if (
+        activity.agentScheduledSend &&
+        request.action &&
+        request.action.type !== 'worktree_session_prompt'
+      )
+        return {
+          ok: false,
+          error:
+            "An agent-scheduled message can't become another kind of automation. Delete it and create a new one.",
+        };
+      await assertAutomationContext(activity, callerContext);
+      const turnsOn = request.enabled === true && !activity.enabled;
+      let effectiveEnabled = request.enabled ?? activity.enabled;
+      const normalizedRequestedAction = request.action
+        ? normalizeAutomationAction(request.action)
+        : undefined;
+      const effectiveAction = normalizedRequestedAction ?? activity.action;
+      const sharedUpdateRebinds =
+        request.installedFrom !== undefined &&
+        normalizedRequestedAction !== undefined &&
+        automationTargetBindingChanged(activity.action, effectiveAction);
+      if (sharedUpdateRebinds) effectiveEnabled = false;
+      const candidate = cloneActivity(activity);
+      candidate.action = effectiveAction;
+      candidate.enabled = effectiveEnabled;
+      if (request.targetRequirement !== undefined) {
+        if (activity.installedFrom && !request.installedFrom) {
+          return {
+            ok: false,
+            error:
+              'Apply the shared update to replace this automation target requirement.',
+          };
+        }
+        if (request.targetRequirement === null) {
+          delete candidate.targetRequirement;
+          if (activity.targetRequirement !== undefined)
+            candidate.targetRequirementCleared = true;
+        } else {
+          candidate.targetRequirement = request.targetRequirement;
+          delete candidate.targetRequirementCleared;
+        }
+      }
+      if (
+        request.action !== undefined ||
+        request.targetRequirement !== undefined ||
+        request.enabled === true
+      ) {
+        // One that stays on at the same target keeps the context it runs in.
+        const targetContext =
+          activity.enabled &&
+          effectiveEnabled &&
+          sameAutomationDestination(
+            automationActionDestination(effectiveAction),
+            automationActionDestination(activity.action),
+          )
+            ? activity.executionContext
+            : callerContext === undefined
+              ? undefined
+              : serializeWorkspaceContext(callerContext);
+        const targetRefusal = await this.targetCompatibilityRefusal(
+          candidate,
+          targetContext,
+        );
+        if (targetRefusal) {
+          if (turnsOn) this.logEnableRefusal(candidate, targetRefusal);
+          return { ok: false, error: targetRefusal };
+        }
+      }
+      const releaseTarget = effectiveEnabled
+        ? reserveAutomationTargetStart(effectiveAction)
+        : (): void => undefined;
+      try {
+        const scheduleActionOrNameChanged =
+          request.schedule !== undefined ||
+          request.action !== undefined ||
+          request.name !== undefined;
+        // Moving an automation that stays on to a different target binds it
+        // again, just as turning it on does.
+        const retargetsEnabledActivity =
+          activity.enabled &&
+          effectiveEnabled &&
+          normalizedRequestedAction !== undefined &&
+          !sameAutomationDestination(
+            automationActionDestination(normalizedRequestedAction),
+            automationActionDestination(activity.action),
+          );
+        // Turning an automation on rebinds it to the selected context, even
+        // when create bound it already; keeping that owner is deferred to the
+        // automation `target` work (CAN-4530 phase 6).
+        const bindsExecutionContext =
+          (request.enabled === true && !activity.enabled) ||
+          retargetsEnabledActivity;
+        const recapturesInstallContext =
+          request.installedFrom !== undefined &&
+          !isSameContextOwnedShare(
+            activity.installedFrom,
+            request.installedFrom,
+          );
+        // Capture before mutating the cached activity so a failure leaves it intact.
+        const capturedContext =
+          bindsExecutionContext ||
+          (recapturesInstallContext &&
+            isContextOwnedInstall(request.installedFrom))
+            ? callerContext === undefined
+              ? await captureBackgroundExecutionContext()
+              : serializeWorkspaceContext(callerContext)
+            : undefined;
+        // Check the target this update leaves in place, before mutating.
+        const bindingContext =
+          bindsExecutionContext && capturedContext !== undefined
+            ? await bindingContextForAction(effectiveAction, capturedContext)
+            : undefined;
+        if (bindingContext !== undefined) {
+          const refusal = await automationContextRefusal(
+            effectiveAction,
+            bindingContext,
+            retargetsEnabledActivity ? 'save' : 'enable',
+          );
+          if (refusal) {
+            if (turnsOn) this.logEnableRefusal(activity, refusal);
+            return { ok: false, error: refusal };
+          }
+        }
+        if (bindsExecutionContext) {
+          const candidate = cloneActivity(activity);
+          candidate.action = effectiveAction;
+          candidate.executionContext = bindingContext;
+          if (
+            request.installedFrom &&
+            isContextOwnedInstall(request.installedFrom)
+          ) {
+            candidate.installedFrom = request.installedFrom;
+            if (recapturesInstallContext)
+              applyPublicInstallContext(candidate, capturedContext);
+          }
+          const refusal = await this.enablingBackgroundRefusal(
+            candidate,
+            bindingContext,
+          );
+          if (refusal) {
+            if (turnsOn) this.logEnableRefusal(candidate, refusal);
+            return { ok: false, error: refusal };
+          }
+        }
+        // Only after the refusal: a refused update records nothing.
+        if (
+          resourceContextEnabled() &&
+          request.installedFrom &&
+          !isContextOwnedInstall(request.installedFrom)
+        ) {
+          const detail = await getSharedAutomation(
+            request.installedFrom.remoteId,
+          );
+          await recordResourceInstall('automations', detail, [activity.id]);
+        }
+        if (bindingContext !== undefined)
+          activity.executionContext = bindingContext;
+        if (request.name !== undefined) activity.name = request.name.trim();
+        if (request.enabled !== undefined || sharedUpdateRebinds) {
+          activity.enabled = effectiveEnabled;
+          this.enabledIntentRevisions.set(
+            activity.id,
+            (this.enabledIntentRevisions.get(activity.id) ?? 0) + 1,
+          );
+        }
+        if (request.schedule !== undefined)
+          activity.schedule = request.schedule;
+        if (normalizedRequestedAction !== undefined) {
+          const clearsSharedPipelineReview = sharedPipelineBindingChanged(
+            activity.action,
+            normalizedRequestedAction,
+          );
+          activity.action = normalizedRequestedAction;
+          if (clearsSharedPipelineReview) {
+            delete activity.sharedPipelineReview;
+          }
+        }
+        if (request.targetRequirement !== undefined) {
+          if (candidate.targetRequirement === undefined)
+            delete activity.targetRequirement;
+          else activity.targetRequirement = candidate.targetRequirement;
+          if (candidate.targetRequirementCleared)
+            activity.targetRequirementCleared = true;
+          else delete activity.targetRequirementCleared;
+        }
+        if (request.ifCommand !== undefined) {
+          if (request.ifCommand.trim().length > 0) {
+            activity.ifCommand = request.ifCommand;
+          } else {
+            delete activity.ifCommand;
+          }
+        }
+        const previousInstalledFrom = activity.installedFrom;
+        if (request.installedFrom !== undefined) {
+          activity.installedFrom = request.installedFrom;
+          if (recapturesInstallContext)
+            applyPublicInstallContext(activity, capturedContext);
+        }
+        if (trusted.agentAuthor === null) delete activity.agentAuthor;
+        else if (trusted.agentAuthor)
+          activity.agentAuthor = trusted.agentAuthor;
+        activity.updatedAt = new Date().toISOString();
+        if (scheduleActionOrNameChanged || request.enabled !== undefined) {
+          activity.nextRunAt = nextRunForEnabledActivity(
+            activity,
+            file,
+            new Date(),
+            { preserveExistingCronNextRun: false },
+          );
+        }
+        if (!activity.enabled) {
+          delete activity.nextRunAt;
+        }
+        await this.persistAndNotify(file);
+        if (request.installedFrom !== undefined) {
+          // Applying a shared update re-registers the new hash.
+          const previous = automationSubscriptionSource(previousInstalledFrom);
+          const next = automationSubscriptionSource(activity.installedFrom);
+          if (
+            previous &&
+            (previous.remoteId !== next?.remoteId ||
+              previous.sourceKind !== next?.sourceKind)
+          )
+            unregisterAutomationInstall(activity.id, previousInstalledFrom);
+          registerAutomationInstall(activity);
+        }
+        return { ok: true, activity: cloneActivity(activity) };
+      } finally {
+        releaseTarget();
+      }
+    });
+  }
+
+  async delete(
+    request: AutomationDeleteRequest,
+    authorize?: (activity: ScheduledActivity) => Promise<boolean>,
+    callerContext?: WorkspaceContext,
+  ): Promise<AutomationMutationResponse> {
+    if (!isRecord(request) || typeof request.id !== 'string') {
+      return { ok: false, error: 'Automation id is required.' };
+    }
+    return this.enqueueMutation(async () => {
+      const file = await this.ensureFile();
+      if (authorize) {
+        const current = file.activities.find(
+          (entry) => entry.id === request.id,
+        );
+        if (!current || !(await authorize(cloneActivity(current))))
+          return { ok: false, error: 'Activity not found.' };
+      }
+      if (isActivityRunning(file, request.id)) {
+        return {
+          ok: false,
+          error:
+            'Activity is running. Disable it now and delete it after the run finishes.',
+        };
+      }
+      const index = file.activities.findIndex(
+        (entry) => entry.id === request.id,
+      );
+      if (index === -1) return { ok: false, error: 'Activity not found.' };
+      await assertAutomationContext(file.activities[index], callerContext);
+      const [activity] = file.activities.splice(index, 1);
+      this.enabledIntentRevisions.delete(activity.id);
+      file.recentRuns = file.recentRuns.filter(
+        (run) => run.activityId !== request.id,
+      );
+      await this.persistAndNotify(file);
+      unregisterAutomationInstall(activity.id, activity.installedFrom);
+      await removeAutomationCapabilityPackageInstall(request.id).catch(
+        () => undefined,
+      );
+      await this.archive.deleteActivityArchive(request.id).catch((error) => {
+        // The activity deletion is already durable. Keep an orphaned archive
+        // rather than turning a cleanup failure into history loss; startup
+        // retention maintenance can safely age its records out.
+        logMainProcessError(
+          'Failed to delete orphaned automation run archive',
+          error,
+        );
+      });
+      return { ok: true, activity: cloneActivity(activity) };
+    });
+  }
+
+  /**
+   * Write the author-side Canopy Cloud share link onto an activity after a
+   * successful shared-Automation create/update (CAN-1581). Returns false when
+   * the activity no longer exists (deleted while the share round trip was in
+   * flight) — the share itself stays valid server-side.
+   */
+  async setActivityRemoteMetadata(
+    activityId: string,
+    remote: AutomationRemoteMetadata,
+  ): Promise<boolean> {
+    return this.enqueueMutation(async () => {
+      const file = await this.ensureFile();
+      const activity = file.activities.find((entry) => entry.id === activityId);
+      if (!activity) return false;
+      activity.remote = { ...remote };
+      await this.persistAndNotify(file);
+      return true;
+    });
+  }
+
+  /**
+   * Clear the author-side share link from every activity pointing at the
+   * given server-side shared resource after an unshare. Returns the number of
+   * activities cleared.
+   */
+  async clearActivityRemoteMetadataByRemoteId(
+    remoteId: string,
+  ): Promise<number> {
+    return this.enqueueMutation(async () => {
+      const file = await this.ensureFile();
+      let clearedCount = 0;
+      for (const activity of file.activities) {
+        if (activity.remote?.remoteId !== remoteId) continue;
+        delete activity.remote;
+        clearedCount += 1;
+      }
+      if (clearedCount > 0) {
+        await this.persistAndNotify(file);
+      }
+      return clearedCount;
+    });
+  }
+
+  async approveSharedPipelineReview(
+    request: ApproveAutomationSharedPipelineReviewRequest,
+  ): Promise<ApproveAutomationSharedPipelineReviewResponse> {
+    if (!isRecord(request) || typeof request.id !== 'string') {
+      return { ok: false, error: 'Automation id is required.' };
+    }
+    if (request.runNow !== undefined && typeof request.runNow !== 'boolean') {
+      return { ok: false, error: 'runNow must be a boolean.' };
+    }
+
+    const prepared = await this.enqueueMutation(async () => {
+      const activity = (await this.ensureFile()).activities.find(
+        (entry) => entry.id === request.id,
+      );
+      if (!activity)
+        return { ok: false as const, error: 'Activity not found.' };
+      await assertAutomationContext(activity);
+      const action = activity.action;
+      if (
+        action.type !== 'worktree_pipeline' ||
+        action.pipelineSource !== 'shared' ||
+        !action.sharedPipeline?.remoteId
+      ) {
+        return {
+          ok: false as const,
+          error: 'Activity does not use a shared pipeline.',
+        };
+      }
+      if (!activity.sharedPipelineReview) {
+        return {
+          ok: false as const,
+          error: 'This automation does not need pipeline review.',
+        };
+      }
+      if (
+        activity.sharedPipelineReview.remoteId !==
+        action.sharedPipeline.remoteId
+      ) {
+        return {
+          ok: false as const,
+          error: 'This automation changed while the pipeline was reviewed.',
+        };
+      }
+      return {
+        ok: true as const,
+        remoteId: action.sharedPipeline.remoteId,
+        reviewDetectedAt: activity.sharedPipelineReview.detectedAt,
+      };
+    });
+    if (!prepared.ok) return prepared;
+
+    try {
+      await verifySharedPipelineAutomationInstallPin(
+        prepared.remoteId,
+        request.installPin,
+      );
+    } catch (error) {
+      if (error instanceof SharedPipelinePinMismatchError) {
+        return {
+          ok: false,
+          error: 'This pipeline was updated again, so take another look.',
+        };
+      }
+      return { ok: false, error: getErrorMessage(error) };
+    }
+
+    const approved = await this.enqueueMutation(async () => {
+      const file = await this.ensureFile();
+      const activity = file.activities.find((entry) => entry.id === request.id);
+      if (!activity)
+        return { ok: false as const, error: 'Activity not found.' };
+      const action = activity.action;
+      if (
+        action.type !== 'worktree_pipeline' ||
+        action.pipelineSource !== 'shared' ||
+        action.sharedPipeline?.remoteId !== prepared.remoteId ||
+        activity.sharedPipelineReview?.detectedAt !== prepared.reviewDetectedAt
+      ) {
+        return {
+          ok: false as const,
+          error: 'This automation changed while the pipeline was reviewed.',
+        };
+      }
+      const candidate = cloneActivity(activity);
+      candidate.action = {
+        ...action,
+        sharedPipeline: {
+          ...action.sharedPipeline,
+          installPin: request.installPin,
+        },
+      };
+      const targetRefusal = await this.targetCompatibilityRefusal(candidate);
+      if (targetRefusal) return { ok: false as const, error: targetRefusal };
+      const approvalTime = new Date();
+      const consumedOneTimeReviewSlot =
+        activity.schedule.kind === 'one_time' &&
+        (activity.lastScheduledFor === activity.schedule.runAt ||
+          Date.parse(activity.schedule.runAt) <= approvalTime.getTime());
+      action.sharedPipeline.installPin = request.installPin;
+      delete activity.sharedPipelineReview;
+      const existingNextRunAt = activity.nextRunAt;
+      const existingNextRunTime = existingNextRunAt
+        ? Date.parse(existingNextRunAt)
+        : Number.NaN;
+      if (consumedOneTimeReviewSlot) {
+        delete activity.nextRunAt;
+      } else if (
+        activity.schedule.kind === 'cron' &&
+        existingNextRunAt &&
+        Number.isFinite(existingNextRunTime) &&
+        existingNextRunTime <= approvalTime.getTime()
+      ) {
+        activity.lastScheduledFor = existingNextRunAt;
+        activity.nextRunAt = computeNextAfterScheduledWindow(
+          activity,
+          existingNextRunAt,
+          approvalTime,
+        );
+      } else {
+        activity.nextRunAt = nextRunForEnabledActivity(
+          activity,
+          file,
+          approvalTime,
+          { preserveExistingCronNextRun: true },
+        );
+      }
+      if (
+        activity.schedule.kind === 'one_time' &&
+        activity.nextRunAt === undefined
+      ) {
+        activity.enabled = false;
+      }
+      activity.updatedAt = new Date().toISOString();
+      await this.persistAndNotify(file);
+      return { ok: true as const, activity: cloneActivity(activity) };
+    });
+    if (!approved.ok || request.runNow !== true) return approved;
+
+    try {
+      const run = await this.runNow({ id: request.id });
+      return run.ok
+        ? { ...run, activity: approved.activity }
+        : { ok: true, activity: approved.activity, runError: run.error };
+    } catch (error) {
+      return {
+        ok: true,
+        activity: approved.activity,
+        runError: getErrorMessage(error),
+      };
+    }
+  }
+
+  async runNow(
+    request: AutomationRunNowRequest,
+    authorize?: (activity: ScheduledActivity) => Promise<boolean>,
+    callerContext?: WorkspaceContext,
+  ): Promise<AutomationMutationResponse> {
+    if (!isRecord(request) || typeof request.id !== 'string') {
+      return { ok: false, error: 'Automation id is required.' };
+    }
+    const prepared = await this.enqueueMutation(async () => {
+      const file = await this.ensureFile();
+      const activity = file.activities.find((entry) => entry.id === request.id);
+      if (!activity)
+        return { ok: false as const, error: 'Activity not found.' };
+      if (authorize && !(await authorize(cloneActivity(activity))))
+        return { ok: false as const, error: 'Activity not found.' };
+      await assertAutomationContext(activity, callerContext);
+      if (activity.sharedPipelineReview) {
+        return {
+          ok: false as const,
+          error: SHARED_PIPELINE_REVIEW_MESSAGE,
+        };
+      }
+      if (isActivityRunning(file, activity.id)) {
+        return {
+          ok: false as const,
+          error: 'Activity is already running.',
+        };
+      }
+      // An automation that's on runs in the context saved when it was turned
+      // on. One that's off (whatever it saved is left over from the last time
+      // it was on) or was never turned on runs where turning it on would bind
+      // it. Either way, refuse before a run exists.
+      const savedContext = activity.enabled
+        ? activity.executionContext
+        : undefined;
+      const selectedContext =
+        savedContext === undefined
+          ? callerContext === undefined
+            ? await captureBackgroundExecutionContext()
+            : serializeWorkspaceContext(callerContext)
+          : undefined;
+      const executionContext =
+        savedContext ??
+        (selectedContext === undefined
+          ? undefined
+          : await bindingContextForAction(activity.action, selectedContext));
+      let refusal: string | null;
+      if (savedContext === undefined) {
+        refusal = await automationContextRefusal(
+          activity.action,
+          executionContext,
+          'run',
+        );
+      } else {
+        const mismatch = await describeAutomationContextMismatch(
+          activity.action,
+          executionContext,
+        );
+        // It keeps its saved context until it's turned off and on again.
+        refusal = mismatch
+          ? backgroundExecutionDeniedMessage('context-mismatch', {
+              mismatch,
+              stillOn: true,
+            })
+          : null;
+      }
+      if (refusal) return { ok: false as const, error: refusal };
+      const releaseTarget = reserveAutomationTargetStart(activity.action);
+      try {
+        const now = new Date().toISOString();
+        const run = this.createRun(activity, now, 'manual', executionContext);
+        this.openCancellableWindow(activity, run);
+        file.recentRuns.unshift(run);
+        file.recentRuns = trimRecentRuns(file.recentRuns);
+        await this.persistAndNotify(file);
+        await this.archive.appendRun(run).catch((error) => {
+          logMainProcessError(
+            'Failed to archive initial automation run',
+            error,
+          );
+        });
+        return {
+          ok: true as const,
+          activityId: activity.id,
+          runId: run.id,
+          enabledIntentRevision:
+            this.enabledIntentRevisions.get(activity.id) ?? 0,
+          releaseTarget,
+        };
+      } catch (error) {
+        releaseTarget();
+        throw error;
+      }
+    });
+    if (!prepared.ok) return prepared;
+    try {
+      const run = await this.finishRun(
+        prepared.activityId,
+        prepared.runId,
+        prepared.enabledIntentRevision,
+        true,
+      );
+      return run
+        ? { ok: true, run: cloneRun(run) }
+        : { ok: false, error: 'Run was not found.' };
+    } finally {
+      prepared.releaseTarget();
+    }
+  }
+
+  async cancelRun(
+    request: AutomationCancelRunRequest,
+  ): Promise<AutomationMutationResponse> {
+    if (!isRecord(request) || typeof request.runId !== 'string') {
+      return { ok: false, error: 'Run id is required.' };
+    }
+    return this.enqueueMutation(async () => {
+      const controller = this.cancellableRuns.get(request.runId);
+      const file = await this.ensureFile();
+      const run = file.recentRuns.find((entry) => entry.id === request.runId);
+      if (!run) return { ok: false, error: 'Run not found.' };
+      const activity = file.activities.find(
+        (entry) => entry.id === run.activityId,
+      );
+      if (resourceContextEnabled()) {
+        if (!activity) return { ok: false, error: 'Run not found.' };
+        await assertAutomationContext(activity);
+      }
+      if (run.status !== 'running' || !run.cancellable || !controller) {
+        return { ok: false, error: 'Run can no longer be canceled.' };
+      }
+      run.status = 'canceled';
+      run.cancellable = false;
+      run.completedAt = new Date().toISOString();
+      run.durationMs = Math.max(
+        0,
+        Date.parse(run.completedAt) - Date.parse(run.startedAt),
+      );
+      run.error = 'Canceled before dispatch.';
+      if (activity) this.applyRunResult(activity, run);
+      await this.archive.appendRun(run);
+      await this.persistAndNotify(file);
+      this.cancellableRuns.delete(request.runId);
+      this.notifyRunWatchers(run);
+      controller.abort();
+      return { ok: true, run: cloneRun(run) };
+    });
+  }
+
+  private async runDueCheck(): Promise<void> {
+    if (this.dueCheckRunning) {
+      this.dueCheckRequested = true;
+      return;
+    }
+    this.dueCheckRunning = true;
+    this.dueCheckRequested = false;
+    try {
+      const now = new Date();
+      const due = await this.enqueueMutation(async () => {
+        const file = await this.ensureFile();
+        const dueRuns: Array<{
+          activityId: string;
+          runId: string;
+          enabledIntentRevision: number;
+          releaseTarget: () => void;
+        }> = [];
+        const initialRunsToArchive: ScheduledActivityRun[] = [];
+        let changed = false;
+        try {
+          for (const activity of file.activities) {
+            if (!activity.enabled) continue;
+            activity.nextRunAt = nextRunForEnabledActivity(activity, file, now);
+            const scheduledFor = activity.nextRunAt;
+            if (!scheduledFor || Date.parse(scheduledFor) > now.getTime()) {
+              continue;
+            }
+            if (activity.sharedPipelineReview) {
+              activity.lastScheduledFor = scheduledFor;
+              activity.nextRunAt = computeNextAfterScheduledWindow(
+                activity,
+                scheduledFor,
+                now,
+              );
+              changed = true;
+              continue;
+            }
+            if (hasRunForOccurrence(file, activity.id, scheduledFor)) {
+              this.advanceAfterSkippedOrDuplicate(activity, scheduledFor, now);
+              changed = true;
+              continue;
+            }
+            if (
+              activity.action.type === 'worktree_session_prompt' &&
+              isWorktreeSessionPromptTargetBusy(activity.action)
+            ) {
+              continue;
+            }
+            const trigger = triggerForScheduledOccurrence(
+              activity,
+              scheduledFor,
+              now,
+            );
+            if (isActivityRunning(file, activity.id)) {
+              const run = this.createRun(activity, scheduledFor, trigger);
+              run.status = 'skipped';
+              run.completedAt = new Date().toISOString();
+              run.error = 'Previous run is still active.';
+              run.skipReason = 'already_running';
+              file.recentRuns.unshift(run);
+              await this.archive.appendRun(run);
+              file.recentRuns = trimRecentRuns(file.recentRuns);
+              this.applyRunResult(activity, run);
+              this.advanceAfterSkippedOrDuplicate(activity, scheduledFor, now);
+              changed = true;
+              continue;
+            }
+            let releaseTarget: (() => void) | null = null;
+            try {
+              releaseTarget = reserveAutomationTargetStart(activity.action);
+            } catch {
+              continue;
+            }
+            let reservationTransferred = false;
+            try {
+              const run = this.createRun(activity, scheduledFor, trigger);
+              this.openCancellableWindow(activity, run);
+              file.recentRuns.unshift(run);
+              initialRunsToArchive.push(run);
+              if (
+                activity.schedule.kind === 'cron' &&
+                Date.parse(scheduledFor) < now.getTime()
+              ) {
+                await this.archiveMissedOccurrences(
+                  activity,
+                  scheduledFor,
+                  now,
+                );
+              }
+              file.recentRuns = trimRecentRuns(file.recentRuns);
+              this.advanceAfterScheduledDispatch(activity, scheduledFor, now);
+              dueRuns.push({
+                activityId: activity.id,
+                runId: run.id,
+                enabledIntentRevision:
+                  this.enabledIntentRevisions.get(activity.id) ?? 0,
+                releaseTarget,
+              });
+              reservationTransferred = true;
+              changed = true;
+            } finally {
+              if (!reservationTransferred) releaseTarget();
+            }
+          }
+          if (changed) await this.persistAndNotify(file);
+          for (const run of initialRunsToArchive) {
+            await this.archive.appendRun(run).catch((error) => {
+              logMainProcessError(
+                'Failed to archive initial automation run',
+                error,
+              );
+            });
+          }
+          return dueRuns;
+        } catch (error) {
+          dueRuns.forEach(({ releaseTarget }) => releaseTarget());
+          throw error;
+        }
+      });
+
+      for (const entry of due) {
+        void this.finishRun(
+          entry.activityId,
+          entry.runId,
+          entry.enabledIntentRevision,
+          false,
+        )
+          .catch(() => undefined)
+          .finally(entry.releaseTarget);
+      }
+    } finally {
+      this.dueCheckRunning = false;
+      if (this.dueCheckRequested && this.interval !== null) {
+        void this.runDueCheck().catch(() => undefined);
+      }
+    }
+  }
+
+  private createRun(
+    activity: ScheduledActivity,
+    scheduledFor: string,
+    trigger: AutomationRunTrigger,
+    /**
+     * The context this run executes in: the activity's saved context for a
+     * scheduled run, and the one Run now resolved for a manual run.
+     */
+    executionContext: string | undefined = activity.executionContext,
+  ): ScheduledActivityRun {
+    const target = targetForActivity(activity);
+    return {
+      id: randomUUID(),
+      activityId: activity.id,
+      activityName: activity.name,
+      ...(backgroundExecutionContextEnabled() && executionContext !== undefined
+        ? { executionContext }
+        : {}),
+      scheduledFor,
+      manual: trigger === 'manual',
+      trigger,
+      executionLocation: 'local',
+      status: 'running',
+      startedAt: new Date().toISOString(),
+      ...(target ? { target } : {}),
+    };
+  }
+
+  private openCancellableWindow(
+    activity: ScheduledActivity,
+    run: ScheduledActivityRun,
+  ): void {
+    if (!activity.ifCommand?.trim()) return;
+    run.cancellable = true;
+    this.cancellableRuns.set(
+      run.id,
+      new AbortController() as IfCommandAbortController,
+    );
+  }
+
+  private async archiveMissedOccurrences(
+    activity: ScheduledActivity,
+    dispatchedScheduledFor: string,
+    now: Date,
+  ): Promise<void> {
+    if (activity.schedule.kind !== 'cron') return;
+    const stored: ScheduledActivityRun[] = [];
+    let omittedCount = 0;
+    let enumeratedCount = 0;
+    let enumerationComplete = false;
+    let cursor = new Date(dispatchedScheduledFor);
+    const target = targetForActivity(activity);
+    const deadline = Date.now() + MISSED_BACKFILL_TIME_BUDGET_MS;
+    while (enumeratedCount < 10_000) {
+      // Always inspect at least one occurrence so a time-boxed scan can attach
+      // its truncation marker to a real missed row.
+      if (enumeratedCount > 0 && Date.now() > deadline) break;
+      const next = getNextCronRun(activity.schedule.expression, cursor);
+      if (!next || next.getTime() > now.getTime()) {
+        enumerationComplete = true;
+        break;
+      }
+      enumeratedCount += 1;
+      if (stored.length < MAX_MISSED_BACKFILL_RUNS) {
+        const timestamp = next.toISOString();
+        stored.push({
+          id: missedOccurrenceRunId(activity.id, timestamp),
+          activityId: activity.id,
+          activityName: activity.name,
+          scheduledFor: timestamp,
+          manual: false,
+          trigger: 'catch_up',
+          executionLocation: 'local',
+          status: 'missed',
+          startedAt: timestamp,
+          completedAt: now.toISOString(),
+          ...(target ? { target } : {}),
+        });
+      } else {
+        omittedCount += 1;
+      }
+      cursor = next;
+    }
+    if (omittedCount > 0 && stored.length > 0) {
+      const newestStored = stored[stored.length - 1];
+      if (newestStored) newestStored.omittedCount = omittedCount;
+    }
+    if (!enumerationComplete && stored.length > 0) {
+      const newestStored = stored[stored.length - 1];
+      if (newestStored) newestStored.missedOccurrencesTruncated = true;
+    }
+    // Missed occurrences are observability records only. They never enter the
+    // hot window and never notify watchers or affect scheduler dedupe scans.
+    for (const run of stored) await this.archive.appendRun(run);
+  }
+
+  private advanceAfterScheduledDispatch(
+    activity: ScheduledActivity,
+    scheduledFor: string,
+    now: Date,
+  ): void {
+    activity.lastScheduledFor = scheduledFor;
+    if (activity.schedule.kind === 'one_time') {
+      activity.enabled = false;
+      delete activity.nextRunAt;
+      return;
+    }
+    activity.nextRunAt = computeNextAfterScheduledWindow(
+      activity,
+      scheduledFor,
+      now,
+    );
+  }
+
+  private advanceAfterSkippedOrDuplicate(
+    activity: ScheduledActivity,
+    scheduledFor: string,
+    now: Date,
+  ): void {
+    activity.lastScheduledFor = scheduledFor;
+    if (activity.schedule.kind === 'one_time') {
+      activity.enabled = false;
+      delete activity.nextRunAt;
+      return;
+    }
+    activity.nextRunAt = computeNextAfterScheduledWindow(
+      activity,
+      scheduledFor,
+      now,
+    );
+  }
+
+  private async finishRun(
+    activityId: string,
+    runId: string,
+    enabledIntentRevision: number,
+    /** A Run now; a scheduled or catch-up run starts its chat behind the current tab. */
+    manual: boolean,
+  ): Promise<ScheduledActivityRun | null> {
+    let ifCommandOutput: string | undefined;
+    let ifCommandError: string | undefined;
+    try {
+      const storedActivity = (await this.ensureFile()).activities.find(
+        (entry) => entry.id === activityId,
+      );
+      if (!storedActivity) throw new Error('Activity not found.');
+      const activity = backgroundExecutionContextEnabled()
+        ? cloneActivity(storedActivity)
+        : storedActivity;
+      if (backgroundExecutionContextEnabled()) {
+        const run = (await this.ensureFile()).recentRuns.find(
+          (entry) => entry.id === runId,
+        );
+        activity.executionContext = run?.executionContext;
+      }
+
+      if (backgroundExecutionContextEnabled()) {
+        const { resources, destination, sharedPipelineReadFailure } =
+          await this.backgroundAuthorizationInput(activity);
+        if (sharedPipelineReadFailure) {
+          if (sharedPipelineReadFailure.decision)
+            await this.rejectBackgroundRun(
+              activityId,
+              sharedPipelineReadFailure.decision,
+              activity.executionContext,
+            );
+          throw sharedPipelineReadFailure.error;
+        }
+        let decision = await authorizeBackgroundExecution(
+          activity.executionContext,
+          resources,
+          destination,
+        );
+        if (!decision.allow && decision.reason === 'context-mismatch') {
+          const followed = await this.followMovedTarget(
+            activityId,
+            runId,
+            activity,
+          );
+          if (followed !== null) {
+            activity.executionContext = followed;
+            decision = await authorizeBackgroundExecution(
+              followed,
+              resources,
+              destination,
+            );
+          }
+        }
+        if (!decision.allow)
+          await this.rejectBackgroundRun(
+            activityId,
+            decision,
+            activity.executionContext,
+          );
+      }
+
+      if (activity.ifCommand && activity.ifCommand.trim().length > 0) {
+        await this.assertTargetCompatibility(activity, true);
+        const controller =
+          this.cancellableRuns.get(runId) ??
+          (new AbortController() as IfCommandAbortController);
+        const abortIfCommand = (): void => {
+          controller.abort();
+        };
+        this.ifCommandAbortHandlers.add(abortIfCommand);
+        let result: Awaited<ReturnType<typeof runAutomationIfCommand>>;
+        try {
+          result = await runAutomationIfCommand({
+            command: activity.ifCommand,
+            signal: controller.signal,
+          });
+        } finally {
+          this.ifCommandAbortHandlers.delete(abortIfCommand);
+        }
+        const mayDispatch = await this.closeCancellableWindow(
+          activityId,
+          runId,
+        );
+        if (!mayDispatch) {
+          return await this.readCurrentRun(activityId, runId);
+        }
+        ifCommandOutput = truncateCommandOutput(result.stdout);
+        ifCommandError = truncateCommandOutput(result.stderr);
+        const decision = decideIfCommandGate(result);
+        if (decision.kind === 'fail') {
+          throw new Error(decision.message);
+        }
+        if (decision.kind === 'skip') {
+          return await this.completeRun(activityId, runId, {
+            status: 'skipped',
+            message: decision.message,
+            skipReason: 'if_command_exit',
+            ifCommandOutput,
+            ifCommandError,
+          });
+        }
+        const parsedOutput = parseAutomationIfCommandOutput(decision.output);
+        ifCommandOutput = truncateCommandOutput(parsedOutput.output);
+        if (parsedOutput.idempotencyKey) {
+          const reservation = await this.reserveIdempotencyKey({
+            activityId,
+            runId,
+            key: parsedOutput.idempotencyKey,
+            scope: parsedOutput.idempotencyScope,
+          });
+          if (reservation === 'duplicate') {
+            return await this.completeRun(activityId, runId, {
+              status: 'skipped',
+              message: `If Command idempotency key "${parsedOutput.idempotencyKey}" was used by a recent run; action skipped.`,
+              skipReason: 'idempotency',
+              ifCommandOutput,
+              ifCommandError,
+            });
+          }
+        }
+      }
+
+      const result = await this.executeAction(
+        activity,
+        ifCommandOutput,
+        !manual,
+        runId,
+      );
+      return await this.completeRun(activityId, runId, {
+        status: 'success',
+        result,
+        ifCommandOutput,
+        ifCommandError,
+      });
+    } catch (error) {
+      return await this.completeRun(activityId, runId, {
+        status: 'failure',
+        error:
+          error instanceof SharedPipelineReviewRequiredError
+            ? SHARED_PIPELINE_REVIEW_MESSAGE
+            : getErrorMessage(error),
+        ...(error instanceof SharedPipelineReviewRequiredError
+          ? {
+              sharedPipelineReview: {
+                review: {
+                  detectedAt: new Date().toISOString(),
+                  remoteId: error.remoteId,
+                  ...(error.pipelineName
+                    ? { pipelineName: error.pipelineName }
+                    : {}),
+                },
+                installPin: error.installPin,
+                enabledIntentRevision,
+              },
+            }
+          : {}),
+        ifCommandOutput,
+        ifCommandError,
+      });
+    }
+  }
+
+  private async completeRun(
+    activityId: string,
+    runId: string,
+    outcome:
+      | {
+          status: 'success';
+          result: NonNullable<ScheduledActivityRun['result']>;
+          ifCommandOutput?: string;
+          ifCommandError?: string;
+        }
+      | {
+          status: 'failure';
+          error: string;
+          sharedPipelineReview?: SharedPipelineReviewOutcome;
+          ifCommandOutput?: string;
+          ifCommandError?: string;
+        }
+      | {
+          status: 'skipped';
+          message: string;
+          skipReason?: AutomationSkipReason;
+          ifCommandOutput?: string;
+          ifCommandError?: string;
+        },
+  ): Promise<ScheduledActivityRun | null> {
+    return this.enqueueMutation(async () => {
+      const file = await this.ensureFile();
+      const run = file.recentRuns.find((entry) => entry.id === runId);
+      const activity = file.activities.find((entry) => entry.id === activityId);
+      if (!run) {
+        const archived = await this.archive.findRun(activityId, runId);
+        if (!archived) return null;
+        archived.status = outcome.status;
+        archived.cancellable = false;
+        archived.completedAt = new Date().toISOString();
+        archived.durationMs = Math.max(
+          0,
+          Date.parse(archived.completedAt) - Date.parse(archived.startedAt),
+        );
+        archived.ifCommandOutput = outcome.ifCommandOutput;
+        archived.ifCommandError = outcome.ifCommandError;
+        if (outcome.status === 'success') {
+          archived.result = outcome.result;
+          const resolvedChatId =
+            outcome.result.chatId ??
+            outcome.result.standaloneChatId ??
+            outcome.result.appAdvisorChatId;
+          archived.target = {
+            ...(archived.target ?? {}),
+            ...(outcome.result.projectId
+              ? { workspaceId: outcome.result.projectId }
+              : {}),
+            ...(outcome.result.worktreeId
+              ? { worktreeId: outcome.result.worktreeId }
+              : {}),
+            ...(resolvedChatId ? { chatId: resolvedChatId } : {}),
+          };
+          delete archived.error;
+          delete archived.skipReason;
+        } else if (outcome.status === 'failure') {
+          archived.error = outcome.error;
+          delete archived.skipReason;
+        } else {
+          archived.error = outcome.message;
+          archived.skipReason = outcome.skipReason;
+        }
+        if (activity) {
+          if (outcome.status === 'failure' && outcome.sharedPipelineReview) {
+            const reviewOutcome = outcome.sharedPipelineReview;
+            if (
+              actionMatchesSharedPipelineReviewOutcome(
+                activity.action,
+                reviewOutcome,
+              )
+            ) {
+              activity.sharedPipelineReview = reviewOutcome.review;
+            }
+            if (
+              activity.sharedPipelineReview === reviewOutcome.review &&
+              activity.schedule.kind === 'one_time' &&
+              !archived.manual &&
+              (this.enabledIntentRevisions.get(activity.id) ?? 0) ===
+                reviewOutcome.enabledIntentRevision
+            ) {
+              activity.enabled = true;
+            }
+          }
+          this.applyRunResult(activity, archived);
+        }
+        await this.archive.appendRun(archived);
+        if (activity) await this.persistAndNotify(file);
+        this.notifyRunWatchers(archived);
+        return cloneRun(archived);
+      }
+      if (run.status !== 'running') return cloneRun(run);
+      run.status = outcome.status;
+      run.cancellable = false;
+      run.completedAt = new Date().toISOString();
+      run.durationMs = Math.max(
+        0,
+        Date.parse(run.completedAt) - Date.parse(run.startedAt),
+      );
+      run.ifCommandOutput = outcome.ifCommandOutput;
+      run.ifCommandError = outcome.ifCommandError;
+      if (outcome.status === 'success') {
+        run.result = outcome.result;
+        const resolvedChatId =
+          outcome.result.chatId ??
+          outcome.result.standaloneChatId ??
+          outcome.result.appAdvisorChatId;
+        run.target = {
+          ...(run.target ?? {}),
+          ...(outcome.result.projectId
+            ? { workspaceId: outcome.result.projectId }
+            : {}),
+          ...(outcome.result.worktreeId
+            ? { worktreeId: outcome.result.worktreeId }
+            : {}),
+          ...(resolvedChatId ? { chatId: resolvedChatId } : {}),
+        };
+        delete run.error;
+        delete run.skipReason;
+      } else if (outcome.status === 'failure') {
+        run.error = outcome.error;
+        delete run.skipReason;
+      } else {
+        run.error = outcome.message;
+        run.skipReason = outcome.skipReason;
+      }
+      if (activity) {
+        if (outcome.status === 'failure' && outcome.sharedPipelineReview) {
+          const reviewOutcome = outcome.sharedPipelineReview;
+          if (
+            actionMatchesSharedPipelineReviewOutcome(
+              activity.action,
+              reviewOutcome,
+            )
+          ) {
+            activity.sharedPipelineReview = reviewOutcome.review;
+          }
+          if (
+            activity.sharedPipelineReview === reviewOutcome.review &&
+            activity.schedule.kind === 'one_time' &&
+            !run.manual &&
+            (this.enabledIntentRevisions.get(activity.id) ?? 0) ===
+              reviewOutcome.enabledIntentRevision
+          ) {
+            activity.enabled = true;
+          }
+        }
+        this.applyRunResult(activity, run);
+      }
+      await this.archive.appendRun(run);
+      await this.persistAndNotify(file);
+      this.notifyRunWatchers(run);
+      return cloneRun(run);
+    });
+  }
+
+  /**
+   * Close the only window in which an automation run can be canceled. This
+   * transition is archived and broadcast before action dispatch so the UI
+   * never advertises Cancel for an agent turn or pipeline that already began.
+   */
+  private async closeCancellableWindow(
+    activityId: string,
+    runId: string,
+  ): Promise<boolean> {
+    return await this.enqueueMutation(async () => {
+      this.cancellableRuns.delete(runId);
+      const file = await this.ensureFile();
+      const run = file.recentRuns.find((entry) => entry.id === runId);
+      if (!run || run.activityId !== activityId || run.status !== 'running') {
+        return false;
+      }
+      run.cancellable = false;
+      await this.archive.appendRun(run);
+      await this.persistAndNotify(file);
+      return true;
+    });
+  }
+
+  private async readCurrentRun(
+    activityId: string,
+    runId: string,
+  ): Promise<ScheduledActivityRun | null> {
+    return await this.enqueueMutation(async () => {
+      const current = (await this.ensureFile()).recentRuns.find(
+        (entry) => entry.id === runId && entry.activityId === activityId,
+      );
+      if (current) return cloneRun(current);
+      const archived = await this.archive.findRun(activityId, runId);
+      return archived ? cloneRun(archived) : null;
+    });
+  }
+
+  /**
+   * Fire-and-forget `automation_run` watcher notification for a terminal run.
+   * The watcher service is imported lazily and every failure is swallowed so
+   * automation runs never fail (or block) on watcher delivery. Occurrences
+   * skipped because the previous run is still active are deliberately not
+   * notified — the in-flight run's own completion fires the watcher.
+   */
+  private notifyRunWatchers(run: ScheduledActivityRun): void {
+    if (
+      run.status !== 'success' &&
+      run.status !== 'failure' &&
+      run.status !== 'skipped' &&
+      run.status !== 'canceled'
+    ) {
+      return;
+    }
+    const status = run.status;
+    void import('../app-advisor/watchers')
+      .then(({ getAppAdvisorWatcherService }) =>
+        getAppAdvisorWatcherService().handleAutomationRunEvent({
+          kind: 'automation_run',
+          ...(run.executionContext === undefined
+            ? {}
+            : { executionContext: run.executionContext }),
+          activityId: run.activityId,
+          activityName: run.activityName,
+          runId: run.id,
+          manual: run.manual,
+          status,
+          ...(run.error ? { message: run.error } : {}),
+          ...(run.result ? { dispatched: { ...run.result } } : {}),
+          completedAt: run.completedAt ?? new Date().toISOString(),
+        }),
+      )
+      .catch((error) => {
+        // The run outcome is already persisted; a failed notification is
+        // recovered by the watcher service's startup missed-run replay, but
+        // it should not disappear silently in the meantime.
+        logMainProcessError('Automation watcher notification failed', error);
+      });
+  }
+
+  private async reserveIdempotencyKey(args: {
+    activityId: string;
+    runId: string;
+    key: string;
+    scope: AutomationIfCommandIdempotencyScope;
+  }): Promise<'reserved' | 'duplicate' | 'missing-run'> {
+    return this.enqueueMutation(async () => {
+      const file = await this.ensureFile();
+      const run = file.recentRuns.find((entry) => entry.id === args.runId);
+      if (!run) return 'missing-run';
+      const duplicate = file.recentRuns.some(
+        (entry) =>
+          entry.id !== args.runId &&
+          isIdempotencyScopeMatch(
+            {
+              activityId: args.activityId,
+              key: args.key,
+              scope: args.scope,
+            },
+            entry,
+          ),
+      );
+      if (duplicate) return 'duplicate';
+
+      run.idempotencyKey = args.key;
+      run.idempotencyScope = args.scope;
+      await this.persistAndNotify(file);
+      return 'reserved';
+    });
+  }
+
+  private applyRunResult(
+    activity: ScheduledActivity,
+    run: ScheduledActivityRun,
+  ): void {
+    if (run.status === 'running' || run.status === 'missed') return;
+    activity.lastRunAt = run.completedAt ?? new Date().toISOString();
+    activity.lastScheduledFor = run.scheduledFor;
+    activity.lastResult = {
+      status: run.status,
+      completedAt: activity.lastRunAt,
+      ...(run.error ? { message: run.error } : {}),
+      ...(run.result ? { result: run.result } : {}),
+    };
+    if (run.status === 'success') {
+      activity.failureCount = 0;
+    } else if (run.status === 'failure') {
+      activity.failureCount += 1;
+    }
+    activity.updatedAt = new Date().toISOString();
+  }
+
+  private async executeAction(
+    activity: ScheduledActivity,
+    ifCommandOutput?: string,
+    /** The run was not the user's own, so its chat opens behind the current tab. */
+    background = false,
+    runId: string = randomUUID(),
+  ): Promise<NonNullable<ScheduledActivityRun['result']>> {
+    await this.assertTargetCompatibility(activity, true);
+    const executionContext = backgroundExecutionContextEnabled()
+      ? activity.executionContext
+      : undefined;
+    const action =
+      ifCommandOutput !== undefined
+        ? interpolateAutomationActionIfCommandOutput(
+            activity.action,
+            ifCommandOutput,
+          )
+        : activity.action;
+    const packageOverlay =
+      action.type === 'app_advisor_prompt' ||
+      action.type === 'standalone_prompt' ||
+      action.type === 'worktree_prompt'
+        ? await resolveInstalledAutomationPackageOverlay(
+            activity.id,
+            activity.installedFrom?.capabilityPackage,
+          )
+        : undefined;
+    const automationPipelinePackage =
+      action.type === 'worktree_pipeline' &&
+      action.pipelineSource === 'user' &&
+      activity.installedFrom?.bundledPipelineLocalId === action.pipelineId
+        ? await resolveInstalledAutomationPipelinePackage(
+            activity.id,
+            activity.installedFrom.bundledPipelineLocalId,
+            activity.installedFrom.capabilityPackage,
+          )
+        : undefined;
+    switch (action.type) {
+      case 'app_advisor_prompt': {
+        if (!this.surfaces) {
+          throw new Error('Automations service is not configured.');
+        }
+        const chatId = randomUUID();
+        const userMessageId = randomUUID();
+        const preferences = await readPreferencesFile();
+        // An Agent on the default model runs on the model a new App Advisor
+        // chat starts on, which can differ from the stored preference.
+        const appAdvisorModel = namesConcreteAutomationModel(action)
+          ? undefined
+          : namesInheritingAutomationAgent(action)
+            ? await resolveAppAdvisorDefaultModel(preferences)
+            : preferences.appAdvisorModel;
+        const { model, providerType, executionHarness, modelConfig } =
+          resolveAutomationPromptModelSettings(
+            action,
+            // Present only when the default was actually resolved above. When
+            // the action named its own model this is `undefined`, matching the
+            // other two prompt cases, and the thinking level is recovered from
+            // the named model's provider instead.
+            appAdvisorModel
+              ? {
+                  selection: {
+                    model: appAdvisorModel,
+                    thinkingLevel: preferences.appAdvisorThinkingLevel,
+                  },
+                  requireModel: (): {
+                    model: ChatModel;
+                    thinkingLevel: ThinkingLevel;
+                  } => ({
+                    model: appAdvisorModel,
+                    thinkingLevel: preferences.appAdvisorThinkingLevel,
+                  }),
+                }
+              : undefined,
+            preferences.defaultChatModelByProvider,
+            // App Advisor's own surface setting: applied regardless of which model
+            // the automation names, matching the renderer's `resolveTabDefaults`.
+            preferences.appAdvisorThinkingLevel,
+            preferences.providerModelConfigDefaults,
+          );
+        // App Advisor runs Cursor on the managed runtime like a worktree chat;
+        // gate before the window opens so a disconnected runtime fails here.
+        if (
+          executionHarness === 'cursor' &&
+          !(await isCursorRuntimeAvailable())
+        )
+          throw new Error(
+            'Connect Cursor in Settings to use it in automations.',
+          );
+        const pluginSelections = await resolveAutomationPromptPlugins(
+          defaultPluginSelections(preferences.appAdvisorPluginSelections),
+          action.plugins,
+          action.pluginSelections,
+        );
+        const approvalMode = await resolveAutomationApprovalMode(
+          APP_ADVISOR_PROJECT_ID,
+          action.approvalMode,
+        );
+        const resolvedPrompt = await resolveConfiguredPrompt({
+          projectId: APP_ADVISOR_PROJECT_ID,
+          worktreeId: APP_ADVISOR_WORKTREE_ID,
+          providerType,
+          executionHarness,
+          prompt: action.prompt,
+          promptReferences: action.promptReferences,
+        });
+        const dispatchPluginSelections =
+          resolvedPrompt.referencedPluginSelections
+            ? mergePluginSelections(
+                pluginSelections,
+                resolvedPrompt.referencedPluginSelections,
+              )
+            : pluginSelections;
+        await this.authorizePromptPlugins(
+          activity,
+          {
+            projectId: APP_ADVISOR_PROJECT_ID,
+            worktreeId: APP_ADVISOR_WORKTREE_ID,
+          },
+          dispatchPluginSelections,
+          model,
+        );
+        await this.surfaces.ensureAppAdvisorWindow({
+          quickPrompt: resolvedPrompt.prompt,
+          quickPromptFileReferences: resolvedPrompt.fileReferences,
+          quickPromptPlanMode: action.planMode === true,
+          quickPromptTitle: activity.name,
+          quickPromptChatId: chatId,
+          ...(action.workEntryId
+            ? { quickPromptWorkEntryId: action.workEntryId }
+            : {}),
+          ...(action.workEntryId === undefined &&
+          action.sidebarGroupName?.trim()
+            ? { quickPromptSidebarGroupName: action.sidebarGroupName }
+            : {}),
+          quickPromptUserMessageId: userMessageId,
+          quickPromptModel: model,
+          quickPromptProviderType: providerType,
+          quickPromptModelConfig: modelConfig,
+          quickPromptThinkingLevel: modelConfig.thinkingLevel,
+          quickPromptInitiationSource: 'automation',
+          quickPromptAutomationName: activity.name,
+          ...(pluginSelections || resolvedPrompt.referencedPluginSelections
+            ? {
+                quickPromptPluginSelections: dispatchPluginSelections,
+              }
+            : {}),
+          ...(packageOverlay
+            ? { quickPromptPackageOverlay: packageOverlay }
+            : {}),
+          quickPromptApprovalMode: approvalMode,
+        });
+        return { appAdvisorChatId: chatId, userMessageId };
+      }
+      case 'standalone_prompt': {
+        if (!this.surfaces) {
+          throw new Error('Automations service is not configured.');
+        }
+        const chatId = randomUUID();
+        const coworkWorkspaceId = resolveCoworkWorkspaceId(
+          action.chatProjectId,
+        );
+        const preferences = await readPreferencesFile();
+        const standaloneDefault = await resolveAutomationLaneDefault(
+          action,
+          preferences,
+          'chat',
+          // `sendStandaloneChatMessage` dispatches into this cowork workspace,
+          // and the session spawn resolves its Environments credentials for it.
+          { workspaceId: coworkWorkspaceId },
+        );
+        const { model, providerType, executionHarness, modelConfig } =
+          resolveAutomationPromptModelSettings(
+            action,
+            standaloneDefault,
+            preferences.defaultChatModelByProvider,
+            undefined,
+            preferences.providerModelConfigDefaults,
+          );
+        // Cowork runs Cursor on the managed runtime like a worktree chat;
+        // gate before the Work Entry and prompt are persisted.
+        if (
+          executionHarness === 'cursor' &&
+          !(await isCursorRuntimeAvailable())
+        )
+          throw new Error(
+            'Connect Cursor in Settings to use it in automations.',
+          );
+        // Cowork project defaults are inherited live by the created chat, so
+        // they are authorized below but not copied into its selection.
+        const pluginSelections = await resolveAutomationPromptPlugins(
+          undefined,
+          action.plugins,
+          action.pluginSelections,
+        );
+        const approvalMode = await resolveAutomationApprovalMode(
+          coworkWorkspaceId,
+          action.approvalMode,
+        );
+        const resolvedPrompt = await resolveConfiguredPrompt({
+          projectId: coworkWorkspaceId,
+          worktreeId: COWORK_HOME_WORKTREE_ID,
+          providerType,
+          executionHarness,
+          prompt: action.prompt,
+          promptReferences: action.promptReferences,
+        });
+        const dispatchPluginSelections =
+          resolvedPrompt.referencedPluginSelections
+            ? mergePluginSelections(
+                pluginSelections,
+                resolvedPrompt.referencedPluginSelections,
+              )
+            : pluginSelections;
+        await this.authorizePromptPlugins(
+          activity,
+          { projectId: coworkWorkspaceId, worktreeId: COWORK_HOME_WORKTREE_ID },
+          withInheritedDefaults(
+            await resolveStandaloneDefaultPluginSelections(
+              action.chatProjectId,
+            ),
+            dispatchPluginSelections,
+          ),
+          model,
+        );
+        const {
+          chatId: createdChatId,
+          userMessageId,
+          workEntryId,
+        } = await sendStandaloneChatMessage(
+          {
+            chatId,
+            message: resolvedPrompt.prompt,
+            fileReferences: resolvedPrompt.fileReferences,
+            planMode: action.planMode === true,
+            projectLocalId: coworkWorkspaceId,
+            ...(action.workEntryId ? { workEntryId: action.workEntryId } : {}),
+            model,
+            providerType,
+            executionHarness,
+            modelConfig,
+            thinkingLevel: modelConfig.thinkingLevel,
+            initiationSource: 'automation',
+            automationName: activity.name,
+            ...(pluginSelections || resolvedPrompt.referencedPluginSelections
+              ? {
+                  pluginSelections: dispatchPluginSelections,
+                }
+              : {}),
+            ...(packageOverlay ? { packageOverlay } : {}),
+            approvalMode,
+          },
+          {
+            getWindow: this.surfaces.getMainWindow,
+            executionContext: executionContext ?? 'personal',
+          },
+        );
+        if (action.workEntryId === undefined && workEntryId) {
+          await assignNewAutomationItemToSidebarGroup({
+            scope: { workspaceLocalId: coworkWorkspaceId },
+            itemId: workEntryId,
+            name: action.sidebarGroupName,
+          });
+        }
+        return {
+          standaloneChatId: createdChatId,
+          projectId: coworkWorkspaceId,
+          userMessageId,
+        };
+      }
+      case 'worktree_prompt': {
+        if (!this.surfaces) {
+          throw new Error('Automations service is not configured.');
+        }
+        // `existingWorktreeId` targets an already-provisioned worktree: no
+        // worktree row is created and no setup scripts run, so there is
+        // nothing to roll back on dispatch failure (readyWorktree stays
+        // null on that path).
+        const { existingWorktreeId } = action;
+        let readyWorktree: ReadyWorktree | null = null;
+        let worktreeId: string;
+        if (existingWorktreeId === undefined) {
+          readyWorktree = await this.createReadyWorktree(action);
+          worktreeId = readyWorktree.id;
+          // A worktree branched from a base worktree is a branch-stack child,
+          // which follows its root and cannot join a group on its own.
+          if (action.baseWorktreeId === undefined) {
+            await assignNewAutomationItemToSidebarGroup({
+              scope: { workspaceLocalId: action.workspaceId },
+              itemId: worktreeId,
+              name: action.sidebarGroupName,
+            });
+          }
+        } else {
+          worktreeId = await this.resolveExistingWorktreeTarget(
+            action.workspaceId,
+            existingWorktreeId,
+          );
+        }
+        let executionStarted = false;
+        try {
+          // A worktree created for this run may already hold the renderer's
+          // empty starter chat. Leaving the chat unnamed lets the chat service
+          // reuse that tab so the automation's chat is the only one there. An
+          // existing worktree's empty tab can be a user's draft, so that target
+          // always gets a new chat of its own.
+          const chatId = readyWorktree === null ? randomUUID() : undefined;
+          const preferences = await readPreferencesFile();
+          const worktreeDefault = await resolveAutomationLaneDefault(
+            action,
+            preferences,
+            'worktree',
+            // Same workspace `sendWorktreeChatMessage` dispatches into below.
+            { workspaceId: action.workspaceId },
+          );
+          const { model, providerType, executionHarness, modelConfig } =
+            resolveAutomationPromptModelSettings(
+              action,
+              worktreeDefault,
+              preferences.defaultWorktreeModelByProvider,
+              undefined,
+              preferences.providerModelConfigDefaults,
+            );
+          // Only now, and only for a dispatch that actually resolved to Cursor.
+          if (
+            executionHarness === 'cursor' &&
+            !(await isCursorRuntimeAvailable())
+          )
+            throw new Error(
+              'Connect Cursor in Settings to use it in automations.',
+            );
+          // Project defaults are inherited live by the created chat, so they
+          // are authorized below but not copied into its selection.
+          const pluginSelections = await resolveAutomationPromptPlugins(
+            undefined,
+            action.plugins,
+            action.pluginSelections,
+          );
+          const interfaceMode =
+            providerType === 'claude' && action.interfaceMode
+              ? getPersistedClaudeChatInterfaceMode(action.interfaceMode)
+              : undefined;
+          const approvalMode = await resolveAutomationApprovalMode(
+            action.workspaceId,
+            action.approvalMode,
+          );
+          const userMessageId = randomUUID();
+          const resolvedPrompt = await resolveConfiguredPrompt({
+            projectId: action.workspaceId,
+            worktreeId,
+            providerType,
+            executionHarness,
+            prompt: action.prompt,
+            promptReferences: action.promptReferences,
+          });
+          const dispatchPluginSelections =
+            resolvedPrompt.referencedPluginSelections
+              ? mergePluginSelections(
+                  pluginSelections,
+                  resolvedPrompt.referencedPluginSelections,
+                )
+              : pluginSelections;
+          await this.authorizePromptPlugins(
+            activity,
+            { projectId: action.workspaceId, worktreeId: worktreeId },
+            withInheritedDefaults(
+              await resolveWorkspaceDefaultPluginSelections(action.workspaceId),
+              dispatchPluginSelections,
+            ),
+            model,
+          );
+          executionStarted = true;
+          const sent = await sendWorktreeChatMessage(
+            {
+              projectId: action.workspaceId,
+              worktreeId,
+              ...(chatId === undefined ? {} : { chatId }),
+              userMessageId,
+              text: resolvedPrompt.prompt,
+              fileReferences: resolvedPrompt.fileReferences,
+              planMode: action.planMode === true,
+              model,
+              providerType,
+              executionHarness,
+              modelConfig,
+              thinkingLevel: modelConfig.thinkingLevel,
+              initiationSource: 'automation',
+              ...(background ? { preserveActiveTab: true } : {}),
+              automationName: activity.name,
+              ...(pluginSelections || resolvedPrompt.referencedPluginSelections
+                ? {
+                    pluginSelections: dispatchPluginSelections,
+                  }
+                : {}),
+              ...(packageOverlay ? { packageOverlay } : {}),
+              ...(interfaceMode ? { interfaceMode } : {}),
+              approvalMode,
+            },
+            {
+              getWindow: this.surfaces.getMainWindow,
+              executionContext: executionContext ?? 'personal',
+            },
+          );
+          return {
+            projectId: action.workspaceId,
+            worktreeId,
+            chatId: sent.chatId,
+            userMessageId,
+          };
+        } catch (error) {
+          if (!executionStarted && readyWorktree !== null) {
+            await this.disposeFailedReadyWorktree(
+              readyWorktree.workspaceType,
+              action.workspaceId,
+              readyWorktree.id,
+              readyWorktree.createdAt,
+            ).catch((cleanupError) => {
+              // eslint-disable-next-line no-console
+              console.error(
+                'Failed to clean up automation worktree after prompt failure:',
+                cleanupError,
+              );
+            });
+          }
+          throw error;
+        }
+      }
+      case 'worktree_pipeline': {
+        if (!this.surfaces) {
+          throw new Error('Automations service is not configured.');
+        }
+        // Pipelines keep boolean Fast mode. Reject a stored Ultra fast request
+        // explicitly before creating a worktree or starting any execution.
+        const pipelineSpeedError = automationPipelineSpeedError(
+          action.modelConfig,
+        );
+        if (pipelineSpeedError) throw new Error(pipelineSpeedError);
+        const { items } = await readAllSidebarItems();
+        const workspace = items.find((item) => item.id === action.workspaceId);
+        if (!workspace) throw new Error('Project not found.');
+        if (workspace.type === 'cowork') {
+          return await this.executeCoworkPipelineAction(
+            action,
+            automationPipelinePackage,
+            executionContext,
+            activity.id,
+            activity.targetRequirement,
+            automationRunIdentity(activity),
+          );
+        }
+        const readyWorktree = await this.createReadyWorktree(action);
+        const worktreeId = readyWorktree.id;
+        let executionStarted = false;
+        try {
+          const cwd = this.resolveWorktreeCwd(
+            action.workspaceId,
+            worktreeId,
+            action.repoId,
+          );
+          const pipelineSelection = await this.resolvePipelineSelection(
+            action,
+            cwd,
+          );
+          if (!pipelineSelection.sharedPipeline) {
+            this.assertResolvedPipelineTarget(
+              activity,
+              workspace.type,
+              pipelineSelection.pipeline,
+            );
+          }
+          const childPipelineAuthorizations =
+            await this.authorizeResolvedPipeline(
+              activity.id,
+              executionContext,
+              pipelineSelection,
+              cwd,
+              action.workspaceId,
+              pipelineExecutionPreferences(action),
+            );
+          if (
+            !getTriggerTypes(pipelineSelection.pipeline.on).includes('dispatch')
+          ) {
+            throw new Error('Pipeline does not support dispatch triggers.');
+          }
+          const result = await startPipelineExecutionFromMain({
+            pipeline: pipelineSelection.pipeline,
+            getWindow: this.surfaces.getMainWindow,
+            options: {
+              cwd,
+              projectId: action.workspaceId,
+              worktreeId,
+              pipelineId: action.pipelineId,
+              ...(executionContext === undefined
+                ? {}
+                : { executionContext: executionContext }),
+              ...(childPipelineAuthorizations === undefined
+                ? {}
+                : { childPipelineAuthorizations }),
+              initiationSource: 'automation',
+              ...automationRunIdentity(activity),
+              ...(pipelineSelection.pipelineFilePath
+                ? { pipelineFilePath: pipelineSelection.pipelineFilePath }
+                : {}),
+              ...(pipelineSelection.pipelinePreferenceLocator
+                ? {
+                    pipelinePreferenceLocator:
+                      pipelineSelection.pipelinePreferenceLocator,
+                  }
+                : {}),
+              ...(pipelineSelection.sharedPipeline
+                ? { sharedPipeline: pipelineSelection.sharedPipeline }
+                : {}),
+              inputs: action.inputs,
+              ...pipelineExecutionPreferences(action),
+              ...(action.modelConfig
+                ? { modelConfig: action.modelConfig }
+                : {}),
+              ...(automationPipelinePackage
+                ? { automationPipelinePackage }
+                : {}),
+              repoPath: action.repoId
+                ? this.resolveWorktreeCwd(
+                    action.workspaceId,
+                    worktreeId,
+                    action.repoId,
+                  )
+                : undefined,
+            },
+          });
+          if (!result.success) {
+            if (
+              result.errorCode === 'shared_pipeline_changed' &&
+              action.pipelineSource === 'shared' &&
+              action.sharedPipeline?.installPin
+            ) {
+              throw new SharedPipelineReviewRequiredError(
+                action.sharedPipeline.remoteId,
+                action.sharedPipeline.installPin,
+                action.pipelineName,
+              );
+            }
+            if (pipelineSelection.sharedPipeline)
+              await this.rejectSharedPipelineDispatchFailure(
+                activity.id,
+                executionContext,
+                result.error,
+              );
+            throw new Error(result.error);
+          }
+          executionStarted = true;
+          return {
+            projectId: action.workspaceId,
+            worktreeId,
+            pipelineExecutionId: result.data.id,
+          };
+        } catch (error) {
+          if (!executionStarted) {
+            await this.disposeFailedReadyWorktree(
+              readyWorktree.workspaceType,
+              action.workspaceId,
+              readyWorktree.id,
+              readyWorktree.createdAt,
+            ).catch((cleanupError) => {
+              // eslint-disable-next-line no-console
+              console.error(
+                'Failed to clean up automation worktree after pipeline failure:',
+                cleanupError,
+              );
+            });
+          }
+          throw error;
+        }
+      }
+      case 'pipeline_execution_resume': {
+        if (!this.surfaces) {
+          throw new Error('Automations service is not configured.');
+        }
+        const result = await resumePipelineExecutionFromMain({
+          executionId: action.executionId,
+          statusReasonIds: action.statusReasonIds,
+          allowStaleNoop: true,
+          initiationSource: 'automation',
+          persistInitiationSource: true,
+          getWindow: this.surfaces.getMainWindow,
+        });
+        return { pipelineExecutionId: result.state.id };
+      }
+      case 'worktree_session_prompt': {
+        if (!this.surfaces) {
+          throw new Error('Automations service is not configured.');
+        }
+        let tabOptions: Awaited<
+          ReturnType<typeof buildExistingTabDispatchOptions>
+        >;
+        try {
+          tabOptions = await buildExistingTabDispatchOptions(
+            action.workspaceId,
+            action.worktreeId,
+            action.chatId,
+          );
+        } catch (error) {
+          if (error instanceof ExistingTabDispatchTargetNotFoundError) {
+            throw new Error(
+              'That chat is no longer available. Edit this automation and pick another destination.',
+            );
+          }
+          if (
+            error instanceof Error &&
+            error.message === 'Target chat is readonly.'
+          ) {
+            throw new Error(
+              'That chat is archived and cannot receive automation messages. Edit this automation and pick another destination.',
+            );
+          }
+          throw error;
+        }
+        const namedModel = action.model
+          ? resolveKnownModel(action.model)
+          : undefined;
+        // Resolve inherited Agents before OpenCode admission, matching the send.
+        const explicitModel =
+          namedModel &&
+          ((await resolveSendModelPin(
+            action.workspaceId,
+            tabOptions.model,
+            namedModel,
+          )) ??
+            namedModel);
+        if (action.model && !explicitModel)
+          throw new Error('The automation model is unavailable.');
+        const explicitHarness = explicitModel
+          ? getExecutionHarnessForModel(explicitModel)
+          : undefined;
+        if (explicitModel && !explicitHarness)
+          throw new Error('The automation model is unsupported.');
+        const selectedModel = explicitModel ?? tabOptions.model;
+        const selectedHarness =
+          explicitHarness ??
+          tabOptions.executionHarness ??
+          (selectedModel
+            ? getExecutionHarnessForModel(selectedModel)
+            : undefined) ??
+          tabOptions.providerType;
+        if (selectedHarness === 'cursor') {
+          // Cursor's compatibility send does not bind inherited settings across
+          // asynchronous preparation; retain the shared scheduling restriction.
+          throw new Error(
+            'Scheduled messages are not available for Cursor chats. Choose another model.',
+          );
+        }
+        const opencodeGeneration =
+          selectedHarness === 'opencode'
+            ? getOpenCodeConnectionGeneration()
+            : undefined;
+        if (opencodeGeneration !== undefined) {
+          // Refuse disconnected or withdrawn models before chat dispatch can
+          // append a user message, start a timer, or open an Advisor window.
+          // The provider revalidates the connection again at execution time.
+          await assertOpenCodeModelAvailable(selectedModel);
+          assertOpenCodeConnectionGeneration(opencodeGeneration);
+        }
+        const isAppAdvisorTarget =
+          action.workspaceId === APP_ADVISOR_PROJECT_ID;
+        const appAdvisorSurfaces =
+          isAppAdvisorTarget &&
+          this.surfaces.getAppAdvisorWindow &&
+          this.surfaces.openAppAdvisorWindow
+            ? {
+                getMainWindow: this.surfaces.getMainWindow,
+                getAppAdvisorWindow: this.surfaces.getAppAdvisorWindow,
+                openAppAdvisorWindow: this.surfaces.openAppAdvisorWindow,
+                ensureAppAdvisorWindow: this.surfaces.ensureAppAdvisorWindow,
+              }
+            : undefined;
+        if (isAppAdvisorTarget && !appAdvisorSurfaces) {
+          throw new Error(
+            'Automations service is missing App Advisor chat surfaces.',
+          );
+        }
+        // OpenCode requires a UUID; both routes retain the durable run identity.
+        const sessionPromptUserMessageId =
+          selectedHarness === 'opencode' ? runId : `automation-${runId}`;
+        const resolvedPrompt = await resolveConfiguredPrompt({
+          projectId: action.workspaceId,
+          worktreeId: action.worktreeId,
+          selectedRepoId: tabOptions.selectedRepoId,
+          providerType: explicitModel
+            ? requireProviderForModel(explicitModel)
+            : tabOptions.providerType,
+          executionHarness:
+            explicitHarness ??
+            tabOptions.executionHarness ??
+            (tabOptions.model
+              ? getExecutionHarnessForModel(tabOptions.model)
+              : undefined),
+          prompt: action.prompt,
+          promptReferences: action.promptReferences,
+        });
+        const providerChanged =
+          explicitModel !== undefined &&
+          (explicitHarness !== tabOptions.executionHarness ||
+            requireProviderForModel(explicitModel) !== tabOptions.providerType);
+        const runtimeChanged =
+          explicitModel !== undefined &&
+          (providerChanged ||
+            (explicitHarness !== 'cursor' &&
+              explicitModel !== tabOptions.model));
+        const preferences =
+          action.modelConfig || explicitHarness
+            ? await readPreferencesFile()
+            : undefined;
+        const resolvedModelConfig = explicitHarness
+          ? resolveProviderModelConfig(
+              explicitHarness,
+              {
+                modelConfig: providerChanged
+                  ? action.modelConfig
+                  : action.modelConfig
+                    ? mergeAgentModelConfig(
+                        tabOptions.modelConfig,
+                        action.modelConfig,
+                      )
+                    : tabOptions.modelConfig,
+              },
+              preferences?.providerModelConfigDefaults,
+            )
+          : action.modelConfig
+            ? resolveProviderModelConfig(
+                tabOptions.executionHarness ??
+                  tabOptions.providerType ??
+                  'claude',
+                {
+                  modelConfig: mergeAgentModelConfig(
+                    tabOptions.modelConfig,
+                    action.modelConfig,
+                  ),
+                },
+                preferences?.providerModelConfigDefaults,
+              )
+            : undefined;
+        const basePluginSelections = await resolveAutomationPromptPlugins(
+          tabOptions.pluginSelections,
+          action.plugins,
+          action.pluginSelections,
+        );
+        const pluginSelections = resolvedPrompt.referencedPluginSelections
+          ? mergePluginSelections(
+              basePluginSelections,
+              resolvedPrompt.referencedPluginSelections,
+            )
+          : basePluginSelections;
+        const approvalMode =
+          action.approvalMode === undefined
+            ? undefined
+            : await resolveAutomationApprovalMode(
+                action.workspaceId,
+                action.approvalMode,
+              );
+        await this.authorizePromptPlugins(
+          activity,
+          { projectId: action.workspaceId, worktreeId: action.worktreeId },
+          await resolveBackgroundChatPluginSelections(pluginSelections, {
+            projectId: action.workspaceId,
+            worktreeId: action.worktreeId,
+            chatId: action.chatId,
+          }),
+          explicitModel ?? tabOptions.model,
+        );
+        const scheduledSender = activity.agentScheduledSend?.provenance.sender;
+        if (scheduledSender?.kind === 'project') {
+          // A root agent's scheduled message passes its admission again now.
+          const { admitScheduledProjectMessage } =
+            await import('../agent-actions/desktop-project-bot-port');
+          await admitScheduledProjectMessage(
+            {
+              workspaceId: scheduledSender.projectId,
+              worktreeId: scheduledSender.taskId,
+              chatId: scheduledSender.chatId,
+            },
+            {
+              workspaceId: action.workspaceId,
+              worktreeId: action.worktreeId,
+              chatId: action.chatId,
+            },
+            {
+              ...tabOptions,
+              kind: 'chat',
+              ...(approvalMode ? { approvalMode } : {}),
+            },
+          );
+        }
+        if (opencodeGeneration !== undefined)
+          assertOpenCodeConnectionGeneration(opencodeGeneration);
+        if (isAppAdvisorTarget) {
+          await this.surfaces.ensureAppAdvisorWindow();
+          if (opencodeGeneration !== undefined)
+            assertOpenCodeConnectionGeneration(opencodeGeneration);
+        }
+        await sendWorktreeChatMessage(
+          {
+            projectId: action.workspaceId,
+            worktreeId: action.worktreeId,
+            chatId: action.chatId,
+            text: resolvedPrompt.prompt,
+            userMessageId: sessionPromptUserMessageId,
+            ...(activity.agentScheduledSend
+              ? rebindAgentSenderRequest(
+                  activity.agentScheduledSend,
+                  sessionPromptUserMessageId,
+                  action.workspaceId,
+                )
+              : {}),
+            initiationSource: 'automation',
+            ...(background ? { preserveActiveTab: true } : {}),
+            automationName: activity.name,
+            fileReferences:
+              resolvedPrompt.fileReferences ?? action.fileReferences,
+            attachmentPaths: action.attachmentPaths,
+            attachmentPromptContexts: action.attachmentPromptContexts,
+            inputMode: action.inputMode ?? 'typed',
+            ...tabOptions,
+            ...(runtimeChanged
+              ? {
+                  sdkSessionId: undefined,
+                  globalInstructionsSnapshot: undefined,
+                  codexReconstructionSeedId: undefined,
+                  claudeForkSession: undefined,
+                  claudeForkResumeAt: undefined,
+                  claudeForkStartsFresh: undefined,
+                  providerType: explicitModel
+                    ? requireProviderForModel(explicitModel)
+                    : undefined,
+                  executionHarness: explicitHarness,
+                }
+              : {}),
+            ...(explicitModel ? { model: explicitModel } : {}),
+            ...(resolvedModelConfig
+              ? { modelConfig: resolvedModelConfig }
+              : {}),
+            ...(action.planMode !== undefined
+              ? { planMode: action.planMode }
+              : {}),
+            ...(approvalMode ? { approvalMode } : {}),
+            ...(pluginSelections ? { pluginSelections } : {}),
+          },
+          {
+            getWindow: this.surfaces.getMainWindow,
+            ...(appAdvisorSurfaces ? { appAdvisorSurfaces } : {}),
+            executionContext: executionContext ?? 'personal',
+          },
+        );
+        return {
+          projectId: action.workspaceId,
+          worktreeId: action.worktreeId,
+          chatId: action.chatId,
+          userMessageId: sessionPromptUserMessageId,
+        };
+      }
+    }
+  }
+
+  /**
+   * Dispatch a `worktree_pipeline` action whose workspace is a cowork
+   * workspace. Cowork has no worktrees: the pipeline runs directory-scoped
+   * at the cowork root (managed `home/` or the attached external folder).
+   * `startPipelineExecutionFromMain` forces `scope: 'directory'` for cowork
+   * project ids, so no explicit scope plumbing is needed here.
+   */
+  private async executeCoworkPipelineAction(
+    action: Extract<AutomationAction, { type: 'worktree_pipeline' }>,
+    automationPipelinePackage?: NonNullable<
+      Awaited<ReturnType<typeof resolveInstalledAutomationPipelinePackage>>
+    >,
+    executionContext?: string,
+    activityId?: string,
+    targetRequirement?: ScheduledActivity['targetRequirement'],
+    identity?: AutomationRunIdentity,
+  ): Promise<NonNullable<ScheduledActivityRun['result']>> {
+    if (!this.surfaces) {
+      throw new Error('Automations service is not configured.');
+    }
+    if (action.baseWorktreeId) {
+      throw new Error(
+        'Base worktree cannot be used with a cowork project pipeline.',
+      );
+    }
+    if (action.repoId) {
+      throw new Error(
+        'Repository selection cannot be used with a cowork project pipeline.',
+      );
+    }
+    const cwd = getCoworkWorkspaceRootDir(action.workspaceId);
+    const pipelineSelection = await this.resolvePipelineSelection(action, cwd);
+    if (!pipelineSelection.sharedPipeline) {
+      this.assertResolvedPipelineTarget(
+        { action, targetRequirement },
+        'cowork',
+        pipelineSelection.pipeline,
+      );
+    }
+    const childPipelineAuthorizations = await this.authorizeResolvedPipeline(
+      activityId,
+      executionContext,
+      pipelineSelection,
+      cwd,
+      action.workspaceId,
+      pipelineExecutionPreferences(action),
+    );
+    if (!getTriggerTypes(pipelineSelection.pipeline.on).includes('dispatch')) {
+      throw new Error('Pipeline does not support dispatch triggers.');
+    }
+    // Fail fast with a clear message for worktree-only pipelines instead of
+    // letting the executor's scope gate fail the run after it starts.
+    // Shared pipelines carry a synthetic content stub here; their real scope
+    // is still enforced by the executor gate after the cached fetch.
+    const declaredScopes = normalizePipelineScopes(
+      pipelineSelection.pipeline.scope,
+      'pipeline.scope',
+    );
+    if (!executionContextSatisfies(declaredScopes, 'directory')) {
+      throw new Error(
+        'Pipeline requires a worktree and cannot run in a cowork project.',
+      );
+    }
+    const result = await startPipelineExecutionFromMain({
+      pipeline: pipelineSelection.pipeline,
+      getWindow: this.surfaces.getMainWindow,
+      options: {
+        cwd,
+        projectId: action.workspaceId,
+        pipelineId: action.pipelineId,
+        ...(executionContext === undefined ? {} : { executionContext }),
+        ...(childPipelineAuthorizations === undefined
+          ? {}
+          : { childPipelineAuthorizations }),
+        initiationSource: 'automation',
+        ...identity,
+        ...(pipelineSelection.pipelineFilePath
+          ? { pipelineFilePath: pipelineSelection.pipelineFilePath }
+          : {}),
+        ...(pipelineSelection.pipelinePreferenceLocator
+          ? {
+              pipelinePreferenceLocator:
+                pipelineSelection.pipelinePreferenceLocator,
+            }
+          : {}),
+        ...(pipelineSelection.sharedPipeline
+          ? { sharedPipeline: pipelineSelection.sharedPipeline }
+          : {}),
+        inputs: action.inputs,
+        ...pipelineExecutionPreferences(action),
+        ...(action.modelConfig ? { modelConfig: action.modelConfig } : {}),
+        ...(automationPipelinePackage ? { automationPipelinePackage } : {}),
+        ...(pipelineSelection.pipelineFilePath ? { repoPath: cwd } : {}),
+      },
+    });
+    if (!result.success) {
+      if (
+        result.errorCode === 'shared_pipeline_changed' &&
+        action.pipelineSource === 'shared' &&
+        action.sharedPipeline?.installPin
+      ) {
+        throw new SharedPipelineReviewRequiredError(
+          action.sharedPipeline.remoteId,
+          action.sharedPipeline.installPin,
+          action.pipelineName,
+        );
+      }
+      if (pipelineSelection.sharedPipeline)
+        await this.rejectSharedPipelineDispatchFailure(
+          activityId,
+          executionContext,
+          result.error,
+        );
+      throw new Error(result.error);
+    }
+    return {
+      projectId: action.workspaceId,
+      pipelineExecutionId: result.data.id,
+    };
+  }
+
+  private async resolvePipelineSelection(
+    action: Extract<AutomationAction, { type: 'worktree_pipeline' }>,
+    cwd: string,
+  ): Promise<{
+    pipeline: Pipeline;
+    owner?: unknown;
+    storedPipelineRemoteId?: string;
+    pipelineFilePath?: string;
+    pipelinePreferenceLocator?: {
+      type: 'stored';
+      source: 'bundled' | 'user' | 'curated';
+      value: string;
+      contentHash?: string;
+    };
+    sharedPipeline?: NonNullable<
+      Extract<AutomationAction, { type: 'worktree_pipeline' }>['sharedPipeline']
+    >;
+  }> {
+    if (action.pipelineSource === 'curated') {
+      const { getManagedCuratedPipeline } =
+        await import('../pipelines/curated-pipeline-catalog');
+      const data = await getManagedCuratedPipeline(action.pipelineId);
+      return this.requireStoredPipelineResult(
+        { success: true, data },
+        action.pipelineId,
+      );
+    }
+
+    if (action.pipelineSource === 'shared') {
+      if (!action.sharedPipeline) {
+        throw new Error('Shared pipeline source is missing.');
+      }
+      return {
+        pipeline: {
+          name: action.pipelineName ?? action.pipelineId,
+          version: '3.0',
+          on: 'dispatch',
+          jobs: {},
+        },
+        sharedPipeline: action.sharedPipeline,
+      };
+    }
+
+    if (
+      action.pipelineSource === 'bundled' ||
+      action.pipelineSource === 'user'
+    ) {
+      const result = pipelineStore.getStoredPipelineBySource(
+        action.pipelineSource,
+        action.pipelineId,
+      );
+      return this.requireStoredPipelineResult(result, action.pipelineId);
+    }
+
+    if (action.pipelineSource === 'project' || !action.pipelineSource) {
+      const project = cwd
+        ? await this.resolveProjectPipeline(action, cwd)
+        : null;
+      if (project) return project;
+      if (action.pipelineSource === 'project') {
+        throw new Error('Pipeline not found.');
+      }
+    }
+
+    const stored = pipelineStore.getPipeline(action.pipelineId);
+    return this.requireStoredPipelineResult(stored, action.pipelineId);
+  }
+
+  private async authorizePromptPlugins(
+    activity: ScheduledActivity,
+    args: { projectId: string; worktreeId?: string },
+    pluginSelections: ChatTabPluginSelections | undefined,
+    model?: ChatModel,
+  ): Promise<void> {
+    if (
+      backgroundExecutionContextEnabled() &&
+      ((pluginSelections && hasAnySelections(pluginSelections)) ||
+        model?.startsWith('agent_model_'))
+    ) {
+      // Dispatch selections can change after preflight while the if-command runs.
+      // Resolve the final selections again against the bound background context.
+      const decision = await authorizeBackgroundExecution(
+        activity.executionContext,
+        [
+          {
+            owner: undefined,
+            requiresHostAuthorization: true,
+            capabilities: {
+              ...(pluginSelections ? { selections: pluginSelections } : {}),
+              ...(model ? { model } : {}),
+            },
+          },
+        ],
+        { projectId: args.projectId, worktreeId: args.worktreeId },
+      );
+      if (!decision.allow)
+        await this.rejectBackgroundRun(
+          activity.id,
+          decision,
+          activity.executionContext,
+        );
+    }
+  }
+
+  private async authorizeResolvedPipeline(
+    activityId: string | undefined,
+    executionContext: string | undefined,
+    selection: ResolvedPipelineSelection,
+    cwd: string,
+    projectId: string,
+    preferences: ReturnType<typeof pipelineExecutionPreferences> = {},
+  ): Promise<ChildPipelineAuthorization[] | undefined> {
+    if (!backgroundExecutionContextEnabled()) return;
+    // Shared selections are stubs; the main dispatch gate authorizes the fetched
+    // definition and its children with the final execution location.
+    if (selection.sharedPipeline) return;
+    const authorizations: ChildPipelineAuthorization[] = [];
+    const decision = await authorizeBackgroundExecution(
+      executionContext,
+      resolvedPipelineContextResources(selection, cwd, preferences),
+      { projectId },
+      authorizations,
+    );
+    if (decision.allow) return authorizations;
+    return this.rejectBackgroundRun(activityId, decision, executionContext);
+  }
+
+  /**
+   * Fail the run. A definite denial disables the activity until the user
+   * re-enables it in a context that can run it; a verification that could
+   * not complete leaves it enabled so the next run tries again.
+   */
+  private async rejectSharedPipelineDispatchFailure(
+    activityId: string | undefined,
+    executionContext: string | undefined,
+    error: string,
+  ): Promise<void> {
+    if (error === backgroundExecutionRetryMessage('run'))
+      await this.rejectBackgroundRun(
+        activityId,
+        { allow: false, reason: 'unknown-provenance', transient: true },
+        executionContext,
+      );
+    if (error === backgroundExecutionDeniedMessage('access-removed'))
+      await this.rejectBackgroundRun(
+        activityId,
+        { allow: false, reason: 'access-removed' },
+        executionContext,
+      );
+  }
+
+  private async rejectBackgroundRun(
+    activityId: string | undefined,
+    decision: Extract<ResourceContextDecision, { allow: false }>,
+    executionContext?: string,
+  ): Promise<never> {
+    if (decision.transient)
+      throw new Error(backgroundExecutionUnavailableMessage());
+    let action: AutomationAction | undefined;
+    let turnedOff = false;
+    await this.enqueueMutation(async () => {
+      const file = await this.ensureFile();
+      const activity = file.activities.find((entry) => entry.id === activityId);
+      if (activity) {
+        action = activity.action;
+        turnedOff = activity.enabled;
+        activity.enabled = false;
+        delete activity.nextRunAt;
+      }
+      await this.persistAndNotify(file);
+    });
+    const mismatch =
+      decision.reason === 'context-mismatch' && action
+        ? await describeAutomationContextMismatch(
+            action,
+            executionContext,
+          ).catch(() => null)
+        : null;
+    throw new Error(
+      backgroundExecutionDeniedMessage(decision.reason, {
+        ...(turnedOff ? { turnedOff } : {}),
+        ...(mismatch ? { mismatch } : {}),
+        ...(decision.subject ? { subject: decision.subject } : {}),
+      }),
+    );
+  }
+
+  private async resolveProjectPipeline(
+    action: Extract<AutomationAction, { type: 'worktree_pipeline' }>,
+    cwd: string,
+  ): Promise<{ pipeline: Pipeline; pipelineFilePath: string } | null> {
+    const pipelines = await discoverProjectPipelines(cwd);
+    const pipelineInfo = pipelines.find(
+      (pipeline) =>
+        pipeline.id === action.pipelineId ||
+        (action.projectPipelineFilename !== undefined &&
+          pipeline.filename === action.projectPipelineFilename),
+    );
+    if (!pipelineInfo?.filePath) {
+      return null;
+    }
+    if (!(pipelineInfo.triggerTypes ?? []).includes('dispatch')) {
+      throw new Error('Pipeline does not support dispatch triggers.');
+    }
+    return {
+      pipeline: await loadProjectPipelineFromDisk(pipelineInfo.filePath),
+      pipelineFilePath: pipelineInfo.filePath,
+    };
+  }
+
+  private requireStoredPipelineResult(
+    result: ReturnType<typeof pipelineStore.getPipeline>,
+    pipelineId: string,
+  ): {
+    pipeline: Pipeline;
+    owner?: unknown;
+    storedPipelineRemoteId: string;
+    pipelinePreferenceLocator: {
+      type: 'stored';
+      source: 'bundled' | 'user' | 'curated';
+      value: string;
+      contentHash?: string;
+    };
+  } {
+    if (!result.success || !result.data) {
+      throw new Error(result.error ?? `Pipeline not found: ${pipelineId}`);
+    }
+    const data: PipelineData = result.data;
+    if (
+      data.info.source !== 'bundled' &&
+      data.info.source !== 'user' &&
+      data.info.source !== 'curated'
+    ) {
+      throw new Error('Pipeline is not a stored pipeline.');
+    }
+    if (!getTriggerTypes(data.content.on).includes('dispatch')) {
+      throw new Error('Pipeline does not support dispatch triggers.');
+    }
+    return {
+      pipeline: data.content,
+      storedPipelineRemoteId: data.info.remoteId ?? data.info.id,
+      owner:
+        data.info.owner ??
+        (data.info.source === 'bundled' || data.info.source === 'curated'
+          ? { type: 'system' }
+          : data.info.source === 'user'
+            ? { shareScope: 'private' }
+            : undefined),
+      pipelinePreferenceLocator: {
+        type: 'stored',
+        source: data.info.source,
+        value: data.info.id,
+        ...(data.info.source === 'curated' && data.info.curatedContentHash
+          ? { contentHash: data.info.curatedContentHash }
+          : {}),
+      },
+    };
+  }
+
+  /**
+   * Resolve a `worktree_prompt` target carrying `existingWorktreeId`. This
+   * path never provisions — the worktree must already exist in the target
+   * workspace, and cowork workspaces are rejected just as the
+   * fresh-worktree path rejects them.
+   */
+  private async resolveExistingWorktreeTarget(
+    workspaceId: string,
+    existingWorktreeId: string,
+  ): Promise<string> {
+    const { items } = await readAllSidebarItems();
+    const workspace = items.find((item) => item.id === workspaceId);
+    if (!workspace) throw new Error('Project not found.');
+    if (workspace.type === 'cowork') {
+      throw new Error('Cannot target a worktree in a cowork project.');
+    }
+    const worktree = workspace.worktrees.find(
+      (entry) => entry.id === existingWorktreeId,
+    );
+    if (!worktree) {
+      throw new Error(
+        `Worktree "${existingWorktreeId}" was not found in project "${workspaceId}".`,
+      );
+    }
+    return worktree.id;
+  }
+
+  private async createReadyWorktree(
+    action: Extract<
+      AutomationAction,
+      { type: 'worktree_prompt' | 'worktree_pipeline' }
+    >,
+  ): Promise<ReadyWorktree> {
+    if (!this.surfaces) {
+      throw new Error('Automations service is not configured.');
+    }
+    const { items } = await readAllSidebarItems();
+    const workspace = items.find((item) => item.id === action.workspaceId);
+    if (!workspace) throw new Error('Project not found.');
+    if (workspace.type === 'cowork') {
+      throw new Error('Cannot create a worktree for a cowork project.');
+    }
+    const existingWorktreeIds = workspace.worktrees.map(
+      (worktree) => worktree.id,
+    );
+    let resolveReady!: () => void;
+    let rejectReady!: (error: Error) => void;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    const readyPromise = new Promise<void>((resolve, reject) => {
+      resolveReady = resolve;
+      rejectReady = reject;
+      timeout = setTimeout(() => {
+        reject(new Error('Timed out waiting for worktree setup.'));
+      }, WORKTREE_GIT_READY_TIMEOUT_MS);
+      timeout.unref?.();
+    });
+    const onGitReady = (payload: Parameters<typeof sendToWindow>[2]): void => {
+      sendToWindow(
+        this.surfaces?.getMainWindow() ?? null,
+        IPC_CHANNELS.worktreeGitReady,
+        payload,
+      );
+      resolveReady();
+    };
+    const onGitFailed = (payload: Parameters<typeof sendToWindow>[2]): void => {
+      sendToWindow(
+        this.surfaces?.getMainWindow() ?? null,
+        IPC_CHANNELS.worktreeGitFailed,
+        payload,
+      );
+      rejectReady(
+        new Error(
+          isRecord(payload) && typeof payload.error === 'string'
+            ? payload.error
+            : 'Worktree setup failed.',
+        ),
+      );
+    };
+    let created: { id: string; createdAt: string } | null = null;
+    try {
+      const existingBranch =
+        action.type === 'worktree_prompt' ? action.existingBranch : undefined;
+      const baseBranch =
+        action.type === 'worktree_prompt' ? action.baseBranch : undefined;
+      const result =
+        workspace.type === 'single-repo'
+          ? await createSingleRepoWorktree({
+              workspaceId: action.workspaceId,
+              existingWorktreeIds,
+              baseWorktreeId: action.baseWorktreeId,
+              baseBranch,
+              existingBranch,
+              getWindow: this.surfaces.getMainWindow,
+              deferGitSetup: true,
+              onGitReady,
+              onGitFailed,
+            })
+          : await createMultiRepoWorktree({
+              workspaceId: action.workspaceId,
+              existingWorktreeIds,
+              baseWorktreeId: action.baseWorktreeId,
+              baseBranch,
+              existingBranch,
+              getWindow: this.surfaces.getMainWindow,
+              deferGitSetup: true,
+              onGitReady,
+              onGitFailed,
+            });
+      if ('needsRepair' in result && result.needsRepair === true) {
+        throw new Error('Created worktree requires repair.');
+      }
+      created = result;
+      await readyPromise;
+      return {
+        id: created.id,
+        createdAt: created.createdAt,
+        workspaceType: workspace.type,
+      };
+    } catch (error) {
+      if (created) {
+        await this.disposeFailedReadyWorktree(
+          workspace.type,
+          action.workspaceId,
+          created.id,
+          created.createdAt,
+        ).catch((cleanupError) => {
+          // eslint-disable-next-line no-console
+          console.error(
+            'Failed to clean up automation worktree after setup failure:',
+            cleanupError,
+          );
+        });
+      }
+      throw error;
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
+  }
+
+  private async disposeFailedReadyWorktree(
+    workspaceType: 'single-repo' | 'multi-repo',
+    workspaceId: string,
+    worktreeId: string,
+    expectedCreatedAt: string,
+  ): Promise<void> {
+    // Rolls back a worktree whose setup failed before any chat activity —
+    // never retain these as archived containers (they would be junk rows).
+    if (workspaceType === 'single-repo') {
+      await archiveSingleRepoWorktree({
+        workspaceId,
+        worktreeId,
+        expectedCreatedAt,
+        retainAsArchivedContainer: false,
+      });
+      return;
+    }
+    await archiveMultiRepoWorktree({
+      workspaceId,
+      worktreeId,
+      expectedCreatedAt,
+      retainAsArchivedContainer: false,
+    });
+  }
+
+  private resolveWorktreeCwd(
+    workspaceId: string,
+    worktreeId: string,
+    repoId?: string,
+  ): string {
+    if (!repoId || repoId === WORKSPACE_ROOT_REPO_ID) {
+      return getWorkspaceWorktreeRootRepoDir(workspaceId, worktreeId);
+    }
+    return getWorkspaceWorktreeRepoDir(workspaceId, worktreeId, repoId);
+  }
+
+  private normalizeFile(file: AutomationsFile): AutomationsFile {
+    const now = new Date();
+    const normalized: AutomationsFile = {
+      version: 1,
+      updatedAt: file.updatedAt,
+      activities: file.activities.map(cloneActivity),
+      recentRuns: trimRecentRuns(file.recentRuns.map(cloneRun)),
+    };
+    const restartedAt = now.toISOString();
+    const recovered: ScheduledActivityRun[] = [];
+    for (const run of normalized.recentRuns) {
+      if (run.status !== 'running') continue;
+      run.status = 'failure';
+      run.recovered = true;
+      run.cancellable = false;
+      run.completedAt = restartedAt;
+      run.error = `Run was interrupted when ${BRAND.displayName} restarted.`;
+      recovered.push(run);
+    }
+    for (const run of recovered) {
+      const activity = normalized.activities.find(
+        (entry) => entry.id === run.activityId,
+      );
+      if (activity) {
+        this.applyRunResult(activity, run);
+      }
+      // Never strand an automation_run watcher on an interrupted run: fire the
+      // failure event now. Double delivery is harmless — a fired watcher is
+      // consumed, so a second event finds no active match.
+      this.notifyRunWatchers(run);
+      this.pendingArchiveWrites.push(
+        this.archive
+          .appendRun(run)
+          .catch((error) =>
+            logMainProcessError(
+              'Failed to archive recovered automation run',
+              error,
+            ),
+          ),
+      );
+    }
+    for (const activity of normalized.activities) {
+      activity.action = normalizeAutomationAction(activity.action);
+      if (activity.sharedPipelineReview) {
+        activity.sharedPipelineReview = normalizeAutomationSharedPipelineReview(
+          activity.sharedPipelineReview,
+        );
+      }
+      activity.nextRunAt = nextRunForEnabledActivity(activity, normalized, now);
+      if (
+        !activity.nextRunAt &&
+        activity.schedule.kind === 'one_time' &&
+        !activity.sharedPipelineReview
+      ) {
+        activity.enabled = false;
+      }
+    }
+    return normalized;
+  }
+
+  /**
+   * The terminal archive append intentionally precedes the hot-window write.
+   * After a crash in that gap, the archive is authoritative and the stale hot
+   * `running` row must not be recovered as a later failure.
+   */
+  private async reconcileArchivedTerminalRuns(
+    file: AutomationsFile,
+  ): Promise<AutomationsFile> {
+    const reconciled: AutomationsFile = {
+      version: 1,
+      updatedAt: file.updatedAt,
+      activities: file.activities.map(cloneActivity),
+      recentRuns: file.recentRuns.map(cloneRun),
+    };
+    for (let index = 0; index < reconciled.recentRuns.length; index += 1) {
+      const hotRun = reconciled.recentRuns[index];
+      if (!hotRun || hotRun.status !== 'running') continue;
+      const archived = await this.archive.findRun(hotRun.activityId, hotRun.id);
+      if (!archived || archived.status === 'running') continue;
+      const terminalRun = cloneRun(archived);
+      reconciled.recentRuns[index] = terminalRun;
+      const activity = reconciled.activities.find(
+        (entry) => entry.id === terminalRun.activityId,
+      );
+      if (activity) this.applyRunResult(activity, terminalRun);
+      // The crash happened before the normal post-persist notification.
+      this.notifyRunWatchers(terminalRun);
+    }
+    return reconciled;
+  }
+
+  private async ensureFile(): Promise<AutomationsFile> {
+    if (!this.file) {
+      const file = await this.readFile();
+      this.file = this.normalizeFile(
+        await this.reconcileArchivedTerminalRuns(file),
+      );
+      await this.flushPendingArchiveWrites();
+    }
+    return this.file;
+  }
+
+  private async flushPendingArchiveWrites(): Promise<void> {
+    const pending = this.pendingArchiveWrites.splice(0);
+    if (pending.length > 0) await Promise.all(pending);
+  }
+
+  private async readFile(): Promise<AutomationsFile> {
+    try {
+      const raw = await readFile(getAutomationsFilePath(), 'utf8');
+      const parsed = JSON.parse(raw) as unknown;
+      if (!isRecord(parsed) || parsed.version !== 1) {
+        return emptyAutomationsFile();
+      }
+      return {
+        version: 1,
+        updatedAt:
+          typeof parsed.updatedAt === 'string'
+            ? parsed.updatedAt
+            : new Date().toISOString(),
+        activities: Array.isArray(parsed.activities)
+          ? parsed.activities.filter(isPersistedActivity).map(cloneActivity)
+          : [],
+        recentRuns: Array.isArray(parsed.recentRuns)
+          ? trimRecentRuns(
+              parsed.recentRuns.filter(isPersistedRun).map(cloneRun),
+            )
+          : [],
+      };
+    } catch (error) {
+      if (
+        error &&
+        typeof error === 'object' &&
+        'code' in error &&
+        error.code === 'ENOENT'
+      ) {
+        return emptyAutomationsFile();
+      }
+      if (error instanceof SyntaxError) {
+        return emptyAutomationsFile();
+      }
+      throw error;
+    }
+  }
+
+  private async writeFile(file: AutomationsFile): Promise<void> {
+    const filePath = getAutomationsFilePath();
+    const dir = dirname(filePath);
+    await mkdir(dir, { recursive: true });
+    const payload: AutomationsFile = {
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      activities: file.activities,
+      recentRuns: trimRecentRuns(file.recentRuns),
+    };
+    const tempPath = join(
+      dir,
+      `.automations-${process.pid}-${randomUUID()}.tmp`,
+    );
+    let renamed = false;
+    try {
+      await writeFile(
+        tempPath,
+        `${JSON.stringify(payload, null, 2)}\n`,
+        'utf8',
+      );
+      await rename(tempPath, filePath);
+      renamed = true;
+      file.updatedAt = payload.updatedAt;
+      file.recentRuns = payload.recentRuns;
+    } finally {
+      if (!renamed) await unlink(tempPath).catch(() => undefined);
+    }
+  }
+
+  private async persistAndNotify(file: AutomationsFile): Promise<void> {
+    await this.writeFile(file);
+    this.surfaces?.onChange?.(await contextSnapshot(file));
+  }
+
+  private enqueueMutation<T>(fn: () => Promise<T>): Promise<T> {
+    const next = this.writeQueue.then(fn, fn);
+    this.writeQueue = next.catch((error) => {
+      // eslint-disable-next-line no-console
+      console.error('Automations mutation failed:', error);
+    });
+    return next;
+  }
+}
+
+let singleton: AutomationsService | null = null;
+
+export function getAutomationsService(): AutomationsService {
+  singleton ??= new AutomationsService();
+  return singleton;
+}

@@ -1,0 +1,792 @@
+'use client';
+
+import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
+import { Bot, Lock } from '@canopy/ui-shared/icons/AppIcons';
+import {
+  DelayedLoadingPlaceholder,
+  ErrorBanner,
+  SettingsFormSkeleton,
+  Tooltip,
+} from '@canopy/ui-shared/components';
+import { organizationBillingPath } from '@canopy/protocol/billing';
+import type {
+  OrganizationConfigDetail,
+  OrganizationDetail,
+} from '@canopy/protocol/settings/organization';
+import { MODEL_POLICY_CAPABILITY } from '@canopy/protocol/settings/organization';
+import { lowestPlanNameWithCapability } from '@canopy/protocol/settings/billing-plan-catalog';
+import { canEditOrgEnforcedSettings } from '@canopy/protocol/settings/organization-permissions';
+import {
+  SettingsConfirmDialog,
+  SettingsLink,
+  useSettingsClient,
+} from '../host';
+import { useSettingsErrorCopy, useSettingsLoadErrorCopy } from '../errors';
+import { ORGANIZATION_LAPSED_ERROR } from './organization-known-errors';
+import {
+  fetchOrgModelCatalog,
+  getOrganizationConfig,
+  getOrgBillingSummary,
+  updateBlockedModelIds,
+  updateEnforceMemberModelPolicy,
+  type OrgModelCatalogEntry,
+} from './team-api';
+
+const MODEL_POLICY_ERROR_SCOPE = 'settings.organization.model-policy';
+
+/** How many model rows one page of the list shows. */
+const PAGE_SIZE = 15;
+
+interface TeamModelPolicySectionProps {
+  detail: OrganizationDetail;
+  /**
+   * Server-resolved free app access (CAN-3926). Every capability is granted
+   * then, so the card skips the plan read: a failed read must not paint an
+   * "Upgrade" door over a feature the organization already has.
+   */
+  freeAccess?: boolean;
+}
+
+/**
+ * Owner/admin home for the org's model policy: which models members may use on
+ * any Canopy agent surface.
+ *
+ * This is a governance control, not a cost control — it is the groundwork for a
+ * zero-data-retention posture where an org's agreement covers some vendors and
+ * not others. Two consequences shape this card:
+ *
+ * 1. A toggle is a statement about the MODEL, not about how a turn is billed,
+ *    so a blocked model is unreachable through AI Credits and through a native
+ *    provider sign-in alike.
+ * 2. A model the org has never seen is not a model it has cleared. The runtime
+ *    blocks anything absent from `reviewedModelIds`, so this card has to make
+ *    that visible — hence the "new" affordance and the pending count.
+ *
+ * Because of (2), review is only ever recorded for models the admin actually
+ * acted on. A per-row toggle adds THAT row to the reviewed snapshot and nothing
+ * else: the list is paginated, so writing the whole catalog back on any save
+ * would clear the "new" state for pages the admin never opened and turn
+ * "reviewed" into "the admin saved something". Clearing a whole backlog at once
+ * is possible, but only through the explicit, confirmed "Mark all as reviewed"
+ * action.
+ *
+ * Entitlement changes what the card offers, not whether the policy is real:
+ * an org whose plan lapsed while enforcement is ON still gets working controls,
+ * limited to the relaxing direction the server accepts (see `relaxOnly` below).
+ * The upsell-only door is for orgs with no live policy at all.
+ *
+ * Self-gated on `canEditOrgEnforcedSettings`, like the data-sharing card it
+ * sits beside.
+ */
+export function TeamModelPolicySection({
+  detail,
+  freeAccess = false,
+}: TeamModelPolicySectionProps): JSX.Element | null {
+  if (!canEditOrgEnforcedSettings(detail.viewerRole)) {
+    return null;
+  }
+
+  return <ModelPolicyCard detail={detail} freeAccess={freeAccess} />;
+}
+
+function ModelPolicyCard({
+  detail,
+  freeAccess = false,
+}: TeamModelPolicySectionProps): JSX.Element {
+  const client = useSettingsClient();
+  const errorCopy = useSettingsErrorCopy(MODEL_POLICY_ERROR_SCOPE);
+  const loadErrorCopy = useSettingsLoadErrorCopy(MODEL_POLICY_ERROR_SCOPE);
+  const orgId = detail.id;
+
+  const [enforcing, setEnforcing] = useState<boolean | null>(null);
+  const [blocked, setBlocked] = useState<ReadonlySet<string>>(new Set());
+  const [reviewed, setReviewed] = useState<ReadonlySet<string>>(new Set());
+  const [catalog, setCatalog] = useState<readonly OrgModelCatalogEntry[]>([]);
+  const [catalogReady, setCatalogReady] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [savingMaster, setSavingMaster] = useState(false);
+  const [savingModelId, setSavingModelId] = useState<string | null>(null);
+  const [savingReviewAll, setSavingReviewAll] = useState(false);
+  const [confirmReviewAll, setConfirmReviewAll] = useState(false);
+  const [page, setPage] = useState(0);
+  // Bumped by Retry to run every load again.
+  const [loadAttempt, setLoadAttempt] = useState(0);
+
+  /**
+   * `null` until the billing read resolves, and permanently `null` if it
+   * fails — the same three-state contract the data-sharing card uses. An
+   * unknown entitlement rendered as "entitled" would paint an interactive
+   * policy card for an org that does not have the capability, and every toggle
+   * on it would 403.
+   */
+  const [planEntitled, setEntitled] = useState<boolean | null>(null);
+  const entitled = freeAccess ? true : planEntitled;
+  /**
+   * Held apart from `error` on purpose: a save clears `error`, and an
+   * unresolved plan-read failure must not be erased by the first toggle.
+   */
+  const [entitlementError, setEntitlementError] = useState<string | null>(null);
+
+  /**
+   * The configuration the SERVER last confirmed, which is what the next PATCH
+   * body is built from. A per-model save sends the whole array, so rebasing on
+   * render-time state would let a second toggle started mid-flight send the
+   * first one's pre-toggle value back and silently revert it.
+   */
+  const latestBlockedRef = useRef<ReadonlySet<string>>(new Set());
+  /**
+   * The reviewed snapshot the SERVER last confirmed, for the same reason as
+   * `latestBlockedRef`: `reviewedModelIds` is a full replacement, so every save
+   * has to extend the stored snapshot rather than the render-time one.
+   */
+  const latestReviewedRef = useRef<ReadonlySet<string>>(new Set());
+
+  const saving = savingMaster || savingModelId !== null || savingReviewAll;
+  const entitlementResolved = entitled !== null || entitlementError !== null;
+  const requiredPlanName = lowestPlanNameWithCapability(
+    MODEL_POLICY_CAPABILITY,
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async (): Promise<void> => {
+      try {
+        const config = await getOrganizationConfig(client, orgId);
+        if (cancelled) {
+          return;
+        }
+        setEnforcing(config.enforceMemberModelPolicy);
+        const nextBlocked = new Set(config.blockedModelIds);
+        latestBlockedRef.current = nextBlocked;
+        setBlocked(nextBlocked);
+        const nextReviewed = new Set(config.reviewedModelIds);
+        latestReviewedRef.current = nextReviewed;
+        setReviewed(nextReviewed);
+      } catch (err) {
+        if (!cancelled) setLoadError(loadErrorCopy(err));
+      }
+    })();
+    return (): void => {
+      cancelled = true;
+    };
+  }, [client, orgId, loadErrorCopy, loadAttempt]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async (): Promise<void> => {
+      try {
+        const models = await fetchOrgModelCatalog(client);
+        if (!cancelled) {
+          setCatalog(models);
+          setCatalogReady(true);
+        }
+      } catch (err) {
+        if (!cancelled) setLoadError(errorCopy.loadCopy(err));
+      }
+    })();
+    return (): void => {
+      cancelled = true;
+    };
+  }, [client, errorCopy, loadAttempt]);
+
+  useEffect(() => {
+    if (freeAccess) {
+      return;
+    }
+    let cancelled = false;
+    void (async (): Promise<void> => {
+      try {
+        const summary = await getOrgBillingSummary(client, orgId);
+        if (!cancelled) {
+          setEntitled(summary.capabilities.includes(MODEL_POLICY_CAPABILITY));
+        }
+      } catch (err) {
+        // Leaves `entitled` null — unknown, not "entitled". The PATCH route
+        // capability-gates server-side either way, so this only decides what
+        // the card is allowed to CLAIM, never what the org actually gets.
+        if (!cancelled) setEntitlementError(errorCopy.loadCopy(err));
+      }
+    })();
+    return (): void => {
+      cancelled = true;
+    };
+  }, [client, orgId, freeAccess, errorCopy, loadAttempt]);
+
+  /**
+   * Retry runs every load again. Clearing the errors puts the card back on
+   * its placeholder until the reads settle.
+   */
+  const retryLoad = (): void => {
+    setLoadError(null);
+    setEntitlementError(null);
+    setLoadAttempt((attempt) => attempt + 1);
+  };
+
+  /**
+   * Models in the catalog the org has never saved a review for. They are
+   * blocked RIGHT NOW at runtime, which is why they are surfaced rather than
+   * quietly folded into the allowed rows: otherwise a model vanishes for every
+   * member on a Canopy release the org did not ask for, and the admin has no
+   * way to connect the two.
+   */
+  const pendingReviewIds = useMemo(
+    () =>
+      enforcing === true
+        ? catalog.filter((m) => !reviewed.has(m.id)).map((m) => m.id)
+        : [],
+    [catalog, reviewed, enforcing],
+  );
+  const pendingReviewSet = useMemo(
+    () => new Set(pendingReviewIds),
+    [pendingReviewIds],
+  );
+
+  const pageCount = Math.max(1, Math.ceil(catalog.length / PAGE_SIZE));
+  const currentPage = Math.min(page, pageCount - 1);
+  const visible = catalog.slice(
+    currentPage * PAGE_SIZE,
+    currentPage * PAGE_SIZE + PAGE_SIZE,
+  );
+
+  const reportError = (err: unknown): void => {
+    setError(
+      errorCopy.actionCopy(err, {
+        action: 'update the model policy',
+        known: [ORGANIZATION_LAPSED_ERROR],
+      }),
+    );
+  };
+
+  /** Rebase every local view of the policy on what the server just confirmed. */
+  const adoptConfig = (config: OrganizationConfigDetail): void => {
+    setEnforcing(config.enforceMemberModelPolicy);
+    const nextBlocked = new Set(config.blockedModelIds);
+    latestBlockedRef.current = nextBlocked;
+    setBlocked(nextBlocked);
+    const nextReviewed = new Set(config.reviewedModelIds);
+    latestReviewedRef.current = nextReviewed;
+    setReviewed(nextReviewed);
+  };
+
+  const saveMaster = async (next: boolean): Promise<void> => {
+    /*
+     * Turning enforcement ON for the FIRST time baselines the whole catalog:
+     * nothing was blocked a moment ago, so blocking everything until each model
+     * is reviewed would strand every member instead of describing a policy.
+     * Once a snapshot exists it is preserved verbatim — otherwise an off/on
+     * cycle would launder unreviewed models into it, which is the same silent
+     * unblock the per-row save is careful to avoid. Turning enforcement OFF
+     * records no review at all; it is not a statement about any model.
+     */
+    const reviewedIds =
+      next && latestReviewedRef.current.size === 0
+        ? catalog.map((model) => model.id)
+        : [...latestReviewedRef.current];
+    try {
+      setSavingMaster(true);
+      setError(null);
+      adoptConfig(
+        await updateEnforceMemberModelPolicy(client, orgId, next, reviewedIds),
+      );
+    } catch (err) {
+      reportError(err);
+    } finally {
+      setSavingMaster(false);
+    }
+  };
+
+  const saveModel = async (modelId: string, allow: boolean): Promise<void> => {
+    const nextBlocked = new Set(latestBlockedRef.current);
+    if (allow) {
+      nextBlocked.delete(modelId);
+    } else {
+      nextBlocked.add(modelId);
+    }
+    // Review is recorded for THIS model only. The list is paginated, so sending
+    // the whole catalog here would clear the "new" state for models sitting on
+    // pages the admin never opened — see the card's doc comment.
+    const nextReviewed = new Set(latestReviewedRef.current);
+    nextReviewed.add(modelId);
+    try {
+      setSavingModelId(modelId);
+      setError(null);
+      adoptConfig(
+        await updateBlockedModelIds(
+          client,
+          orgId,
+          [...nextBlocked],
+          [...nextReviewed],
+        ),
+      );
+    } catch (err) {
+      reportError(err);
+    } finally {
+      setSavingModelId(null);
+    }
+  };
+
+  /**
+   * The one path that clears a whole backlog at once, behind an explicit button
+   * and a confirmation that names the count. Deliberately not a side effect of
+   * anything else: this is the org saying "we accept every model currently in
+   * the catalog", which is exactly the statement the runtime reads back.
+   */
+  const markAllReviewed = async (): Promise<void> => {
+    const nextReviewed = new Set(latestReviewedRef.current);
+    for (const model of catalog) {
+      nextReviewed.add(model.id);
+    }
+    try {
+      setSavingReviewAll(true);
+      setError(null);
+      adoptConfig(
+        await updateBlockedModelIds(
+          client,
+          orgId,
+          [...latestBlockedRef.current],
+          [...nextReviewed],
+        ),
+      );
+      setConfirmReviewAll(false);
+    } catch (err) {
+      reportError(err);
+    } finally {
+      setSavingReviewAll(false);
+    }
+  };
+
+  /**
+   * Enforcement is ON but the capability is gone: a plan lapsed under a policy
+   * that is still refusing models for every member right now.
+   *
+   * The runtime keeps enforcing here on purpose (a compliance boundary is not a
+   * cost control), so a painted door in this state would be a trap: the org
+   * would have a live policy, an allowlist that blocks every model shipped
+   * after its last save, and no control anywhere to undo either one. So the
+   * REAL controls render, in the one direction the server still accepts, which
+   * `modelPolicyTightens` in `lib/teams/team-service.ts` defines: turn the
+   * master switch off, unblock a model, review more models. Anything that would
+   * point the policy at MORE than it already covers is locked rather than left
+   * to fail on save.
+   *
+   * Strictly `=== false`. An unresolved plan read leaves `entitled` null, and
+   * unknown is not "downgraded".
+   */
+  const relaxOnly = enforcing === true && entitled === false;
+  const showList = enforcing === true && (entitled === true || relaxOnly);
+
+  /**
+   * Turning enforcement back ON is a tightening, so a relax-only card never
+   * sends it. The switch is checked whenever `relaxOnly` holds, so this only
+   * guards against the state changing under an in-flight click.
+   */
+  const handleMasterChange = (next: boolean): void => {
+    if (relaxOnly && next) {
+      return;
+    }
+    void saveMaster(next);
+  };
+
+  const upgradeText = requiredPlanName
+    ? `Upgrade to ${requiredPlanName}`
+    : 'Upgrade';
+  const billingHref = organizationBillingPath(orgId);
+
+  return (
+    <section
+      className="rounded-xl bg-card p-5 shadow-sm"
+      data-testid="team-model-policy-section"
+    >
+      <div className="flex items-start gap-3">
+        <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent-subtle fg-accent">
+          <Bot size={18} />
+        </span>
+        <div className="flex-1">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h2 className="text-m font-semibold fg-primary">Model access</h2>
+              <p className="mt-1 text-s fg-secondary">
+                Choose which AI models your members may use.
+              </p>
+            </div>
+            {showList && pendingReviewIds.length > 0 ? (
+              <span
+                className="shrink-0 rounded-full bg-warning-subtle px-2 py-0.5 text-xs font-medium fg-warning"
+                data-testid="model-policy-pending-review-count"
+              >
+                {pendingReviewIds.length} new
+              </span>
+            ) : null}
+          </div>
+
+          <ErrorBanner className="mt-3" error={error} />
+          <ErrorBanner className="mt-3" error={loadError} onRetry={retryLoad} />
+          {/* Its own banner: a save clears `error` and must not take an
+              unresolved plan-read failure with it. */}
+          <ErrorBanner
+            className="mt-3"
+            // One load banner: both share the same copy and Retry.
+            error={loadError === null ? entitlementError : null}
+            onRetry={retryLoad}
+          />
+
+          {!entitlementResolved || enforcing === null || !catalogReady ? (
+            <div className="mt-4" data-testid="model-policy-pending">
+              <DelayedLoadingPlaceholder>
+                <SettingsFormSkeleton rows={2} />
+              </DelayedLoadingPlaceholder>
+            </div>
+          ) : entitled === true || relaxOnly ? (
+            <>
+              <label className="mt-4 flex cursor-pointer items-start gap-3">
+                <input
+                  type="checkbox"
+                  checked={enforcing}
+                  disabled={saving}
+                  data-testid="enforce-member-model-policy-checkbox"
+                  onChange={(event) => handleMasterChange(event.target.checked)}
+                  className="mt-0.5 h-4 w-4 rounded"
+                />
+                <span className="min-w-0">
+                  <span className="block text-s font-medium fg-primary">
+                    Enforce member model access policy
+                  </span>
+                  <span className="block text-xs fg-secondary">
+                    Members can only use the models you choose from an enabled
+                    policy.
+                  </span>
+                </span>
+              </label>
+              {relaxOnly ? (
+                <div
+                  className="mt-3 flex items-start gap-2 rounded-lg bg-warning-subtle px-3 py-2"
+                  data-testid="model-policy-relax-only-note"
+                >
+                  <Lock
+                    size={14}
+                    aria-hidden="true"
+                    className="mt-0.5 shrink-0 fg-warning"
+                  />
+                  <p className="text-xs fg-secondary">
+                    Your plan no longer includes a model policy, but the one you
+                    set is still in force for your members, and models released
+                    since your last save are blocked too. From here you can turn
+                    enforcement off or allow models it blocks. To block a model
+                    again, or to turn enforcement back on later, you&apos;ll
+                    need the capability back.{' '}
+                    <SettingsLink
+                      href={billingHref}
+                      data-testid="model-policy-relax-only-upgrade"
+                      className="underline fg-accent"
+                    >
+                      {upgradeText}
+                    </SettingsLink>
+                  </p>
+                </div>
+              ) : null}
+            </>
+          ) : (
+            /*
+             * Painted door, for an org with no capability AND no live policy
+             * (enforcement off, or a plan read that never resolved). The switch
+             * stays VISIBLE so the capability is discoverable, but the model
+             * list never renders: showing an uneditable list of models would
+             * read as a policy this org has, and it has none. An org that IS
+             * still enforcing gets the relax-only controls above instead, since
+             * for it the policy is real and it needs a way out.
+             */
+            <Tooltip
+              label={
+                <span className="block max-w-64 whitespace-normal">
+                  Your plan doesn&apos;t include a model policy, so members may
+                  use any model.
+                </span>
+              }
+              link={{
+                href: billingHref,
+                text: upgradeText,
+                external: false,
+              }}
+            >
+              <span
+                className="mt-4 flex cursor-not-allowed items-start gap-3 opacity-60"
+                data-testid="model-policy-upgrade-cta"
+              >
+                <Lock
+                  size={14}
+                  aria-hidden="true"
+                  className="mt-0.5 fg-secondary/70"
+                />
+                <span className="min-w-0">
+                  <span className="block text-s font-medium fg-primary">
+                    Enforce member model access policy
+                  </span>
+                  <span className="block text-xs fg-secondary">
+                    {requiredPlanName
+                      ? `Available on ${requiredPlanName}.`
+                      : 'Not included in your plan.'}
+                  </span>
+                </span>
+              </span>
+            </Tooltip>
+          )}
+
+          {showList ? (
+            <>
+              {pendingReviewIds.length > 0 ? (
+                <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
+                  <p
+                    className="text-xs fg-warning"
+                    data-testid="model-policy-pending-review-note"
+                  >
+                    {pendingReviewIds.length === 1
+                      ? '1 model is new since your last save and is blocked until you review it. Switch it on to allow it.'
+                      : `${pendingReviewIds.length} models are new since your last save and are blocked until you review them. Switch each one on to allow it.`}
+                  </p>
+                  <button
+                    type="button"
+                    disabled={saving}
+                    data-testid="model-policy-mark-all-reviewed"
+                    onClick={() => {
+                      setError(null);
+                      setConfirmReviewAll(true);
+                    }}
+                    className="shrink-0 rounded-md border px-3 py-1 text-xs fg-primary disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Mark all as reviewed
+                  </button>
+                </div>
+              ) : null}
+
+              <ul
+                className="mt-4 divide-y overflow-hidden rounded-lg border"
+                data-testid="model-policy-list"
+              >
+                {visible.map((model) => (
+                  <ModelPolicyRow
+                    key={model.id}
+                    model={model}
+                    allowed={
+                      !blocked.has(model.id) && !pendingReviewSet.has(model.id)
+                    }
+                    pendingReview={pendingReviewSet.has(model.id)}
+                    busy={saving}
+                    /*
+                     * Only an ALLOWED row locks in relax-only mode: switching
+                     * it off would add a blocked id, which the server refuses
+                     * without the capability. Blocked and unreviewed rows stay
+                     * live, because switching those on is a relaxation.
+                     */
+                    locked={
+                      relaxOnly &&
+                      !blocked.has(model.id) &&
+                      !pendingReviewSet.has(model.id)
+                    }
+                    upgradeHref={billingHref}
+                    upgradeText={upgradeText}
+                    onChange={(allow) => void saveModel(model.id, allow)}
+                  />
+                ))}
+                {visible.length === 0 ? (
+                  <li
+                    className="px-4 py-6 text-center text-xs fg-secondary"
+                    data-testid="model-policy-empty"
+                  >
+                    No models are available to configure yet.
+                  </li>
+                ) : null}
+              </ul>
+
+              {pageCount > 1 ? (
+                <div
+                  className="mt-3 flex items-center justify-between gap-3"
+                  data-testid="model-policy-pager"
+                >
+                  <button
+                    type="button"
+                    disabled={currentPage === 0}
+                    data-testid="model-policy-pager-prev"
+                    onClick={() => setPage(Math.max(0, currentPage - 1))}
+                    className="rounded-md border px-3 py-1 text-xs fg-primary disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Previous
+                  </button>
+                  <span className="text-xs fg-secondary">
+                    Page {currentPage + 1} of {pageCount}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={currentPage >= pageCount - 1}
+                    data-testid="model-policy-pager-next"
+                    onClick={() =>
+                      setPage(Math.min(pageCount - 1, currentPage + 1))
+                    }
+                    className="rounded-md border px-3 py-1 text-xs fg-primary disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Next
+                  </button>
+                </div>
+              ) : null}
+
+              {confirmReviewAll && pendingReviewIds.length > 0 ? (
+                <SettingsConfirmDialog
+                  dataTestId="model-policy-review-all-dialog"
+                  title={
+                    pendingReviewIds.length === 1
+                      ? 'Mark 1 model as reviewed?'
+                      : `Mark ${pendingReviewIds.length} models as reviewed?`
+                  }
+                  confirmLabel="Mark as reviewed"
+                  busyLabel="Saving…"
+                  busy={savingReviewAll}
+                  onCancel={() => setConfirmReviewAll(false)}
+                  onConfirm={() => void markAllReviewed()}
+                  message={
+                    <div className="flex flex-col gap-2">
+                      <p>
+                        This clears the review backlog for every model in the
+                        catalog, including any on pages you have not opened yet.
+                        Each one becomes available to your members right away
+                        unless you block it.
+                      </p>
+                      <p>
+                        {relaxOnly
+                          ? 'New models that ship later stay blocked until you review them too. Your plan no longer lets you block a model, though, so only do this if every model in the catalog is fine for your members.'
+                          : 'You can still block any model afterwards, and new models that ship later stay blocked until you review them too.'}
+                      </p>
+                      {error !== null ? (
+                        <p
+                          role="alert"
+                          data-testid="model-policy-review-all-error"
+                          className="fg-destructive"
+                        >
+                          {error}
+                        </p>
+                      ) : null}
+                    </div>
+                  }
+                />
+              ) : null}
+            </>
+          ) : null}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+interface ModelPolicyRowProps {
+  model: OrgModelCatalogEntry;
+  /** Whether members may currently use this model. */
+  allowed: boolean;
+  /** Whether this model is new since the org's last save (blocked until reviewed). */
+  pendingReview: boolean;
+  /** True while ANY save on the card is in flight, not just this row's. */
+  busy: boolean;
+  /**
+   * Whether flipping this row would tighten a policy the org no longer holds
+   * the capability for. Locked rows are inert rather than merely doomed to
+   * fail on save.
+   */
+  locked: boolean;
+  /** Where a locked row sends an admin to get the capability back. */
+  upgradeHref: string;
+  upgradeText: string;
+  onChange: (allow: boolean) => void;
+}
+
+function ModelPolicyRow({
+  model,
+  allowed,
+  pendingReview,
+  busy,
+  locked,
+  upgradeHref,
+  upgradeText,
+  onChange,
+}: ModelPolicyRowProps): JSX.Element {
+  const toggle = (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={allowed}
+      aria-disabled={locked ? true : undefined}
+      aria-label={`Allow ${model.label}${
+        pendingReview ? ' (new; blocked until reviewed)' : ''
+      }${locked ? ' (locked by your plan)' : ''}`}
+      disabled={locked ? undefined : busy}
+      data-testid={`model-policy-toggle-${model.id}`}
+      /* Inert by having no handler, not by a guard inside one. */
+      onClick={locked ? undefined : (): void => onChange(!allowed)}
+      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
+        locked
+          ? `cursor-not-allowed opacity-60 ${
+              allowed ? 'bg-accent' : 'bg-fg-secondary/30'
+            }`
+          : `disabled:cursor-not-allowed disabled:opacity-60 ${
+              allowed
+                ? 'bg-accent hover:bg-accent/90'
+                : 'bg-fg-secondary/30 hover:bg-fg-secondary/45'
+            }`
+      }`}
+    >
+      <span
+        className={`inline-block h-4 w-4 transform rounded-full bg-card shadow-sm transition-transform ${
+          allowed ? 'translate-x-6' : 'translate-x-1'
+        }`}
+      />
+    </button>
+  );
+
+  return (
+    <li
+      className="flex items-start justify-between gap-4 px-4 py-3"
+      data-testid={`model-policy-row-${model.id}`}
+    >
+      <div className="min-w-0">
+        <p className="flex items-center gap-2 text-s font-medium fg-primary">
+          <span className="truncate">{model.label}</span>
+          {pendingReview ? (
+            <span
+              className="shrink-0 rounded-full bg-warning-subtle px-1.5 py-0.5 text-xs font-medium fg-warning"
+              data-testid={`model-policy-new-badge-${model.id}`}
+            >
+              New
+            </span>
+          ) : null}
+        </p>
+        {model.description ? (
+          <p className="text-xs fg-secondary">{model.description}</p>
+        ) : null}
+        <p className="truncate text-xs fg-secondary/80">{model.id}</p>
+      </div>
+      {locked ? (
+        <Tooltip
+          label={
+            <span className="block max-w-64 whitespace-normal">
+              Your plan no longer lets you block models. You can still allow
+              ones this policy blocks today.
+            </span>
+          }
+          link={{ href: upgradeHref, text: upgradeText, external: false }}
+        >
+          {/*
+           * The lock glyph shares the tooltip's hover target with the switch,
+           * and `aria-disabled` keeps that target focusable: a natively
+           * disabled button leaves the tab order and fires no hover events, so
+           * the explanation would be unreachable. The always-visible note above
+           * the list carries the same reason for keyboard users, since the
+           * tooltip's link is portalled and cannot be tabbed to.
+           */}
+          <span className="flex shrink-0 items-center gap-2">
+            <Lock size={12} aria-hidden="true" className="fg-secondary/70" />
+            {toggle}
+          </span>
+        </Tooltip>
+      ) : (
+        toggle
+      )}
+    </li>
+  );
+}

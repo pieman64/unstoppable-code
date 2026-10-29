@@ -1,0 +1,1261 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`searchWorktreeActions ranking characterization ranks directory empty input 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "sidebar.item_groups.set_item [sidebar] fields=groupId,newGroup req= opt=groupId,newGroup example=type,newGroup notes=3",
+    "sidebar.item_groups.list_items [sidebar] fields=groupId req=groupId opt= example=type,groupId notes=3",
+    "sidebar.item_groups.list [sidebar] fields= req= opt= example=type notes=3",
+    "sidebar.item_groups.update [sidebar] fields=groupId,name,color,collapsed,labelHidden,keepWhenEmpty req=groupId opt=name,color,collapsed,labelHidden,keepWhenEmpty example=type,groupId,collapsed notes=3",
+    "sharing.open_dialog [sharing] fields=target req=target opt= example=type,target notes=2",
+    "skills.list [skills] fields=query,customOnly,limit req= opt=query,customOnly,limit example=type,customOnly notes=1",
+    "skills.read [skills] fields=sourceId,skillName req=sourceId,skillName opt= example=type,sourceId,skillName notes=1",
+    "skills.read_file [skills] fields=sourceId,skillName,filePath req=sourceId,skillName,filePath opt= example=type,sourceId,skillName,filePath notes=1",
+    "skills.create_custom [skills] fields=name,description,body,extraMetadata req=name,description,body opt=extraMetadata example=type,name,description,body notes=1",
+    "skills.update_custom [skills] fields=originalName,name,description,body,extraMetadata req=originalName opt=name,description,body,extraMetadata example=type,originalName,body notes=1",
+    "skills.delete_custom [skills] fields=name req=name opt= example=type,name notes=1",
+    "skills.list_shared [skills] fields=query,limit,cursor,createdBy req= opt=query,limit,cursor,createdBy example=type,query notes=1",
+    "skills.read_shared [skills] fields=skillId req=skillId opt= example=type,skillId notes=1",
+    "skills.share_custom [skills] fields=name,shareScope,teamId,organizationId req=name,shareScope opt=teamId,organizationId example=type,name,shareScope,teamId notes=1",
+    "skills.import_shared [skills] fields=skillId req=skillId opt= example=type,skillId notes=1",
+    "skills.update_shared [skills] fields=skillId,name req=skillId,name opt= example=type,skillId,name notes=1",
+    "skills.delete_shared [skills] fields=skillId req=skillId opt= example=type,skillId notes=1",
+    "pipeline.create [pipeline] fields=rawYaml,yamlFilePath,name,description,icon req= opt=rawYaml,yamlFilePath,name,description,icon example=type,yamlFilePath notes=3",
+    "pipeline.update [pipeline] fields=pipelineId,rawYaml,yamlFilePath,name,description,icon req=pipelineId opt=rawYaml,yamlFilePath,name,description,icon example=type,pipelineId,rawYaml notes=2",
+    "pipeline.delete [pipeline] fields=pipelineId req=pipelineId opt= example=type,pipelineId notes=1",
+  ],
+  "categories": "sidebar,skills,sharing,pipeline,browser,automations",
+  "category": undefined,
+  "query": "",
+  "returned": 20,
+  "totalMatches": 44,
+}
+`;
+
+exports[`searchWorktreeActions ranking characterization ranks directory hook query 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "pipeline.execution_resume [pipeline] fields=executionId,statusReasonIds,pauseResponses req=executionId opt=statusReasonIds,pauseResponses example=type,executionId,statusReasonIds notes=1",
+    "automation.disable [automations] fields=id req=id opt= example=type,id notes=1",
+  ],
+  "categories": "sidebar,skills,sharing,pipeline,browser,automations",
+  "category": undefined,
+  "query": "pause hook",
+  "returned": 2,
+  "totalMatches": 2,
+}
+`;
+
+exports[`searchWorktreeActions ranking characterization ranks directory pipeline query 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "pipeline.run [pipeline] fields=pipelineId,inputs,runMode,planPath,taskPath,planId,repoId,watchers req=pipelineId opt=inputs,runMode,planPath,taskPath,planId,repoId,watchers example=type,pipelineId,inputs,watchers notes=1",
+    "pipeline.set_enabled [pipeline] fields=pipelineId,enabled req=pipelineId,enabled opt= example=type,pipelineId,enabled notes=2",
+    "pipeline.list [pipeline] fields=query,runModes,includeDisabled,limit req= opt=query,runModes,includeDisabled,limit example=type,query,runModes notes=1",
+    "pipeline.get [pipeline] fields=pipelineId,includeYaml req=pipelineId opt=includeYaml example=type,pipelineId,includeYaml notes=1",
+    "pipeline.execution_cancel [pipeline] fields=executionId req=executionId opt= example=type,executionId notes=1",
+    "pipeline.execution_cancel_matrix_variant [pipeline] fields=executionId,jobId,variantJobId req=executionId,jobId,variantJobId opt= example=type,executionId,jobId,variantJobId notes=1",
+    "pipeline.execution_chain [pipeline] fields=executionId,pipelineId,inputs,repoId req=executionId,pipelineId opt=inputs,repoId example=type,executionId,pipelineId notes=1",
+    "pipeline.create [pipeline] fields=rawYaml,yamlFilePath,name,description,icon req= opt=rawYaml,yamlFilePath,name,description,icon example=type,yamlFilePath notes=3",
+    "pipeline.update [pipeline] fields=pipelineId,rawYaml,yamlFilePath,name,description,icon req=pipelineId opt=rawYaml,yamlFilePath,name,description,icon example=type,pipelineId,rawYaml notes=2",
+    "pipeline.delete [pipeline] fields=pipelineId req=pipelineId opt= example=type,pipelineId notes=1",
+    "pipeline.duplicate [pipeline] fields=pipelineId req=pipelineId opt= example=type,pipelineId notes=1",
+    "pipeline.share [pipeline] fields=pipelineId,shareScope,teamId,organizationId req=pipelineId,shareScope opt=teamId,organizationId example=type,pipelineId,shareScope,teamId notes=1",
+    "pipeline.update_shared [pipeline] fields=pipelineId,remoteId,rawYaml,name,description,icon req= opt=pipelineId,remoteId,rawYaml,name,description,icon example=type,remoteId,rawYaml notes=1",
+    "pipeline.delete_shared [pipeline] fields=pipelineId,remoteId req= opt=pipelineId,remoteId example=type,remoteId notes=1",
+    "pipeline.execution_list_for_worktree [pipeline] fields=query,pipelineId,status,limit req= opt=query,pipelineId,status,limit example=type,status notes=1",
+    "pipeline.execution_list [pipeline] fields=query,pipelineId,status,limit req= opt=query,pipelineId,status,limit example=type,status notes=1",
+    "pipeline.execution_get [pipeline] fields=executionId,includeReport,includePlan,maxChars req=executionId opt=includeReport,includePlan,maxChars example=type,executionId,includeReport notes=1",
+    "pipeline.execution_retry_matrix_job [pipeline] fields=executionId,jobId,mode,variantJobIds req=executionId,jobId,mode opt=variantJobIds example=type,executionId,jobId,mode notes=1",
+    "pipeline.execution_resume [pipeline] fields=executionId,statusReasonIds,pauseResponses req=executionId opt=statusReasonIds,pauseResponses example=type,executionId,statusReasonIds notes=1",
+    "pipeline.execution_retry [pipeline] fields=executionId req=executionId opt= example=type,executionId notes=1",
+  ],
+  "categories": "sidebar,skills,sharing,pipeline,browser,automations",
+  "category": undefined,
+  "query": "run pipeline",
+  "returned": 20,
+  "totalMatches": 27,
+}
+`;
+
+exports[`searchWorktreeActions ranking characterization ranks directory sidebar group query 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "sidebar.item_groups.set_item [sidebar] fields=groupId,newGroup req= opt=groupId,newGroup example=type,newGroup notes=3",
+    "sidebar.item_groups.list_items [sidebar] fields=groupId req=groupId opt= example=type,groupId notes=3",
+    "sidebar.item_groups.list [sidebar] fields= req= opt= example=type notes=3",
+    "sidebar.item_groups.update [sidebar] fields=groupId,name,color,collapsed,labelHidden,keepWhenEmpty req=groupId opt=name,color,collapsed,labelHidden,keepWhenEmpty example=type,groupId,collapsed notes=3",
+    "skills.share_custom [skills] fields=name,shareScope,teamId,organizationId req=name,shareScope opt=teamId,organizationId example=type,name,shareScope,teamId notes=1",
+    "pipeline.share [pipeline] fields=pipelineId,shareScope,teamId,organizationId req=pipelineId,shareScope opt=teamId,organizationId example=type,pipelineId,shareScope,teamId notes=1",
+  ],
+  "categories": "sidebar,skills,sharing,pipeline,browser,automations",
+  "category": undefined,
+  "query": "group sidebar item",
+  "returned": 6,
+  "totalMatches": 6,
+}
+`;
+
+exports[`searchWorktreeActions ranking characterization ranks directory worktree-only category 1`] = `
+{
+  "actionType": undefined,
+  "actions": [],
+  "categories": "sidebar,skills,sharing,pipeline,browser,automations",
+  "category": "hook",
+  "query": "",
+  "returned": 0,
+  "totalMatches": 0,
+}
+`;
+
+exports[`searchWorktreeActions ranking characterization ranks directory worktree-only type 1`] = `
+{
+  "actionType": "worktree.get_settings",
+  "actions": [],
+  "categories": "sidebar,skills,sharing,pipeline,browser,automations",
+  "category": undefined,
+  "query": "",
+  "returned": 0,
+  "totalMatches": 0,
+}
+`;
+
+exports[`searchWorktreeActions ranking characterization ranks empty restriction 1`] = `
+{
+  "actionType": undefined,
+  "actions": [],
+  "categories": "",
+  "category": undefined,
+  "query": "pipeline",
+  "returned": 0,
+  "totalMatches": 0,
+}
+`;
+
+exports[`searchWorktreeActions ranking characterization ranks restricted category 1`] = `
+{
+  "actionType": undefined,
+  "actions": [],
+  "categories": "pipeline,worktree,hook",
+  "category": "browser",
+  "query": "",
+  "returned": 0,
+  "totalMatches": 0,
+}
+`;
+
+exports[`searchWorktreeActions ranking characterization ranks restricted directory query 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "pipeline.run [pipeline] fields=pipelineId,inputs,runMode,planPath,taskPath,planId,repoId,watchers req=pipelineId opt=inputs,runMode,planPath,taskPath,planId,repoId,watchers example=type,pipelineId,inputs,watchers notes=1",
+    "pipeline.list [pipeline] fields=query,runModes,includeDisabled,limit req= opt=query,runModes,includeDisabled,limit example=type,query,runModes notes=1",
+  ],
+  "categories": "pipeline",
+  "category": undefined,
+  "query": "run",
+  "returned": 2,
+  "totalMatches": 2,
+}
+`;
+
+exports[`searchWorktreeActions ranking characterization ranks restricted empty input 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "worktree.run_script [worktree] fields=scriptId,repo,waitSeconds req=scriptId opt=repo,waitSeconds example=type,scriptId,waitSeconds notes=4",
+    "hook.pause [hook] fields=hookKey,all req= opt=hookKey,all example=type,hookKey notes=4",
+    "pipeline.list [pipeline] fields=query,runModes,includeDisabled,limit req= opt=query,runModes,includeDisabled,limit example=type,query,runModes notes=1",
+    "pipeline.run [pipeline] fields=pipelineId,inputs,runMode,planPath,taskPath,planId,repoId,watchers req=pipelineId opt=inputs,runMode,planPath,taskPath,planId,repoId,watchers example=type,pipelineId,inputs,watchers notes=1",
+  ],
+  "categories": "pipeline,worktree,hook",
+  "category": undefined,
+  "query": "",
+  "returned": 4,
+  "totalMatches": 4,
+}
+`;
+
+exports[`searchWorktreeActions ranking characterization ranks restricted excluded type 1`] = `
+{
+  "actionType": "pipeline.get",
+  "actions": [],
+  "categories": "pipeline,worktree,hook",
+  "category": undefined,
+  "query": "",
+  "returned": 0,
+  "totalMatches": 0,
+}
+`;
+
+exports[`searchWorktreeActions ranking characterization ranks restricted query 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "worktree.run_script [worktree] fields=scriptId,repo,waitSeconds req=scriptId opt=repo,waitSeconds example=type,scriptId,waitSeconds notes=4",
+    "pipeline.run [pipeline] fields=pipelineId,inputs,runMode,planPath,taskPath,planId,repoId,watchers req=pipelineId opt=inputs,runMode,planPath,taskPath,planId,repoId,watchers example=type,pipelineId,inputs,watchers notes=1",
+    "pipeline.list [pipeline] fields=query,runModes,includeDisabled,limit req= opt=query,runModes,includeDisabled,limit example=type,query,runModes notes=1",
+  ],
+  "categories": "pipeline,worktree,hook",
+  "category": undefined,
+  "query": "run",
+  "returned": 3,
+  "totalMatches": 3,
+}
+`;
+
+exports[`searchWorktreeActions ranking characterization ranks worktree automation query 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "automation.create [automations] fields=input,watchers req=input opt=watchers example=type,input notes=12",
+    "automation.list [automations] fields=includeRuns req= opt=includeRuns example=type,includeRuns notes=1",
+    "automation.get [automations] fields=id req=id opt= example=type,id notes=1",
+    "automation.update [automations] fields=id,patch req=id,patch opt= example=type,id,patch notes=4",
+    "automation.delete [automations] fields=id req=id opt= example=type,id notes=1",
+    "automation.disable [automations] fields=id req=id opt= example=type,id notes=1",
+    "automation.run_now [automations] fields=id,watchers req=id opt=watchers example=type,id notes=2",
+  ],
+  "categories": "sidebar,skills,sharing,pipeline,worktree,tracked-plan,hook,browser,automations",
+  "category": undefined,
+  "query": "schedule recurring",
+  "returned": 7,
+  "totalMatches": 7,
+}
+`;
+
+exports[`searchWorktreeActions ranking characterization ranks worktree browser query 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "sharing.open_dialog [sharing] fields=target req=target opt= example=type,target notes=2",
+    "hook.pause [hook] fields=hookKey,all req= opt=hookKey,all example=type,hookKey notes=4",
+    "hook.resume [hook] fields=hookKey,all req= opt=hookKey,all example=type,hookKey notes=4",
+    "automation.list [automations] fields=includeRuns req= opt=includeRuns example=type,includeRuns notes=1",
+  ],
+  "categories": "sidebar,skills,sharing,pipeline,worktree,tracked-plan,hook,browser,automations",
+  "category": undefined,
+  "query": "open browser page",
+  "returned": 4,
+  "totalMatches": 4,
+}
+`;
+
+exports[`searchWorktreeActions ranking characterization ranks worktree category 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "pipeline.create [pipeline] fields=rawYaml,yamlFilePath,name,description,icon req= opt=rawYaml,yamlFilePath,name,description,icon example=type,yamlFilePath notes=3",
+    "pipeline.update [pipeline] fields=pipelineId,rawYaml,yamlFilePath,name,description,icon req=pipelineId opt=rawYaml,yamlFilePath,name,description,icon example=type,pipelineId,rawYaml notes=2",
+    "pipeline.delete [pipeline] fields=pipelineId req=pipelineId opt= example=type,pipelineId notes=1",
+    "pipeline.duplicate [pipeline] fields=pipelineId req=pipelineId opt= example=type,pipelineId notes=1",
+    "pipeline.share [pipeline] fields=pipelineId,shareScope,teamId,organizationId req=pipelineId,shareScope opt=teamId,organizationId example=type,pipelineId,shareScope,teamId notes=1",
+    "pipeline.update_shared [pipeline] fields=pipelineId,remoteId,rawYaml,name,description,icon req= opt=pipelineId,remoteId,rawYaml,name,description,icon example=type,remoteId,rawYaml notes=1",
+    "pipeline.delete_shared [pipeline] fields=pipelineId,remoteId req= opt=pipelineId,remoteId example=type,remoteId notes=1",
+    "pipeline.set_enabled [pipeline] fields=pipelineId,enabled req=pipelineId,enabled opt= example=type,pipelineId,enabled notes=2",
+    "pipeline.list [pipeline] fields=query,runModes,includeDisabled,limit req= opt=query,runModes,includeDisabled,limit example=type,query,runModes notes=1",
+    "pipeline.get [pipeline] fields=pipelineId,includeYaml req=pipelineId opt=includeYaml example=type,pipelineId,includeYaml notes=1",
+    "pipeline.run [pipeline] fields=pipelineId,inputs,runMode,planPath,taskPath,planId,repoId,watchers req=pipelineId opt=inputs,runMode,planPath,taskPath,planId,repoId,watchers example=type,pipelineId,inputs,watchers notes=1",
+    "pipeline.execution_list_for_worktree [pipeline] fields=query,pipelineId,status,limit req= opt=query,pipelineId,status,limit example=type,status notes=1",
+    "pipeline.execution_list [pipeline] fields=query,pipelineId,status,limit req= opt=query,pipelineId,status,limit example=type,status notes=1",
+    "pipeline.execution_get [pipeline] fields=executionId,includeReport,includePlan,maxChars req=executionId opt=includeReport,includePlan,maxChars example=type,executionId,includeReport notes=1",
+    "pipeline.execution_cancel [pipeline] fields=executionId req=executionId opt= example=type,executionId notes=1",
+    "pipeline.execution_retry_matrix_job [pipeline] fields=executionId,jobId,mode,variantJobIds req=executionId,jobId,mode opt=variantJobIds example=type,executionId,jobId,mode notes=1",
+    "pipeline.execution_cancel_matrix_variant [pipeline] fields=executionId,jobId,variantJobId req=executionId,jobId,variantJobId opt= example=type,executionId,jobId,variantJobId notes=1",
+    "pipeline.execution_resume [pipeline] fields=executionId,statusReasonIds,pauseResponses req=executionId opt=statusReasonIds,pauseResponses example=type,executionId,statusReasonIds notes=1",
+    "pipeline.execution_retry [pipeline] fields=executionId req=executionId opt= example=type,executionId notes=1",
+    "pipeline.execution_chain [pipeline] fields=executionId,pipelineId,inputs,repoId req=executionId,pipelineId opt=inputs,repoId example=type,executionId,pipelineId notes=1",
+  ],
+  "categories": "sidebar,skills,sharing,pipeline,worktree,tracked-plan,hook,browser,automations",
+  "category": "pipeline",
+  "query": "",
+  "returned": 20,
+  "totalMatches": 20,
+}
+`;
+
+exports[`searchWorktreeActions ranking characterization ranks worktree category alias 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "automation.list [automations] fields=includeRuns req= opt=includeRuns example=type,includeRuns notes=1",
+    "automation.get [automations] fields=id req=id opt= example=type,id notes=1",
+    "automation.create [automations] fields=input,watchers req=input opt=watchers example=type,input notes=12",
+    "automation.update [automations] fields=id,patch req=id,patch opt= example=type,id,patch notes=4",
+    "automation.delete [automations] fields=id req=id opt= example=type,id notes=1",
+    "automation.disable [automations] fields=id req=id opt= example=type,id notes=1",
+    "automation.run_now [automations] fields=id,watchers req=id opt=watchers example=type,id notes=2",
+  ],
+  "categories": "sidebar,skills,sharing,pipeline,worktree,tracked-plan,hook,browser,automations",
+  "category": "automation",
+  "query": "",
+  "returned": 7,
+  "totalMatches": 7,
+}
+`;
+
+exports[`searchWorktreeActions ranking characterization ranks worktree empty input 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "sidebar.item_groups.set_item [sidebar] fields=groupId,newGroup req= opt=groupId,newGroup example=type,newGroup notes=3",
+    "sidebar.item_groups.list_items [sidebar] fields=groupId req=groupId opt= example=type,groupId notes=3",
+    "sidebar.item_groups.list [sidebar] fields= req= opt= example=type notes=3",
+    "sidebar.item_groups.update [sidebar] fields=groupId,name,color,collapsed,labelHidden,keepWhenEmpty req=groupId opt=name,color,collapsed,labelHidden,keepWhenEmpty example=type,groupId,collapsed notes=3",
+    "sharing.open_dialog [sharing] fields=target req=target opt= example=type,target notes=2",
+    "skills.list [skills] fields=query,customOnly,limit req= opt=query,customOnly,limit example=type,customOnly notes=1",
+    "skills.read [skills] fields=sourceId,skillName req=sourceId,skillName opt= example=type,sourceId,skillName notes=1",
+    "skills.read_file [skills] fields=sourceId,skillName,filePath req=sourceId,skillName,filePath opt= example=type,sourceId,skillName,filePath notes=1",
+    "skills.create_custom [skills] fields=name,description,body,extraMetadata req=name,description,body opt=extraMetadata example=type,name,description,body notes=1",
+    "skills.update_custom [skills] fields=originalName,name,description,body,extraMetadata req=originalName opt=name,description,body,extraMetadata example=type,originalName,body notes=1",
+    "skills.delete_custom [skills] fields=name req=name opt= example=type,name notes=1",
+    "skills.list_shared [skills] fields=query,limit,cursor,createdBy req= opt=query,limit,cursor,createdBy example=type,query notes=1",
+    "skills.read_shared [skills] fields=skillId req=skillId opt= example=type,skillId notes=1",
+    "skills.share_custom [skills] fields=name,shareScope,teamId,organizationId req=name,shareScope opt=teamId,organizationId example=type,name,shareScope,teamId notes=1",
+    "skills.import_shared [skills] fields=skillId req=skillId opt= example=type,skillId notes=1",
+    "skills.update_shared [skills] fields=skillId,name req=skillId,name opt= example=type,skillId,name notes=1",
+    "skills.delete_shared [skills] fields=skillId req=skillId opt= example=type,skillId notes=1",
+    "worktree.get_settings [worktree] fields= req= opt= example=type notes=2",
+    "worktree.list_scripts [worktree] fields= req= opt= example=type notes=3",
+    "worktree.run_script [worktree] fields=scriptId,repo,waitSeconds req=scriptId opt=repo,waitSeconds example=type,scriptId,waitSeconds notes=4",
+  ],
+  "categories": "sidebar,skills,sharing,pipeline,worktree,tracked-plan,hook,browser,automations",
+  "category": undefined,
+  "query": "",
+  "returned": 20,
+  "totalMatches": 50,
+}
+`;
+
+exports[`searchWorktreeActions ranking characterization ranks worktree exact type 1`] = `
+{
+  "actionType": "worktree.get_settings",
+  "actions": [
+    "worktree.get_settings [worktree] fields= req= opt= example=type notes=2",
+  ],
+  "categories": "sidebar,skills,sharing,pipeline,worktree,tracked-plan,hook,browser,automations",
+  "category": undefined,
+  "query": "",
+  "returned": 1,
+  "totalMatches": 1,
+}
+`;
+
+exports[`searchWorktreeActions ranking characterization ranks worktree hook query 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "hook.pause [hook] fields=hookKey,all req= opt=hookKey,all example=type,hookKey notes=4",
+    "hook.resume [hook] fields=hookKey,all req= opt=hookKey,all example=type,hookKey notes=4",
+    "worktree.get_settings [worktree] fields= req= opt= example=type notes=2",
+    "pipeline.execution_resume [pipeline] fields=executionId,statusReasonIds,pauseResponses req=executionId opt=statusReasonIds,pauseResponses example=type,executionId,statusReasonIds notes=1",
+    "automation.disable [automations] fields=id req=id opt= example=type,id notes=1",
+  ],
+  "categories": "sidebar,skills,sharing,pipeline,worktree,tracked-plan,hook,browser,automations",
+  "category": undefined,
+  "query": "pause hook",
+  "returned": 5,
+  "totalMatches": 5,
+}
+`;
+
+exports[`searchWorktreeActions ranking characterization ranks worktree large limit 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "sidebar.item_groups.set_item [sidebar] fields=groupId,newGroup req= opt=groupId,newGroup example=type,newGroup notes=3",
+    "sidebar.item_groups.list_items [sidebar] fields=groupId req=groupId opt= example=type,groupId notes=3",
+    "sidebar.item_groups.list [sidebar] fields= req= opt= example=type notes=3",
+    "sidebar.item_groups.update [sidebar] fields=groupId,name,color,collapsed,labelHidden,keepWhenEmpty req=groupId opt=name,color,collapsed,labelHidden,keepWhenEmpty example=type,groupId,collapsed notes=3",
+    "sharing.open_dialog [sharing] fields=target req=target opt= example=type,target notes=2",
+    "skills.list [skills] fields=query,customOnly,limit req= opt=query,customOnly,limit example=type,customOnly notes=1",
+    "skills.read [skills] fields=sourceId,skillName req=sourceId,skillName opt= example=type,sourceId,skillName notes=1",
+    "skills.read_file [skills] fields=sourceId,skillName,filePath req=sourceId,skillName,filePath opt= example=type,sourceId,skillName,filePath notes=1",
+    "skills.create_custom [skills] fields=name,description,body,extraMetadata req=name,description,body opt=extraMetadata example=type,name,description,body notes=1",
+    "skills.update_custom [skills] fields=originalName,name,description,body,extraMetadata req=originalName opt=name,description,body,extraMetadata example=type,originalName,body notes=1",
+    "skills.delete_custom [skills] fields=name req=name opt= example=type,name notes=1",
+    "skills.list_shared [skills] fields=query,limit,cursor,createdBy req= opt=query,limit,cursor,createdBy example=type,query notes=1",
+    "skills.read_shared [skills] fields=skillId req=skillId opt= example=type,skillId notes=1",
+    "skills.share_custom [skills] fields=name,shareScope,teamId,organizationId req=name,shareScope opt=teamId,organizationId example=type,name,shareScope,teamId notes=1",
+    "skills.import_shared [skills] fields=skillId req=skillId opt= example=type,skillId notes=1",
+    "skills.update_shared [skills] fields=skillId,name req=skillId,name opt= example=type,skillId,name notes=1",
+    "skills.delete_shared [skills] fields=skillId req=skillId opt= example=type,skillId notes=1",
+    "worktree.get_settings [worktree] fields= req= opt= example=type notes=2",
+    "worktree.list_scripts [worktree] fields= req= opt= example=type notes=3",
+    "worktree.run_script [worktree] fields=scriptId,repo,waitSeconds req=scriptId opt=repo,waitSeconds example=type,scriptId,waitSeconds notes=4",
+    "hook.pause [hook] fields=hookKey,all req= opt=hookKey,all example=type,hookKey notes=4",
+    "hook.resume [hook] fields=hookKey,all req= opt=hookKey,all example=type,hookKey notes=4",
+    "tracked-plan.import [tracked-plan] fields=filePath,repoId req=filePath,repoId opt= example=type,filePath,repoId notes=1",
+    "pipeline.create [pipeline] fields=rawYaml,yamlFilePath,name,description,icon req= opt=rawYaml,yamlFilePath,name,description,icon example=type,yamlFilePath notes=3",
+    "pipeline.update [pipeline] fields=pipelineId,rawYaml,yamlFilePath,name,description,icon req=pipelineId opt=rawYaml,yamlFilePath,name,description,icon example=type,pipelineId,rawYaml notes=2",
+    "pipeline.delete [pipeline] fields=pipelineId req=pipelineId opt= example=type,pipelineId notes=1",
+    "pipeline.duplicate [pipeline] fields=pipelineId req=pipelineId opt= example=type,pipelineId notes=1",
+    "pipeline.share [pipeline] fields=pipelineId,shareScope,teamId,organizationId req=pipelineId,shareScope opt=teamId,organizationId example=type,pipelineId,shareScope,teamId notes=1",
+    "pipeline.update_shared [pipeline] fields=pipelineId,remoteId,rawYaml,name,description,icon req= opt=pipelineId,remoteId,rawYaml,name,description,icon example=type,remoteId,rawYaml notes=1",
+    "pipeline.delete_shared [pipeline] fields=pipelineId,remoteId req= opt=pipelineId,remoteId example=type,remoteId notes=1",
+    "pipeline.set_enabled [pipeline] fields=pipelineId,enabled req=pipelineId,enabled opt= example=type,pipelineId,enabled notes=2",
+    "pipeline.list [pipeline] fields=query,runModes,includeDisabled,limit req= opt=query,runModes,includeDisabled,limit example=type,query,runModes notes=1",
+    "pipeline.get [pipeline] fields=pipelineId,includeYaml req=pipelineId opt=includeYaml example=type,pipelineId,includeYaml notes=1",
+    "pipeline.run [pipeline] fields=pipelineId,inputs,runMode,planPath,taskPath,planId,repoId,watchers req=pipelineId opt=inputs,runMode,planPath,taskPath,planId,repoId,watchers example=type,pipelineId,inputs,watchers notes=1",
+    "pipeline.execution_list_for_worktree [pipeline] fields=query,pipelineId,status,limit req= opt=query,pipelineId,status,limit example=type,status notes=1",
+    "pipeline.execution_list [pipeline] fields=query,pipelineId,status,limit req= opt=query,pipelineId,status,limit example=type,status notes=1",
+    "pipeline.execution_get [pipeline] fields=executionId,includeReport,includePlan,maxChars req=executionId opt=includeReport,includePlan,maxChars example=type,executionId,includeReport notes=1",
+    "pipeline.execution_cancel [pipeline] fields=executionId req=executionId opt= example=type,executionId notes=1",
+    "pipeline.execution_retry_matrix_job [pipeline] fields=executionId,jobId,mode,variantJobIds req=executionId,jobId,mode opt=variantJobIds example=type,executionId,jobId,mode notes=1",
+    "pipeline.execution_cancel_matrix_variant [pipeline] fields=executionId,jobId,variantJobId req=executionId,jobId,variantJobId opt= example=type,executionId,jobId,variantJobId notes=1",
+    "pipeline.execution_resume [pipeline] fields=executionId,statusReasonIds,pauseResponses req=executionId opt=statusReasonIds,pauseResponses example=type,executionId,statusReasonIds notes=1",
+    "pipeline.execution_retry [pipeline] fields=executionId req=executionId opt= example=type,executionId notes=1",
+    "pipeline.execution_chain [pipeline] fields=executionId,pipelineId,inputs,repoId req=executionId,pipelineId opt=inputs,repoId example=type,executionId,pipelineId notes=1",
+    "automation.list [automations] fields=includeRuns req= opt=includeRuns example=type,includeRuns notes=1",
+    "automation.get [automations] fields=id req=id opt= example=type,id notes=1",
+    "automation.create [automations] fields=input,watchers req=input opt=watchers example=type,input notes=12",
+    "automation.update [automations] fields=id,patch req=id,patch opt= example=type,id,patch notes=4",
+    "automation.delete [automations] fields=id req=id opt= example=type,id notes=1",
+    "automation.disable [automations] fields=id req=id opt= example=type,id notes=1",
+    "automation.run_now [automations] fields=id,watchers req=id opt=watchers example=type,id notes=2",
+  ],
+  "categories": "sidebar,skills,sharing,pipeline,worktree,tracked-plan,hook,browser,automations",
+  "category": undefined,
+  "query": "",
+  "returned": 50,
+  "totalMatches": 50,
+}
+`;
+
+exports[`searchWorktreeActions ranking characterization ranks worktree partial type 1`] = `
+{
+  "actionType": "pipeline",
+  "actions": [],
+  "categories": "sidebar,skills,sharing,pipeline,worktree,tracked-plan,hook,browser,automations",
+  "category": undefined,
+  "query": "",
+  "returned": 0,
+  "totalMatches": 0,
+}
+`;
+
+exports[`searchWorktreeActions ranking characterization ranks worktree pipeline query 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "pipeline.run [pipeline] fields=pipelineId,inputs,runMode,planPath,taskPath,planId,repoId,watchers req=pipelineId opt=inputs,runMode,planPath,taskPath,planId,repoId,watchers example=type,pipelineId,inputs,watchers notes=1",
+    "pipeline.set_enabled [pipeline] fields=pipelineId,enabled req=pipelineId,enabled opt= example=type,pipelineId,enabled notes=2",
+    "pipeline.list [pipeline] fields=query,runModes,includeDisabled,limit req= opt=query,runModes,includeDisabled,limit example=type,query,runModes notes=1",
+    "pipeline.get [pipeline] fields=pipelineId,includeYaml req=pipelineId opt=includeYaml example=type,pipelineId,includeYaml notes=1",
+    "pipeline.execution_cancel [pipeline] fields=executionId req=executionId opt= example=type,executionId notes=1",
+    "pipeline.execution_cancel_matrix_variant [pipeline] fields=executionId,jobId,variantJobId req=executionId,jobId,variantJobId opt= example=type,executionId,jobId,variantJobId notes=1",
+    "pipeline.execution_chain [pipeline] fields=executionId,pipelineId,inputs,repoId req=executionId,pipelineId opt=inputs,repoId example=type,executionId,pipelineId notes=1",
+    "worktree.run_script [worktree] fields=scriptId,repo,waitSeconds req=scriptId opt=repo,waitSeconds example=type,scriptId,waitSeconds notes=4",
+    "pipeline.create [pipeline] fields=rawYaml,yamlFilePath,name,description,icon req= opt=rawYaml,yamlFilePath,name,description,icon example=type,yamlFilePath notes=3",
+    "pipeline.update [pipeline] fields=pipelineId,rawYaml,yamlFilePath,name,description,icon req=pipelineId opt=rawYaml,yamlFilePath,name,description,icon example=type,pipelineId,rawYaml notes=2",
+    "pipeline.delete [pipeline] fields=pipelineId req=pipelineId opt= example=type,pipelineId notes=1",
+    "pipeline.duplicate [pipeline] fields=pipelineId req=pipelineId opt= example=type,pipelineId notes=1",
+    "pipeline.share [pipeline] fields=pipelineId,shareScope,teamId,organizationId req=pipelineId,shareScope opt=teamId,organizationId example=type,pipelineId,shareScope,teamId notes=1",
+    "pipeline.update_shared [pipeline] fields=pipelineId,remoteId,rawYaml,name,description,icon req= opt=pipelineId,remoteId,rawYaml,name,description,icon example=type,remoteId,rawYaml notes=1",
+    "pipeline.delete_shared [pipeline] fields=pipelineId,remoteId req= opt=pipelineId,remoteId example=type,remoteId notes=1",
+    "pipeline.execution_list_for_worktree [pipeline] fields=query,pipelineId,status,limit req= opt=query,pipelineId,status,limit example=type,status notes=1",
+    "pipeline.execution_list [pipeline] fields=query,pipelineId,status,limit req= opt=query,pipelineId,status,limit example=type,status notes=1",
+    "pipeline.execution_get [pipeline] fields=executionId,includeReport,includePlan,maxChars req=executionId opt=includeReport,includePlan,maxChars example=type,executionId,includeReport notes=1",
+    "pipeline.execution_retry_matrix_job [pipeline] fields=executionId,jobId,mode,variantJobIds req=executionId,jobId,mode opt=variantJobIds example=type,executionId,jobId,mode notes=1",
+    "pipeline.execution_resume [pipeline] fields=executionId,statusReasonIds,pauseResponses req=executionId opt=statusReasonIds,pauseResponses example=type,executionId,statusReasonIds notes=1",
+  ],
+  "categories": "sidebar,skills,sharing,pipeline,worktree,tracked-plan,hook,browser,automations",
+  "category": undefined,
+  "query": "run pipeline",
+  "returned": 20,
+  "totalMatches": 29,
+}
+`;
+
+exports[`searchWorktreeActions ranking characterization ranks worktree plan query 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "tracked-plan.import [tracked-plan] fields=filePath,repoId req=filePath,repoId opt= example=type,filePath,repoId notes=1",
+    "skills.import_shared [skills] fields=skillId req=skillId opt= example=type,skillId notes=1",
+    "pipeline.run [pipeline] fields=pipelineId,inputs,runMode,planPath,taskPath,planId,repoId,watchers req=pipelineId opt=inputs,runMode,planPath,taskPath,planId,repoId,watchers example=type,pipelineId,inputs,watchers notes=1",
+    "worktree.get_settings [worktree] fields= req= opt= example=type notes=2",
+    "pipeline.list [pipeline] fields=query,runModes,includeDisabled,limit req= opt=query,runModes,includeDisabled,limit example=type,query,runModes notes=1",
+    "pipeline.execution_get [pipeline] fields=executionId,includeReport,includePlan,maxChars req=executionId opt=includeReport,includePlan,maxChars example=type,executionId,includeReport notes=1",
+    "pipeline.execution_chain [pipeline] fields=executionId,pipelineId,inputs,repoId req=executionId,pipelineId opt=inputs,repoId example=type,executionId,pipelineId notes=1",
+  ],
+  "categories": "sidebar,skills,sharing,pipeline,worktree,tracked-plan,hook,browser,automations",
+  "category": undefined,
+  "query": "import tracked plan",
+  "returned": 7,
+  "totalMatches": 7,
+}
+`;
+
+exports[`searchWorktreeActions ranking characterization ranks worktree settings query 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "worktree.get_settings [worktree] fields= req= opt= example=type notes=2",
+  ],
+  "categories": "sidebar,skills,sharing,pipeline,worktree,tracked-plan,hook,browser,automations",
+  "category": undefined,
+  "query": "base branch settings",
+  "returned": 1,
+  "totalMatches": 1,
+}
+`;
+
+exports[`searchWorktreeActions ranking characterization ranks worktree share query 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "pipeline.share [pipeline] fields=pipelineId,shareScope,teamId,organizationId req=pipelineId,shareScope opt=teamId,organizationId example=type,pipelineId,shareScope,teamId notes=1",
+    "pipeline.update_shared [pipeline] fields=pipelineId,remoteId,rawYaml,name,description,icon req= opt=pipelineId,remoteId,rawYaml,name,description,icon example=type,remoteId,rawYaml notes=1",
+    "pipeline.delete_shared [pipeline] fields=pipelineId,remoteId req= opt=pipelineId,remoteId example=type,remoteId notes=1",
+    "pipeline.duplicate [pipeline] fields=pipelineId req=pipelineId opt= example=type,pipelineId notes=1",
+    "skills.list_shared [skills] fields=query,limit,cursor,createdBy req= opt=query,limit,cursor,createdBy example=type,query notes=1",
+    "skills.read_shared [skills] fields=skillId req=skillId opt= example=type,skillId notes=1",
+    "skills.share_custom [skills] fields=name,shareScope,teamId,organizationId req=name,shareScope opt=teamId,organizationId example=type,name,shareScope,teamId notes=1",
+    "skills.import_shared [skills] fields=skillId req=skillId opt= example=type,skillId notes=1",
+    "skills.update_shared [skills] fields=skillId,name req=skillId,name opt= example=type,skillId,name notes=1",
+    "skills.delete_shared [skills] fields=skillId req=skillId opt= example=type,skillId notes=1",
+    "pipeline.create [pipeline] fields=rawYaml,yamlFilePath,name,description,icon req= opt=rawYaml,yamlFilePath,name,description,icon example=type,yamlFilePath notes=3",
+    "pipeline.update [pipeline] fields=pipelineId,rawYaml,yamlFilePath,name,description,icon req=pipelineId opt=rawYaml,yamlFilePath,name,description,icon example=type,pipelineId,rawYaml notes=2",
+    "pipeline.delete [pipeline] fields=pipelineId req=pipelineId opt= example=type,pipelineId notes=1",
+    "pipeline.set_enabled [pipeline] fields=pipelineId,enabled req=pipelineId,enabled opt= example=type,pipelineId,enabled notes=2",
+    "pipeline.list [pipeline] fields=query,runModes,includeDisabled,limit req= opt=query,runModes,includeDisabled,limit example=type,query,runModes notes=1",
+    "pipeline.get [pipeline] fields=pipelineId,includeYaml req=pipelineId opt=includeYaml example=type,pipelineId,includeYaml notes=1",
+    "pipeline.run [pipeline] fields=pipelineId,inputs,runMode,planPath,taskPath,planId,repoId,watchers req=pipelineId opt=inputs,runMode,planPath,taskPath,planId,repoId,watchers example=type,pipelineId,inputs,watchers notes=1",
+    "pipeline.execution_list_for_worktree [pipeline] fields=query,pipelineId,status,limit req= opt=query,pipelineId,status,limit example=type,status notes=1",
+    "pipeline.execution_list [pipeline] fields=query,pipelineId,status,limit req= opt=query,pipelineId,status,limit example=type,status notes=1",
+    "pipeline.execution_get [pipeline] fields=executionId,includeReport,includePlan,maxChars req=executionId opt=includeReport,includePlan,maxChars example=type,executionId,includeReport notes=1",
+  ],
+  "categories": "sidebar,skills,sharing,pipeline,worktree,tracked-plan,hook,browser,automations",
+  "category": undefined,
+  "query": "share pipeline",
+  "returned": 20,
+  "totalMatches": 28,
+}
+`;
+
+exports[`searchWorktreeActions ranking characterization ranks worktree sidebar group query 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "sidebar.item_groups.set_item [sidebar] fields=groupId,newGroup req= opt=groupId,newGroup example=type,newGroup notes=3",
+    "sidebar.item_groups.list_items [sidebar] fields=groupId req=groupId opt= example=type,groupId notes=3",
+    "sidebar.item_groups.list [sidebar] fields= req= opt= example=type notes=3",
+    "sidebar.item_groups.update [sidebar] fields=groupId,name,color,collapsed,labelHidden,keepWhenEmpty req=groupId opt=name,color,collapsed,labelHidden,keepWhenEmpty example=type,groupId,collapsed notes=3",
+    "skills.share_custom [skills] fields=name,shareScope,teamId,organizationId req=name,shareScope opt=teamId,organizationId example=type,name,shareScope,teamId notes=1",
+    "worktree.get_settings [worktree] fields= req= opt= example=type notes=2",
+    "pipeline.share [pipeline] fields=pipelineId,shareScope,teamId,organizationId req=pipelineId,shareScope opt=teamId,organizationId example=type,pipelineId,shareScope,teamId notes=1",
+  ],
+  "categories": "sidebar,skills,sharing,pipeline,worktree,tracked-plan,hook,browser,automations",
+  "category": undefined,
+  "query": "group sidebar item",
+  "returned": 7,
+  "totalMatches": 7,
+}
+`;
+
+exports[`searchWorktreeActions ranking characterization ranks worktree skills query 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "skills.create_custom [skills] fields=name,description,body,extraMetadata req=name,description,body opt=extraMetadata example=type,name,description,body notes=1",
+    "skills.list_shared [skills] fields=query,limit,cursor,createdBy req= opt=query,limit,cursor,createdBy example=type,query notes=1",
+    "skills.list [skills] fields=query,customOnly,limit req= opt=query,customOnly,limit example=type,customOnly notes=1",
+    "skills.read [skills] fields=sourceId,skillName req=sourceId,skillName opt= example=type,sourceId,skillName notes=1",
+    "skills.read_file [skills] fields=sourceId,skillName,filePath req=sourceId,skillName,filePath opt= example=type,sourceId,skillName,filePath notes=1",
+    "skills.update_custom [skills] fields=originalName,name,description,body,extraMetadata req=originalName opt=name,description,body,extraMetadata example=type,originalName,body notes=1",
+    "skills.delete_custom [skills] fields=name req=name opt= example=type,name notes=1",
+    "skills.read_shared [skills] fields=skillId req=skillId opt= example=type,skillId notes=1",
+    "skills.share_custom [skills] fields=name,shareScope,teamId,organizationId req=name,shareScope opt=teamId,organizationId example=type,name,shareScope,teamId notes=1",
+    "skills.import_shared [skills] fields=skillId req=skillId opt= example=type,skillId notes=1",
+    "skills.update_shared [skills] fields=skillId,name req=skillId,name opt= example=type,skillId,name notes=1",
+    "skills.delete_shared [skills] fields=skillId req=skillId opt= example=type,skillId notes=1",
+    "pipeline.create [pipeline] fields=rawYaml,yamlFilePath,name,description,icon req= opt=rawYaml,yamlFilePath,name,description,icon example=type,yamlFilePath notes=3",
+    "automation.create [automations] fields=input,watchers req=input opt=watchers example=type,input notes=12",
+    "sidebar.item_groups.set_item [sidebar] fields=groupId,newGroup req= opt=groupId,newGroup example=type,newGroup notes=3",
+    "sidebar.item_groups.update [sidebar] fields=groupId,name,color,collapsed,labelHidden,keepWhenEmpty req=groupId opt=name,color,collapsed,labelHidden,keepWhenEmpty example=type,groupId,collapsed notes=3",
+    "sharing.open_dialog [sharing] fields=target req=target opt= example=type,target notes=2",
+    "hook.pause [hook] fields=hookKey,all req= opt=hookKey,all example=type,hookKey notes=4",
+    "hook.resume [hook] fields=hookKey,all req= opt=hookKey,all example=type,hookKey notes=4",
+    "tracked-plan.import [tracked-plan] fields=filePath,repoId req=filePath,repoId opt= example=type,filePath,repoId notes=1",
+  ],
+  "categories": "sidebar,skills,sharing,pipeline,worktree,tracked-plan,hook,browser,automations",
+  "category": undefined,
+  "query": "create skill",
+  "returned": 20,
+  "totalMatches": 21,
+}
+`;
+
+exports[`searchWorktreeActions ranking characterization ranks worktree small limit 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "pipeline.create [pipeline] fields=rawYaml,yamlFilePath,name,description,icon req= opt=rawYaml,yamlFilePath,name,description,icon example=type,yamlFilePath notes=3",
+    "pipeline.update [pipeline] fields=pipelineId,rawYaml,yamlFilePath,name,description,icon req=pipelineId opt=rawYaml,yamlFilePath,name,description,icon example=type,pipelineId,rawYaml notes=2",
+    "pipeline.delete [pipeline] fields=pipelineId req=pipelineId opt= example=type,pipelineId notes=1",
+  ],
+  "categories": "sidebar,skills,sharing,pipeline,worktree,tracked-plan,hook,browser,automations",
+  "category": undefined,
+  "query": "pipeline",
+  "returned": 3,
+  "totalMatches": 22,
+}
+`;
+
+exports[`searchWorktreeActions ranking characterization ranks worktree unmatched query 1`] = `
+{
+  "actionType": undefined,
+  "actions": [],
+  "categories": "sidebar,skills,sharing,pipeline,worktree,tracked-plan,hook,browser,automations",
+  "category": undefined,
+  "query": "zzzz qqqq",
+  "returned": 0,
+  "totalMatches": 0,
+}
+`;
+
+exports[`searchWorktreeActions ranking characterization ranks worktree unsupported type 1`] = `
+{
+  "actionType": "workspace.list",
+  "actions": [],
+  "categories": "sidebar,skills,sharing,pipeline,worktree,tracked-plan,hook,browser,automations",
+  "category": undefined,
+  "query": "",
+  "returned": 0,
+  "totalMatches": 0,
+}
+`;
+
+exports[`searchWorktreeActions ranking characterization scopes the hook.pause catalog entry for { executionScope: 'worktree' } 1`] = `
+[
+  "type",
+  "category",
+  "summary",
+  "fields",
+  "example",
+  "additionalExamples",
+  "hookTriggers",
+  "notes",
+  "requiredFields",
+  "optionalFields",
+]
+`;
+
+exports[`searchWorktreeActions ranking characterization scopes the hook.pause catalog entry for { executionScope: 'worktree' } 2`] = `
+{
+  "additionalExamples": [
+    {
+      "all": true,
+      "type": "hook.pause",
+    },
+  ],
+  "category": "hook",
+  "example": {
+    "hookKey": "project:pr:checks:fail",
+    "type": "hook.pause",
+  },
+  "fields": [
+    {
+      "description": "Configured hook key to pause. Omit only when all is true.",
+      "name": "hookKey",
+      "required": false,
+      "type": "string",
+    },
+    {
+      "description": "Pause every configured hook.",
+      "name": "all",
+      "required": false,
+      "type": "boolean",
+    },
+  ],
+  "hookTriggers": [
+    {
+      "hookKeyExamples": {
+        "project": "project:pr:reviews:new",
+        "workspaceRepoPattern": "workspace-repo:<repoId>:pr:reviews:new",
+        "workspaceRoot": "workspace-root:pr:reviews:new",
+      },
+      "keywords": [
+        "pr:reviews:new",
+        "New PR Review Submitted",
+        "review",
+        "reviewed",
+        "submitted",
+        "new",
+      ],
+      "setupTarget": {
+        "triggerName": "pr:reviews:new",
+      },
+      "title": "New PR Review Submitted",
+      "triggerName": "pr:reviews:new",
+    },
+    {
+      "hookKeyExamples": {
+        "project": "project:pr:reviews:new:has-comments",
+        "workspaceRepoPattern": "workspace-repo:<repoId>:pr:reviews:new:has-comments",
+        "workspaceRoot": "workspace-root:pr:reviews:new:has-comments",
+      },
+      "keywords": [
+        "pr:reviews:new:has-comments",
+        "New PR Review With Inline Comments",
+        "review",
+        "reviews",
+        "comment",
+        "comments",
+        "inline",
+        "feedback",
+      ],
+      "setupTarget": {
+        "triggerName": "pr:reviews:new:has-comments",
+      },
+      "title": "New PR Review With Inline Comments",
+      "triggerName": "pr:reviews:new:has-comments",
+    },
+    {
+      "hookKeyExamples": {
+        "project": "project:worktree:precommit:failure",
+        "workspaceRepoPattern": "workspace-repo:<repoId>:worktree:precommit:failure",
+        "workspaceRoot": "workspace-root:worktree:precommit:failure",
+      },
+      "keywords": [
+        "worktree:precommit:failure",
+        "Pre-commit Failure",
+        "precommit",
+        "pre-commit",
+        "commit",
+        "failure",
+      ],
+      "setupTarget": {
+        "triggerName": "worktree:precommit:failure",
+      },
+      "title": "Pre-commit Failure",
+      "triggerName": "worktree:precommit:failure",
+    },
+    {
+      "hookKeyExamples": {
+        "project": "project:pr:create",
+        "workspaceRepoPattern": "workspace-repo:<repoId>:pr:create",
+        "workspaceRoot": "workspace-root:pr:create",
+      },
+      "keywords": [
+        "pr:create",
+        "PR Created",
+        "pull request",
+        "opened",
+        "created",
+        "new",
+      ],
+      "setupTarget": {
+        "triggerName": "pr:create",
+      },
+      "title": "PR Created",
+      "triggerName": "pr:create",
+    },
+    {
+      "hookKeyExamples": {
+        "project": "project:pr:update:comments",
+        "workspaceRepoPattern": "workspace-repo:<repoId>:pr:update:comments",
+        "workspaceRoot": "workspace-root:pr:update:comments",
+      },
+      "keywords": [
+        "pr:update:comments",
+        "PR Comments Updated",
+        "comment",
+        "comments",
+        "discussion",
+        "conversation",
+        "updated",
+        "new",
+      ],
+      "setupTarget": {
+        "triggerName": "pr:update:comments",
+      },
+      "title": "PR Comments Updated",
+      "triggerName": "pr:update:comments",
+    },
+    {
+      "hookKeyExamples": {
+        "project": "project:pr:update:labels",
+        "workspaceRepoPattern": "workspace-repo:<repoId>:pr:update:labels",
+        "workspaceRoot": "workspace-root:pr:update:labels",
+      },
+      "keywords": [
+        "pr:update:labels",
+        "PR Labels Updated",
+        "label",
+        "labels",
+        "tag",
+        "tags",
+      ],
+      "setupTarget": {
+        "triggerName": "pr:update:labels",
+      },
+      "title": "PR Labels Updated",
+      "triggerName": "pr:update:labels",
+    },
+    {
+      "hookKeyExamples": {
+        "project": "project:pr:checks:fail",
+        "workspaceRepoPattern": "workspace-repo:<repoId>:pr:checks:fail",
+        "workspaceRoot": "workspace-root:pr:checks:fail",
+      },
+      "keywords": [
+        "pr:checks:fail",
+        "PR Check Failed",
+        "check",
+        "checks",
+        "ci",
+        "failed",
+        "failure",
+      ],
+      "setupTarget": {
+        "triggerName": "pr:checks:fail",
+      },
+      "title": "PR Check Failed",
+      "triggerName": "pr:checks:fail",
+    },
+    {
+      "hookKeyExamples": {
+        "project": "project:pr:checks:pass",
+        "workspaceRepoPattern": "workspace-repo:<repoId>:pr:checks:pass",
+        "workspaceRoot": "workspace-root:pr:checks:pass",
+      },
+      "keywords": [
+        "pr:checks:pass",
+        "PR Check Passed",
+        "check",
+        "checks",
+        "ci",
+        "passed",
+        "success",
+      ],
+      "setupTarget": {
+        "triggerName": "pr:checks:pass",
+      },
+      "title": "PR Check Passed",
+      "triggerName": "pr:checks:pass",
+    },
+    {
+      "hookKeyExamples": {
+        "project": "project:pr:checks:pass:all",
+        "workspaceRepoPattern": "workspace-repo:<repoId>:pr:checks:pass:all",
+        "workspaceRoot": "workspace-root:pr:checks:pass:all",
+      },
+      "keywords": [
+        "pr:checks:pass:all",
+        "All PR Checks Passed",
+        "check",
+        "checks",
+        "ci",
+        "passed",
+        "success",
+        "all",
+      ],
+      "setupTarget": {
+        "triggerName": "pr:checks:pass:all",
+      },
+      "title": "All PR Checks Passed",
+      "triggerName": "pr:checks:pass:all",
+    },
+    {
+      "hookKeyExamples": {
+        "project": "project:pr:checks:finished",
+        "workspaceRepoPattern": "workspace-repo:<repoId>:pr:checks:finished",
+        "workspaceRoot": "workspace-root:pr:checks:finished",
+      },
+      "keywords": [
+        "pr:checks:finished",
+        "PR Checks Finished",
+        "check",
+        "checks",
+        "ci",
+        "finished",
+        "complete",
+      ],
+      "setupTarget": {
+        "triggerName": "pr:checks:finished",
+      },
+      "title": "PR Checks Finished",
+      "triggerName": "pr:checks:finished",
+    },
+    {
+      "hookKeyExamples": {
+        "project": "project:pr:checks:finished:has-fail",
+        "workspaceRepoPattern": "workspace-repo:<repoId>:pr:checks:finished:has-fail",
+        "workspaceRoot": "workspace-root:pr:checks:finished:has-fail",
+      },
+      "keywords": [
+        "pr:checks:finished:has-fail",
+        "PR Checks Finished With Failures",
+        "check",
+        "checks",
+        "ci",
+        "finished",
+        "failed",
+        "failure",
+      ],
+      "setupTarget": {
+        "triggerName": "pr:checks:finished:has-fail",
+      },
+      "title": "PR Checks Finished With Failures",
+      "triggerName": "pr:checks:finished:has-fail",
+    },
+    {
+      "hookKeyExamples": {
+        "project": "project:pr:merge-conflicts",
+        "workspaceRepoPattern": "workspace-repo:<repoId>:pr:merge-conflicts",
+        "workspaceRoot": "workspace-root:pr:merge-conflicts",
+      },
+      "keywords": [
+        "pr:merge-conflicts",
+        "PR Merge Conflicts Detected",
+        "merge",
+        "conflict",
+        "conflicts",
+      ],
+      "setupTarget": {
+        "triggerName": "pr:merge-conflicts",
+      },
+      "title": "PR Merge Conflicts Detected",
+      "triggerName": "pr:merge-conflicts",
+    },
+    {
+      "hookKeyExamples": {
+        "project": "project:pr:queue:removed",
+        "workspaceRepoPattern": "workspace-repo:<repoId>:pr:queue:removed",
+        "workspaceRoot": "workspace-root:pr:queue:removed",
+      },
+      "keywords": [
+        "pr:queue:removed",
+        "PR Removed From Merge Queue",
+        "pull request",
+        "merge queue",
+        "removed",
+        "removal",
+        "dequeued",
+        "kicked",
+        "ejected",
+        "failed",
+      ],
+      "setupTarget": {
+        "triggerName": "pr:queue:removed",
+      },
+      "title": "PR Removed From Merge Queue",
+      "triggerName": "pr:queue:removed",
+    },
+    {
+      "hookKeyExamples": {
+        "project": "project:pr:queue:entered",
+        "workspaceRepoPattern": "workspace-repo:<repoId>:pr:queue:entered",
+        "workspaceRoot": "workspace-root:pr:queue:entered",
+      },
+      "keywords": [
+        "pr:queue:entered",
+        "PR Entered Merge Queue",
+        "pull request",
+        "merge queue",
+        "entered",
+        "enqueued",
+        "queued",
+        "added",
+      ],
+      "setupTarget": {
+        "triggerName": "pr:queue:entered",
+      },
+      "title": "PR Entered Merge Queue",
+      "triggerName": "pr:queue:entered",
+    },
+    {
+      "hookKeyExamples": {
+        "project": "project:pr:merged",
+        "workspaceRepoPattern": "workspace-repo:<repoId>:pr:merged",
+        "workspaceRoot": "workspace-root:pr:merged",
+      },
+      "keywords": [
+        "pr:merged",
+        "PR Merged",
+        "merge",
+        "merged",
+      ],
+      "setupTarget": {
+        "triggerName": "pr:merged",
+      },
+      "title": "PR Merged",
+      "triggerName": "pr:merged",
+    },
+    {
+      "hookKeyExamples": {
+        "project": "project:pr:closed",
+        "workspaceRepoPattern": "workspace-repo:<repoId>:pr:closed",
+        "workspaceRoot": "workspace-root:pr:closed",
+      },
+      "keywords": [
+        "pr:closed",
+        "PR Closed",
+        "closed",
+        "close",
+      ],
+      "setupTarget": {
+        "triggerName": "pr:closed",
+      },
+      "title": "PR Closed",
+      "triggerName": "pr:closed",
+    },
+  ],
+  "notes": [
+    "Use worktree.get_settings first if you need current pausedHookKeys.",
+    "Use hookTriggers to discover supported triggerName values and hookKeyExamples. Pause/resume only applies to configured hooks; use all: true to affect every configured hook.",
+    "Provide hookKey for one hook or all: true for every configured hook.",
+    "Do not provide projectId or worktreeId; this worktree chat supplies them server-side.",
+  ],
+  "optionalFields": [
+    "hookKey",
+    "all",
+  ],
+  "requiredFields": [],
+  "summary": "Pause one configured hook or all configured hooks for a Code entry (worktree), matching the visible Hooks panel pause buttons. Current worktree scope is applied by Canopy.",
+  "type": "hook.pause",
+}
+`;
+
+exports[`searchWorktreeActions ranking characterization scopes the pipeline.run catalog entry for { executionScope: 'directory' } 1`] = `
+[
+  "type",
+  "category",
+  "summary",
+  "fields",
+  "example",
+  "requiredFields",
+  "optionalFields",
+  "notes",
+]
+`;
+
+exports[`searchWorktreeActions ranking characterization scopes the pipeline.run catalog entry for { executionScope: 'directory' } 2`] = `
+{
+  "category": "pipeline",
+  "example": {
+    "inputs": {
+      "target": "test",
+    },
+    "pipelineId": "build",
+    "type": "pipeline.run",
+    "watchers": [
+      {
+        "terminalStatuses": [
+          "success",
+          "failure",
+          "cancelled",
+        ],
+      },
+    ],
+  },
+  "fields": [
+    {
+      "description": "Pipeline id to run.",
+      "name": "pipelineId",
+      "required": true,
+      "type": "string",
+    },
+    {
+      "description": "Pipeline input values.",
+      "name": "inputs",
+      "required": false,
+      "type": "Record<string,string>",
+    },
+    {
+      "description": "Run mode/event to use. Defaults to dispatch.",
+      "name": "runMode",
+      "required": false,
+      "type": "'dispatch' | 'plan_ready' | 'task_ready'",
+    },
+    {
+      "description": "Plan file path required for plan_ready and optional for task_ready.",
+      "name": "planPath",
+      "required": false,
+      "type": "string",
+    },
+    {
+      "description": "Task file path required for task_ready.",
+      "name": "taskPath",
+      "required": false,
+      "type": "string",
+    },
+    {
+      "description": "Optional tracked plan id.",
+      "name": "planId",
+      "required": false,
+      "type": "string",
+    },
+    {
+      "description": "Optional repo id for source-backed project execution cwd.",
+      "name": "repoId",
+      "required": false,
+      "type": "string",
+    },
+    {
+      "description": "Optional watcher entries to arm for the new pipeline execution immediately after it starts. Do not include target or destination ids.",
+      "name": "watchers",
+      "required": false,
+      "type": "AppAdvisorInlineWatcherSetup[]",
+    },
+  ],
+  "notes": [
+    "Do not provide projectId or worktreeId; this cowork project chat supplies its project scope server-side.",
+  ],
+  "optionalFields": [
+    "inputs",
+    "runMode",
+    "planPath",
+    "taskPath",
+    "planId",
+    "repoId",
+    "watchers",
+  ],
+  "requiredFields": [
+    "pipelineId",
+  ],
+  "summary": "Run a pipeline for a Code entry (worktree). Current cowork project scope is applied by Canopy.",
+  "type": "pipeline.run",
+}
+`;
+
+exports[`searchWorktreeActions ranking characterization scopes the sidebar.item_groups.set_item catalog entry for { executionScope: 'directory' } 1`] = `
+[
+  "type",
+  "category",
+  "summary",
+  "fields",
+  "example",
+  "notes",
+  "requiredFields",
+  "optionalFields",
+]
+`;
+
+exports[`searchWorktreeActions ranking characterization scopes the sidebar.item_groups.set_item catalog entry for { executionScope: 'directory' } 2`] = `
+{
+  "category": "sidebar",
+  "example": {
+    "newGroup": {
+      "color": "categorical-2",
+      "name": "Tasks",
+    },
+    "type": "sidebar.item_groups.set_item",
+  },
+  "fields": [
+    {
+      "description": "Existing group id; null ungroups this item only. Supply groupId or newGroup.",
+      "name": "groupId",
+      "required": false,
+      "type": "string | null",
+    },
+    {
+      "description": "Create a group and assign the item atomically. Mutually exclusive with groupId. name is trimmed and limited to 80 Unicode code points; an omitted or blank name stores the default name \`Group <n>\` with its label hidden. labelHidden hides a named label; names in the default \`Group <n>\` format are always hidden.",
+      "name": "newGroup",
+      "required": false,
+      "type": "{name?:string,color?:SidebarItemGroupColor,labelHidden?:boolean}",
+    },
+  ],
+  "notes": [
+    "Pinned, hidden and branch-stack child items cannot be independently grouped. groupId:null preserves other members; the empty group is removed when its last member leaves.",
+    "Do not provide projectId or worktreeId; this cowork project chat supplies its project scope server-side.",
+    "Do not supply scope or itemId. The current project and sidebar item are supplied by this chat; groupId:null ungroups only the current item.",
+  ],
+  "optionalFields": [
+    "groupId",
+    "newGroup",
+  ],
+  "requiredFields": [],
+  "summary": "Set an item’s sidebar group, create a new group inline, or remove its membership. Current cowork project scope is applied by Canopy.",
+  "type": "sidebar.item_groups.set_item",
+}
+`;
+
+exports[`searchWorktreeActions ranking characterization scopes the sidebar.item_groups.set_item catalog entry for { executionScope: 'worktree' } 1`] = `
+[
+  "type",
+  "category",
+  "summary",
+  "fields",
+  "example",
+  "notes",
+  "requiredFields",
+  "optionalFields",
+]
+`;
+
+exports[`searchWorktreeActions ranking characterization scopes the sidebar.item_groups.set_item catalog entry for { executionScope: 'worktree' } 2`] = `
+{
+  "category": "sidebar",
+  "example": {
+    "newGroup": {
+      "color": "categorical-2",
+      "name": "Tasks",
+    },
+    "type": "sidebar.item_groups.set_item",
+  },
+  "fields": [
+    {
+      "description": "Existing group id; null ungroups this item only. Supply groupId or newGroup.",
+      "name": "groupId",
+      "required": false,
+      "type": "string | null",
+    },
+    {
+      "description": "Create a group and assign the item atomically. Mutually exclusive with groupId. name is trimmed and limited to 80 Unicode code points; an omitted or blank name stores the default name \`Group <n>\` with its label hidden. labelHidden hides a named label; names in the default \`Group <n>\` format are always hidden.",
+      "name": "newGroup",
+      "required": false,
+      "type": "{name?:string,color?:SidebarItemGroupColor,labelHidden?:boolean}",
+    },
+  ],
+  "notes": [
+    "Pinned, hidden and branch-stack child items cannot be independently grouped. groupId:null preserves other members; the empty group is removed when its last member leaves.",
+    "Do not provide projectId or worktreeId; this worktree chat supplies them server-side.",
+    "Do not supply scope or itemId. The current project and sidebar item are supplied by this chat; groupId:null ungroups only the current item.",
+  ],
+  "optionalFields": [
+    "groupId",
+    "newGroup",
+  ],
+  "requiredFields": [],
+  "summary": "Set an item’s sidebar group, create a new group inline, or remove its membership. Current worktree scope is applied by Canopy.",
+  "type": "sidebar.item_groups.set_item",
+}
+`;
+
+exports[`searchWorktreeActions ranking characterization scopes the worktree.get_settings catalog entry for { executionScope: 'worktree' } 1`] = `
+[
+  "type",
+  "category",
+  "summary",
+  "fields",
+  "example",
+  "requiredFields",
+  "optionalFields",
+  "notes",
+]
+`;
+
+exports[`searchWorktreeActions ranking characterization scopes the worktree.get_settings catalog entry for { executionScope: 'worktree' } 2`] = `
+{
+  "category": "worktree",
+  "example": {
+    "type": "worktree.get_settings",
+  },
+  "fields": [],
+  "notes": [
+    "This scoped action returns projectId, worktreeId, trackedBaseBranch and trackedRepoBaseBranches for the intended comparison base, pausedHookKeys, and hooks; it does not return App Advisor UI effective overrides.",
+    "Do not provide projectId or worktreeId; this worktree chat supplies them server-side.",
+  ],
+  "optionalFields": [],
+  "requiredFields": [],
+  "summary": "Inspect the intended base branch, configured hooks, pausedHookKeys, and per-hook paused status for a Code entry (worktree). Current worktree scope is applied by Canopy.",
+  "type": "worktree.get_settings",
+}
+`;

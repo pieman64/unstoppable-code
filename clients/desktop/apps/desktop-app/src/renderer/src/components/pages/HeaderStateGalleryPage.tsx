@@ -1,0 +1,230 @@
+import type { JSX } from 'react';
+import type { WorktreeTopBarPinnedAction } from '@canopy/ui-app';
+import { WorktreeTopBar } from '@/components/panels/WorktreeTopBar';
+import { isHeaderStatesPageEnabled } from '@/components/sidebar/header-states-page-flag';
+import {
+  HEADER_GALLERY_STATES,
+  HEADER_STATE_GALLERY_PROJECT_ID,
+} from './headerStateGalleryData';
+import { useSeededHeaderGalleryState } from './headerStateGallerySeed';
+
+/**
+ * Personal reference page for the worktree header, reachable from the sidebar
+ * More menu when {@link isHeaderStatesPageEnabled} allows it. Same shape as
+ * the Worktree States page: a flag-gated in-app page plus a data module, so
+ * the states can be swept with hot reload while iterating on the real bar.
+ *
+ * Rows render the REAL {@link WorktreeTopBar} — the genuine `Open in` split
+ * control, Launch button and layout `•••` menu — driven by seeded store
+ * state, so what you see is the shipping component, not a mock of it.
+ */
+
+/**
+ * Widths for the responsive strip, straddling every threshold the header
+ * reacts to: 640 (copy shedding), then the priority tiers at 560 (archive),
+ * 480 (Create PR), 420 (badges), 360 (`Open in`), 200 (launch cluster).
+ */
+const TIER_WIDTHS = [900, 660, 620, 520, 460, 400, 340, 220] as const;
+
+/**
+ * Pinned-script widths: labels at 760 and above, compact play buttons below,
+ * and no pins under 400.
+ */
+const PIN_WIDTHS = [900, 740, 460, 380] as const;
+
+/** Sample pins; clicking them does nothing on this page. */
+const GALLERY_PINS: readonly WorktreeTopBarPinnedAction[] = [
+  {
+    id: 'gallery-dev',
+    label: 'dev',
+    command: 'pnpm run dev',
+    target: 'canopy/apps/web',
+    shortcut: '⌘⇧Y',
+    running: true,
+    onRun: () => undefined,
+  },
+  {
+    id: 'gallery-lint',
+    label: 'lint',
+    command: 'pnpm run lint',
+    target: 'canopy',
+    running: false,
+    onRun: () => undefined,
+  },
+  {
+    id: 'gallery-test',
+    label: 'test',
+    command: 'make test',
+    target: 'api',
+    running: false,
+    pending: true,
+    onRun: () => undefined,
+  },
+];
+
+/** One row: the real top bar at an optional fixed width. */
+export function HeaderGalleryRow({
+  worktreeId,
+  width,
+  pinnedActions,
+}: {
+  worktreeId: string;
+  width?: number;
+  pinnedActions?: readonly WorktreeTopBarPinnedAction[];
+}): JSX.Element {
+  return (
+    <div
+      className="overflow-hidden rounded-lg border"
+      style={width === undefined ? undefined : { width: `${width}px` }}
+      data-testid={`header-state-row-${worktreeId}`}
+    >
+      <WorktreeTopBar
+        projectId={HEADER_STATE_GALLERY_PROJECT_ID}
+        worktreeId={worktreeId}
+        viewMode="list"
+        viewModeReady
+        pinnedActions={pinnedActions}
+      />
+    </div>
+  );
+}
+
+/**
+ * Flag gate at the PAGE, not just the menu entry: `header-states` has to stay
+ * in the App Advisor navigation allowlist (an unlisted page is dropped
+ * silently, so the menu item would appear and do nothing), which means a
+ * packaged build could still be navigated here by asking the advisor for the
+ * page by name. With the flag off the page renders a placeholder and — since
+ * the gallery component never mounts — seeds nothing into the stores.
+ *
+ * A wrapper rather than an early return inside the gallery, so the gallery's
+ * hooks run unconditionally whenever it mounts.
+ */
+export function HeaderStateGalleryPage(): JSX.Element {
+  if (!isHeaderStatesPageEnabled()) {
+    return (
+      <div
+        className="flex h-full items-center justify-center bg-base"
+        data-testid="header-states-page-disabled"
+      >
+        <p className="text-xs fg-secondary">
+          This page is a development-only reference and is not enabled in this
+          build.
+        </p>
+      </div>
+    );
+  }
+  return <HeaderStateGalleryContent />;
+}
+
+function HeaderStateGalleryContent(): JSX.Element {
+  const ready = useSeededHeaderGalleryState();
+
+  return (
+    // Header stays put; ONE constrained scroller owns the overflow. The page
+    // sits inside `<main>`, which already scrolls — a `h-full overflow-auto`
+    // root nested a second scroller inside it and made the wheel fight
+    // between them. Same structure the Worktree States page uses.
+    <div
+      className="flex h-full flex-col bg-base fg-primary"
+      data-testid="header-states-page"
+    >
+      <header className="px-8 pb-4 pt-8">
+        <h1 className="text-lg font-semibold">Worktree header — all states</h1>
+        <p className="mt-1 max-w-3xl text-xs fg-secondary">
+          Personal reference for the worktree header. Every row is the real{' '}
+          <code>WorktreeTopBar</code> driven by seeded state — no git, no
+          network. The synthetic project is scoped to this page and removed when
+          you navigate away.
+        </p>
+      </header>
+
+      <div className="min-h-0 flex-1 overflow-y-auto px-8 pb-12">
+        {!ready ? (
+          <div className="fg-secondary">Seeding…</div>
+        ) : (
+          <>
+            <section className="mb-12">
+              <h2 className="mb-3 text-sm font-semibold">States</h2>
+              <div className="flex flex-col gap-6">
+                {HEADER_GALLERY_STATES.map((state) => (
+                  <div key={state.id} data-testid={`header-state-${state.id}`}>
+                    <div className="mb-1.5 flex items-baseline gap-2">
+                      <span className="text-xs font-medium">{state.title}</span>
+                      <span className="text-2xs fg-secondary">
+                        {state.note}
+                      </span>
+                    </div>
+                    <HeaderGalleryRow worktreeId={state.id} />
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            <section>
+              <h2 className="mb-1 text-sm font-semibold">
+                Responsive behavior
+              </h2>
+              <p className="mb-3 max-w-3xl text-xs fg-secondary">
+                The same state at shrinking widths. Copy sheds first (
+                <code>Create PR</code> → <code>PR</code>, Launch → icon at 640),
+                then controls drop by priority: archive (560), Create PR (480),
+                badges (420), pinned scripts (400), <code>Open in</code> (360).
+                Labels truncate only once the space is genuinely gone, base
+                branch first.
+              </p>
+              {/* These rows are FIXED pixel widths — that is the point — so on
+                  a narrow content region they are wider than the page. Give
+                  the strip its own horizontal scroller: otherwise the page's
+                  vertical scroller inherited the overflow (932px of content
+                  in a 629px box) and scrolled on both axes, since setting one
+                  axis to `auto` computes the other to `auto` too. The
+                  negative margin lets it scroll full-bleed while the rows keep
+                  the section's padding. */}
+              <div className="-mx-8 overflow-x-auto px-8">
+                <div className="flex w-max flex-col gap-4">
+                  {TIER_WIDTHS.map((width) => (
+                    <div key={width} data-testid={`header-state-tier-${width}`}>
+                      <div className="mb-1 text-2xs fg-secondary">
+                        {width}px
+                      </div>
+                      <HeaderGalleryRow
+                        worktreeId="long-branch"
+                        width={width}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </section>
+
+            <section className="mt-12" data-testid="header-state-pins">
+              <h2 className="mb-1 text-sm font-semibold">Pinned scripts</h2>
+              <p className="mb-3 max-w-3xl text-xs fg-secondary">
+                Running, idle and starting pins before the launch cluster.
+                Labels collapse to play buttons below 760, and pins drop below
+                400, before <code>Open in</code> and Launch.
+              </p>
+              <div className="-mx-8 overflow-x-auto px-8">
+                <div className="flex w-max flex-col gap-4">
+                  {PIN_WIDTHS.map((width) => (
+                    <div key={width} data-testid={`header-state-pins-${width}`}>
+                      <div className="mb-1 text-2xs fg-secondary">
+                        {width}px
+                      </div>
+                      <HeaderGalleryRow
+                        worktreeId="long-branch"
+                        width={width}
+                        pinnedActions={GALLERY_PINS}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </section>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}

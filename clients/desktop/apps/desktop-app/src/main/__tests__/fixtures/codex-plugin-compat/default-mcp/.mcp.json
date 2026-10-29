@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "default-server": {
+      "command": "python",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/server.py"],
+      "env": { "PLUGIN_ROOT": "${CLAUDE_PLUGIN_ROOT}" }
+    }
+  }
+}

@@ -1,0 +1,155 @@
+pipeline:
+  name: 'Refine Plan'
+  version: '3.0'
+  description: 'Review a plan with GPT-5.6 Sol and Opus, repeating only when Opus makes further edits.'
+  icon: '📝'
+  readonly: true
+  scope: worktree
+  on:
+    plan_ready:
+      inputs:
+        max_iterations:
+          description: Maximum number of refine passes before stopping
+          type: number
+          default: 2
+          min: 1
+          max: 10
+
+  jobs:
+    refine:
+      name: Refine
+      max_iterations: '${{ inputs.max_iterations }}'
+      outputs:
+        gpt_made_updates: ${{ parseJson(steps.review_with_gpt.outputs.json_response).madeUpdates }}
+        opus_made_updates: ${{ parseJson(steps.review_with_opus.outputs.json_response).madeUpdates }}
+        restart_requested: ${{ steps.detect_updates.outputs.restart_requested }}
+      steps:
+        - id: review_with_gpt
+          name: Review Plan With Default Codex Model
+          uses: builtin/agent-prompt
+          with:
+            model: $default-codex
+            thinking_effort: medium
+            permission_preset: dangerous_all
+            prompt: |
+              Review the plan document at `${{ {{BRAND_EXPRESSION_ROOT}}.event.plan_ready.plan_path }}` for clarity, accuracy, and completeness.
+
+              Apply any improvements directly to that plan document. If the plan is already strong, leave it unchanged.
+
+              Return structured output with:
+              - `madeUpdates`: `true` if you edited the plan document, otherwise `false`
+            structured_output_schema: >-
+              {"type":"object","additionalProperties":false,"properties":{"madeUpdates":{"type":"boolean"}},"required":["madeUpdates"]}
+
+        - id: review_with_opus
+          name: Review Plan With Opus
+          uses: builtin/agent-prompt
+          with:
+            model: opus
+            thinking_effort: high
+            permission_preset: dangerous_all
+            prompt: |
+              Review the plan document at `${{ {{BRAND_EXPRESSION_ROOT}}.event.plan_ready.plan_path }}` for clarity, accuracy, and completeness.
+
+              Apply any improvements directly to that plan document. If the plan is already strong, leave it unchanged.
+
+              Return structured output with:
+              - `madeUpdates`: `true` if you edited the plan document, otherwise `false`
+            structured_output_schema: >-
+              {"type":"object","additionalProperties":false,"properties":{"madeUpdates":{"type":"boolean"}},"required":["madeUpdates"]}
+
+        - id: detect_updates
+          name: Restart If Opus Updated The Plan
+          shell: node
+          run: |
+            import fs from 'node:fs';
+
+            const {{BRAND_OUTPUT_VARIABLE_NAME}} = process.env.{{BRAND_ENV_PREFIX}}_OUTPUT ?? '';
+            if (!{{BRAND_OUTPUT_VARIABLE_NAME}}) {
+              throw new Error('{{BRAND_ENV_PREFIX}}_OUTPUT is required');
+            }
+            const opusMadeUpdates =
+              (process.env.OPUS_MADE_UPDATES ?? '').trim() === 'true';
+            fs.appendFileSync(
+              {{BRAND_OUTPUT_VARIABLE_NAME}},
+              opusMadeUpdates
+                ? 'restart_requested=true\n{{BRAND_ENV_PREFIX}}_JOB_RESTART=true\n'
+                : 'restart_requested=false\n',
+              'utf8',
+            );
+          env:
+            OPUS_MADE_UPDATES: ${{ parseJson(steps.review_with_opus.outputs.json_response).madeUpdates }}
+
+    summary:
+      name: Summarize Results
+      needs: refine
+      if: always()
+      steps:
+        - id: plan_stats
+          name: Collect Plan Stats
+          shell: node
+          run: |
+            import fs from 'node:fs';
+
+            const planPath = (process.env.PLAN_PATH ?? '').trim();
+            const {{BRAND_OUTPUT_VARIABLE_NAME}} = process.env.{{BRAND_ENV_PREFIX}}_OUTPUT ?? '';
+            if (!{{BRAND_OUTPUT_VARIABLE_NAME}}) {
+              throw new Error('{{BRAND_ENV_PREFIX}}_OUTPUT is required');
+            }
+            if (!planPath || !fs.existsSync(planPath)) {
+              throw new Error(`Missing plan file: ${planPath || '(empty)'}`);
+            }
+
+            const content = fs.readFileSync(planPath, 'utf8');
+            const lineCount = (content.match(/\n/g) ?? []).length;
+            const wordCount = content.trim() ? content.trim().split(/\s+/).length : 0;
+            const charCount = Buffer.byteLength(content, 'utf8');
+            fs.appendFileSync(
+              {{BRAND_OUTPUT_VARIABLE_NAME}},
+              `line_count=${String(lineCount)}\nword_count=${String(wordCount)}\nchar_count=${String(charCount)}\n`,
+              'utf8',
+            );
+          env:
+            PLAN_PATH: ${{ {{BRAND_EXPRESSION_ROOT}}.event.plan_ready.plan_path }}
+
+        - id: summarize
+          name: Summarize Execution
+          uses: builtin/agent-prompt
+          with:
+            permission_preset: read_only
+            prompt: |
+              Summarize this pipeline execution for the user in 2 short paragraphs.
+
+              Include:
+              - whether GPT-5.6 Sol made updates in the final refine pass
+              - whether Opus made updates in the final refine pass
+              - whether the refine job requested another pass
+              - whether the refine job completed successfully
+              - the current size of the plan document
+
+              Read the current plan document at `${{ {{BRAND_EXPRESSION_ROOT}}.event.plan_ready.plan_path }}` before writing the summary.
+
+              <execution>
+              refine.result=${{ needs.refine.result }}
+              refine.gpt_made_updates=${{ needs.refine.outputs.gpt_made_updates }}
+              refine.opus_made_updates=${{ needs.refine.outputs.opus_made_updates }}
+              refine.restart_requested=${{ needs.refine.outputs.restart_requested }}
+              plan.line_count=${{ steps.plan_stats.outputs.line_count }}
+              plan.word_count=${{ steps.plan_stats.outputs.word_count }}
+              plan.char_count=${{ steps.plan_stats.outputs.char_count }}
+              plan.path=${{ {{BRAND_EXPRESSION_ROOT}}.event.plan_ready.plan_path }}
+              </execution>
+
+        - id: echo_summary
+          name: Echo Summary
+          shell: node
+          run: |
+            import fs from 'node:fs';
+
+            const summaryPath = (process.env.SUMMARY_PATH ?? '').trim();
+            if (!summaryPath || !fs.existsSync(summaryPath)) {
+              throw new Error(`Missing summary file: ${summaryPath || '(empty)'}`);
+            }
+            process.stdout.write(fs.readFileSync(summaryPath, 'utf8'));
+          env:
+            SUMMARY_PATH: ${{ steps.summarize.outputs.text_response_file }}

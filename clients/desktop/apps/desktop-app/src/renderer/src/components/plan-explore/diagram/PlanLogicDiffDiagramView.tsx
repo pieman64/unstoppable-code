@@ -1,0 +1,828 @@
+import {
+  forwardRef,
+  useCallback,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+  type JSX,
+  type ReactNode,
+} from 'react';
+import {
+  Background,
+  Controls,
+  Handle,
+  Position,
+  ReactFlow,
+  type NodeMouseHandler,
+  type NodeProps,
+  type NodeTypes,
+  type ReactFlowInstance,
+} from '@xyflow/react';
+import '@xyflow/react/dist/style.css';
+import { ThinkingSpinner } from '@canopy/ui-shared/components';
+import type {
+  LogicChangeType,
+  LogicDiffDiagram,
+  PlanDiagramArtifact,
+} from '@canopy/desktop-shared/types/plan-diagrams';
+import {
+  buildChangeMaps,
+  buildUnifiedLogicFlow,
+  computeLogicFlowLayout,
+  LOGIC_NODE_HEIGHT,
+  LOGIC_NODE_WIDTH,
+  type LogicFlowEdge,
+  type LogicFlowNode,
+  type LogicFlowNodeData,
+} from './logicFlowLayout';
+import type { DiagramSearchHandle } from '@canopy/ui-app/find';
+import type { AddNodeCommentInput } from '../usePlanComments';
+import { CloseIcon as AppCatalogCloseIcon } from '@canopy/ui-shared/icons/AppIcons';
+
+type LogicFlowInstance = ReactFlowInstance<LogicFlowNode, LogicFlowEdge>;
+
+export interface PlanLogicDiffDiagramProps {
+  artifact: PlanDiagramArtifact<LogicDiffDiagram> | undefined;
+  /** Trigger on-demand generation/refresh of the diagrams. */
+  onGenerate?: () => void;
+  /** True while a generation run is in flight. */
+  isGenerating?: boolean;
+  /** Stage a comment anchored to the selected node. */
+  onAddNodeComment?: (input: AddNodeCommentInput) => void;
+  /** Override the current/planned view labels (defaults preserve plan-mode copy). */
+  viewLabels?: { current: string; planned: string };
+  /** Host-owned actions aligned at the end of the view picker row. */
+  toolbarActions?: ReactNode;
+}
+
+type PrimaryView = 'current' | 'planned' | 'diff';
+type DiffPresentation = 'unified' | 'split';
+
+interface SelectedNode {
+  id: string;
+  data: LogicFlowNodeData;
+}
+
+const CHANGE_STYLES: Record<
+  LogicChangeType,
+  { border: string; chip: string; label: string }
+> = {
+  added: {
+    border: 'border-l-line-positive',
+    chip: 'bg-success-subtle fg-success',
+    label: 'Added',
+  },
+  removed: {
+    border: 'border-l-line-destructive',
+    chip: 'bg-destructive-subtle fg-destructive',
+    label: 'Removed',
+  },
+  changed: {
+    border: 'border-l-line-attention',
+    chip: 'bg-warning-subtle fg-warning',
+    label: 'Changed',
+  },
+};
+
+/** Custom React Flow node: bold label + optional detail, diff annotations. */
+function LogicFlowNodeView({ data }: NodeProps<LogicFlowNode>): JSX.Element {
+  const change = data.changeType;
+  const style = change ? CHANGE_STYLES[change] : undefined;
+  const searchRing =
+    data.searchState === 'active'
+      ? 'ring-2 ring-line-attention'
+      : data.searchState === 'match'
+        ? 'ring-1 ring-line-attention/60'
+        : '';
+  return (
+    <div
+      className={`flex h-full w-full flex-col justify-center gap-0.5 rounded-md border bg-card px-3 py-2 text-left ${
+        style ? `border-l-4 ${style.border}` : ''
+      } ${searchRing}`}
+      style={{ width: LOGIC_NODE_WIDTH, height: LOGIC_NODE_HEIGHT }}
+    >
+      <Handle type="target" position={Position.Top} className="!opacity-0" />
+      <div className="flex items-center gap-1.5">
+        {style && (
+          <span
+            className={`shrink-0 rounded-sm px-1 py-0.5 text-3xs font-medium ${style.chip}`}
+          >
+            {style.label}
+          </span>
+        )}
+        <span className="min-w-0 truncate text-xs font-semibold fg-primary">
+          {data.label}
+        </span>
+      </div>
+      {data.detail && (
+        <p className="line-clamp-2 text-2xs leading-tight fg-secondary">
+          {data.detail}
+        </p>
+      )}
+      {!data.detail && data.changeNote && (
+        <p className="line-clamp-2 text-2xs leading-tight fg-secondary">
+          {data.changeNote}
+        </p>
+      )}
+      <Handle type="source" position={Position.Bottom} className="!opacity-0" />
+    </div>
+  );
+}
+
+const NODE_TYPES: NodeTypes = { logic: LogicFlowNodeView };
+
+function DiagramOverlayBadge({
+  label,
+  tone,
+}: {
+  label: string;
+  tone: 'info' | 'error';
+}): JSX.Element {
+  return (
+    <div
+      className={`pointer-events-none absolute right-3 top-3 z-10 inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-2xs font-medium ${
+        tone === 'error'
+          ? 'border-line-destructive/40 bg-destructive-subtle fg-destructive'
+          : 'bg-card/90 fg-secondary'
+      }`}
+    >
+      {tone === 'info' && <ThinkingSpinner />}
+      {label}
+    </div>
+  );
+}
+
+function SelectedNodeDetail({
+  node,
+  onClose,
+  onAddNodeComment,
+}: {
+  node: SelectedNode;
+  onClose: () => void;
+  onAddNodeComment?: (input: AddNodeCommentInput) => void;
+}): JSX.Element {
+  const { data } = node;
+  const style = data.changeType ? CHANGE_STYLES[data.changeType] : undefined;
+  const [composing, setComposing] = useState(false);
+  const [body, setBody] = useState('');
+
+  const handleSave = (): void => {
+    const trimmed = body.trim();
+    if (trimmed.length === 0 || !onAddNodeComment) {
+      return;
+    }
+    onAddNodeComment({
+      diagramKind: 'logicDiff',
+      nodeId: node.id,
+      // Logic nodes carry `label` instead of `title`.
+      title: data.label,
+      detail: data.detail,
+      files: data.files,
+      planNodeIds: data.planNodeIds,
+      body: trimmed,
+    });
+    setBody('');
+    setComposing(false);
+  };
+
+  return (
+    <div className="absolute bottom-3 left-3 right-3 z-20 max-h-3/5 overflow-auto rounded-lg bg-popover p-3 shadow-lg">
+      <div className="mb-1 flex items-start justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-1.5">
+          {style && (
+            <span
+              className={`shrink-0 rounded-sm px-1 py-0.5 text-3xs font-medium ${style.chip}`}
+            >
+              {style.label}
+            </span>
+          )}
+          <h4 className="min-w-0 truncate text-s font-semibold fg-primary">
+            {data.label}
+          </h4>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close node detail"
+          className="focus-ring shrink-0 rounded-md p-0.5 fg-secondary hover:bg-secondary hover:fg-primary"
+        >
+          <AppCatalogCloseIcon width="14" height="14" />
+        </button>
+      </div>
+      {data.detail && (
+        <p className="mb-2 whitespace-pre-wrap text-xs fg-primary">
+          {data.detail}
+        </p>
+      )}
+      {data.changeNote && (
+        <p className="mb-2 text-xs italic fg-secondary">{data.changeNote}</p>
+      )}
+      {data.files && data.files.length > 0 && (
+        <div className="mb-2">
+          <p className="mb-1 text-3xs font-medium fg-secondary">Files</p>
+          <ul className="flex flex-col gap-0.5">
+            {data.files.map((file) => (
+              <li key={file} className="truncate font-mono text-2xs fg-primary">
+                {file}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {data.planNodeIds && data.planNodeIds.length > 0 && (
+        <div>
+          <p className="mb-1 text-3xs font-medium fg-secondary">Plan nodes</p>
+          <ul className="flex flex-wrap gap-1">
+            {data.planNodeIds.map((id) => (
+              <li
+                key={id}
+                className="rounded-sm bg-fg-primary/[0.06] px-1.5 py-0.5 font-mono text-3xs fg-secondary"
+              >
+                {id}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {onAddNodeComment && (
+        <div className="mt-3 border-t pt-2">
+          {composing ? (
+            <div className="flex flex-col gap-1.5">
+              <textarea
+                value={body}
+                onChange={(e): void => setBody(e.target.value)}
+                placeholder="Comment on this node…"
+                rows={3}
+                autoFocus
+                data-testid="plan-node-comment-input"
+                className="focus-ring w-full resize-none rounded-md border bg-fg-primary/[0.04] px-2 py-1 text-xs fg-primary"
+              />
+              <div className="flex items-center justify-end gap-1.5">
+                <button
+                  type="button"
+                  onClick={(): void => {
+                    setComposing(false);
+                    setBody('');
+                  }}
+                  className="focus-ring rounded-md px-2 py-1 text-2xs fg-secondary hover:fg-primary"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSave}
+                  disabled={body.trim().length === 0}
+                  data-testid="plan-node-comment-save"
+                  className="focus-ring rounded-md bg-accent px-2 py-1 text-2xs font-medium fg-emphasis disabled:opacity-50"
+                >
+                  Save comment
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={(): void => setComposing(true)}
+              data-testid="plan-node-add-comment"
+              className="focus-ring rounded-md border px-2 py-1 text-xs fg-secondary transition hover:fg-primary"
+            >
+              + Add comment
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CenteredMessage({
+  children,
+}: {
+  children: React.ReactNode;
+}): JSX.Element {
+  return (
+    <div className="flex h-full flex-1 flex-col items-center justify-center gap-2 p-6 text-center">
+      {children}
+    </div>
+  );
+}
+
+function LogicFlowGraph({
+  nodes,
+  edges,
+  onNodeClick,
+  onPaneClick,
+  onInstance,
+}: {
+  nodes: LogicFlowNode[];
+  edges: LogicFlowEdge[];
+  onNodeClick: NodeMouseHandler<LogicFlowNode>;
+  onPaneClick: () => void;
+  onInstance?: (instance: LogicFlowInstance | null) => void;
+}): JSX.Element {
+  return (
+    <ReactFlow<LogicFlowNode>
+      nodes={nodes}
+      edges={edges}
+      nodeTypes={NODE_TYPES}
+      onInit={(instance): void => onInstance?.(instance)}
+      onNodeClick={onNodeClick}
+      onPaneClick={onPaneClick}
+      fitView
+      nodesDraggable={false}
+      nodesConnectable={false}
+      elementsSelectable
+      proOptions={{ hideAttribution: true }}
+    >
+      <Background />
+      <Controls showInteractive={false} />
+    </ReactFlow>
+  );
+}
+
+function SegmentedButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}): JSX.Element {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`rounded-md px-2 py-1 text-xs transition ${
+        active
+          ? 'bg-fg-primary/[0.08] fg-primary'
+          : 'fg-secondary hover:fg-primary'
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+/** Lowercased searchable text for a logic node. */
+function nodeSearchText(data: LogicFlowNodeData): string {
+  return `${data.label} ${data.detail ?? ''} ${data.changeNote ?? ''}`.toLowerCase();
+}
+
+/** Merge the search outline state into a layout's nodes for rendering. */
+function withSearchState(
+  nodes: LogicFlowNode[],
+  matchIds: Set<string>,
+  activeId: string | null,
+): LogicFlowNode[] {
+  return nodes.map((node) => {
+    const searchState: 'match' | 'active' | undefined =
+      node.id === activeId
+        ? 'active'
+        : matchIds.has(node.id)
+          ? 'match'
+          : undefined;
+    if (searchState === undefined && node.data.searchState === undefined) {
+      return node;
+    }
+    return { ...node, data: { ...node.data, searchState } };
+  });
+}
+
+/**
+ * Renders the persisted Current/Planned/Diff logic diagram. A primary toggle
+ * picks Current, Planned, or Diff; in Diff a secondary toggle switches between a
+ * single annotated Unified graph and stacked Current/Planned Split graphs.
+ * Surfaces the same loading / updating / error states as the sequence diagram.
+ * Exposes a `DiagramSearchHandle` so the Explore modal search can highlight and
+ * reveal matching nodes in the currently-visible view.
+ */
+export const PlanLogicDiffDiagram = forwardRef<
+  DiagramSearchHandle,
+  PlanLogicDiffDiagramProps
+>(function PlanLogicDiffDiagram(
+  {
+    artifact,
+    onGenerate,
+    isGenerating = false,
+    onAddNodeComment,
+    viewLabels,
+    toolbarActions,
+  },
+  ref,
+): JSX.Element {
+  const currentLabel = viewLabels?.current ?? 'Current';
+  const plannedLabel = viewLabels?.planned ?? 'Planned';
+  const [primaryView, setPrimaryView] = useState<PrimaryView>('diff');
+  const [presentation, setPresentation] = useState<DiffPresentation>('unified');
+  const [selected, setSelected] = useState<SelectedNode | null>(null);
+  const [matchIds, setMatchIds] = useState<Set<string>>(() => new Set());
+  const [activeId, setActiveId] = useState<string | null>(null);
+
+  const data = artifact?.data ?? null;
+  const status = artifact?.status;
+
+  const currentLayout = useMemo(
+    () => computeLogicFlowLayout(data?.current),
+    [data],
+  );
+  const plannedLayout = useMemo(
+    () => computeLogicFlowLayout(data?.planned),
+    [data],
+  );
+
+  const unifiedLayout = useMemo(() => {
+    if (!data) {
+      return { nodes: [], edges: [] };
+    }
+    const unified = buildUnifiedLogicFlow(data.current, data.planned);
+    const { changeByNodeId, noteByNodeId } = buildChangeMaps(
+      data.current,
+      data.planned,
+      data.changes,
+    );
+    return computeLogicFlowLayout(unified, changeByNodeId, noteByNodeId);
+  }, [data]);
+
+  // Base nodes for the currently-visible view, fed to the search handle.
+  const visibleNodes = useMemo<LogicFlowNode[]>(() => {
+    if (primaryView === 'current') {
+      return currentLayout.nodes;
+    }
+    if (primaryView === 'planned') {
+      return plannedLayout.nodes;
+    }
+    if (presentation === 'unified') {
+      return unifiedLayout.nodes;
+    }
+    return [...currentLayout.nodes, ...plannedLayout.nodes];
+  }, [
+    primaryView,
+    presentation,
+    currentLayout.nodes,
+    plannedLayout.nodes,
+    unifiedLayout.nodes,
+  ]);
+
+  // Keep the latest visible nodes and live React Flow instances in refs so the
+  // imperative search handle (deps `[]`) always reads fresh values. The split
+  // view mounts two graphs, so instances are tracked as a set scoped to the
+  // current view mode — the scope-key reset (mirroring
+  // `PlanDataModelDiffDiagram`) prunes instances from unmounted views, so
+  // `reveal()`'s centering never lands on a stale instance after view
+  // switches.
+  const nodesRef = useRef<LogicFlowNode[]>(visibleNodes);
+  nodesRef.current = visibleNodes;
+  const instanceScopeKey = `${primaryView}:${presentation}`;
+  const instancesRef = useRef<{
+    key: string;
+    instances: Set<LogicFlowInstance>;
+  }>({
+    key: instanceScopeKey,
+    instances: new Set(),
+  });
+  if (instancesRef.current.key !== instanceScopeKey) {
+    instancesRef.current = {
+      key: instanceScopeKey,
+      instances: new Set(),
+    };
+  }
+
+  const registerInstance = useCallback(
+    (instance: LogicFlowInstance | null): void => {
+      if (instancesRef.current.key !== instanceScopeKey) {
+        instancesRef.current = {
+          key: instanceScopeKey,
+          instances: new Set(),
+        };
+      }
+      if (instance) {
+        instancesRef.current.instances.add(instance);
+      }
+    },
+    [instanceScopeKey],
+  );
+
+  useImperativeHandle(
+    ref,
+    (): DiagramSearchHandle => ({
+      search: (query: string): string[] => {
+        const trimmed = query.trim().toLowerCase();
+        if (trimmed.length === 0) {
+          setMatchIds(new Set());
+          setActiveId(null);
+          return [];
+        }
+        const ordered = nodesRef.current
+          .filter((node) => nodeSearchText(node.data).includes(trimmed))
+          .sort(
+            (a, b) =>
+              a.position.y - b.position.y || a.position.x - b.position.x,
+          );
+        setMatchIds(new Set(ordered.map((node) => node.id)));
+        setActiveId(null);
+        return ordered.map((node) => node.id);
+      },
+      reveal: (nodeId: string): void => {
+        if (nodeId === '') {
+          setActiveId(null);
+          return;
+        }
+        setActiveId(nodeId);
+        const centerOnNode = (): void => {
+          const node = nodesRef.current.find(
+            (candidate) => candidate.id === nodeId,
+          );
+          if (!node) {
+            return;
+          }
+          for (const instance of Array.from(instancesRef.current.instances)) {
+            if (instance.getNode(nodeId)) {
+              void instance.setCenter(
+                node.position.x + LOGIC_NODE_WIDTH / 2,
+                node.position.y + LOGIC_NODE_HEIGHT / 2,
+                { zoom: instance.getZoom(), duration: 300 },
+              );
+              break;
+            }
+          }
+        };
+        // The node may not exist in whichever primary view/presentation this
+        // diagram is currently showing (e.g. an added node revealed while
+        // "Current" is the active view — it only exists in "Planned"). The
+        // Diff/Unified presentation is the only one guaranteed to contain
+        // every current+planned node (`buildUnifiedLogicFlow` unions both by
+        // id), so switch to it first and defer centering a frame so the
+        // freshly-mounted graph has registered its React Flow instance —
+        // mirrors the tab-switch reveal deferral in
+        // `CodeReviewDiagramsPanel`'s `revealNodeRequest` effect.
+        const visibleInCurrentView = nodesRef.current.some(
+          (candidate) => candidate.id === nodeId,
+        );
+        if (!visibleInCurrentView) {
+          setPrimaryView('diff');
+          setPresentation('unified');
+          window.requestAnimationFrame(centerOnNode);
+          return;
+        }
+        centerOnNode();
+      },
+      clear: (): void => {
+        setMatchIds(new Set());
+        setActiveId(null);
+      },
+    }),
+    [],
+  );
+
+  const currentNodes = useMemo(
+    () => withSearchState(currentLayout.nodes, matchIds, activeId),
+    [currentLayout.nodes, matchIds, activeId],
+  );
+  const plannedNodes = useMemo(
+    () => withSearchState(plannedLayout.nodes, matchIds, activeId),
+    [plannedLayout.nodes, matchIds, activeId],
+  );
+  const unifiedNodes = useMemo(
+    () => withSearchState(unifiedLayout.nodes, matchIds, activeId),
+    [unifiedLayout.nodes, matchIds, activeId],
+  );
+
+  const handleNodeClick = useCallback<NodeMouseHandler<LogicFlowNode>>(
+    (_event, node) => {
+      setSelected({ id: node.id, data: node.data });
+    },
+    [],
+  );
+
+  const handlePaneClick = useCallback((): void => {
+    setSelected(null);
+  }, []);
+
+  // Idle: no artifact has ever been generated for this plan, and nothing is in
+  // flight. Offer an explicit Generate action instead of a misleading spinner.
+  if (artifact === undefined && !isGenerating) {
+    return (
+      <div
+        data-testid="plan-logic-diff-diagram"
+        className="flex min-h-0 flex-1 flex-col"
+      >
+        <CenteredMessage>
+          <p className="text-s fg-secondary">No current/planned diagram yet.</p>
+          {onGenerate && (
+            <button
+              type="button"
+              data-testid="plan-logic-diff-generate"
+              onClick={onGenerate}
+              disabled={isGenerating}
+              className="focus-ring inline-flex items-center gap-1.5 rounded-md border bg-fg-primary/[0.06] px-3 py-1.5 text-xs fg-primary transition hover:bg-fg-primary/[0.12] disabled:cursor-default disabled:opacity-60"
+            >
+              {isGenerating ? 'Generating…' : 'Generate diagram'}
+            </button>
+          )}
+        </CenteredMessage>
+      </div>
+    );
+  }
+
+  // Loading: actively generating (or optimistically requested) with no prior
+  // data to show.
+  if (
+    !data &&
+    (isGenerating || status === 'pending' || status === 'generating')
+  ) {
+    return (
+      <div
+        data-testid="plan-logic-diff-diagram"
+        className="flex min-h-0 flex-1 flex-col"
+      >
+        <CenteredMessage>
+          <ThinkingSpinner />
+          <p className="text-s fg-secondary">Generating diagram…</p>
+        </CenteredMessage>
+      </div>
+    );
+  }
+
+  // Error with no usable prior data.
+  if (status === 'error' && !data) {
+    return (
+      <div
+        data-testid="plan-logic-diff-diagram"
+        className="flex min-h-0 flex-1 flex-col"
+      >
+        <CenteredMessage>
+          <p className="text-s font-medium fg-destructive">
+            Failed to generate diagram
+          </p>
+          {artifact?.error && (
+            <p className="max-w-sm text-xs fg-secondary">{artifact.error}</p>
+          )}
+          {onGenerate && (
+            <button
+              type="button"
+              data-testid="plan-logic-diff-retry"
+              onClick={onGenerate}
+              disabled={isGenerating}
+              className="focus-ring inline-flex items-center gap-1.5 rounded-md border bg-fg-primary/[0.06] px-3 py-1.5 text-xs fg-primary transition hover:bg-fg-primary/[0.12] disabled:cursor-default disabled:opacity-60"
+            >
+              {isGenerating ? 'Generating…' : 'Retry'}
+            </button>
+          )}
+        </CenteredMessage>
+      </div>
+    );
+  }
+
+  const hasContent =
+    currentLayout.nodes.length > 0 || plannedLayout.nodes.length > 0;
+  if (!hasContent) {
+    return (
+      <div
+        data-testid="plan-logic-diff-diagram"
+        className="flex min-h-0 flex-1 flex-col"
+      >
+        <CenteredMessage>
+          <p className="text-s fg-secondary">No diagram content available.</p>
+        </CenteredMessage>
+      </div>
+    );
+  }
+
+  const isUpdating = status === 'stale' || status === 'generating';
+  const hasErrorOverlay = status === 'error';
+
+  return (
+    <div
+      data-testid="plan-logic-diff-diagram"
+      className="relative flex min-h-0 flex-1 flex-col"
+    >
+      <div
+        data-testid="logic-diff-toolbar"
+        className="flex shrink-0 flex-wrap items-center gap-2 border-b px-2 py-1.5"
+      >
+        <div
+          data-testid="logic-diff-view-toggle"
+          className="flex items-center gap-1"
+        >
+          <SegmentedButton
+            active={primaryView === 'current'}
+            onClick={(): void => setPrimaryView('current')}
+          >
+            {currentLabel}
+          </SegmentedButton>
+          <SegmentedButton
+            active={primaryView === 'planned'}
+            onClick={(): void => setPrimaryView('planned')}
+          >
+            {plannedLabel}
+          </SegmentedButton>
+          <SegmentedButton
+            active={primaryView === 'diff'}
+            onClick={(): void => setPrimaryView('diff')}
+          >
+            Diff
+          </SegmentedButton>
+        </div>
+        {primaryView === 'diff' && (
+          <div
+            data-testid="logic-diff-presentation-toggle"
+            className="flex items-center gap-1 border-l pl-2"
+          >
+            <SegmentedButton
+              active={presentation === 'unified'}
+              onClick={(): void => setPresentation('unified')}
+            >
+              Unified
+            </SegmentedButton>
+            <SegmentedButton
+              active={presentation === 'split'}
+              onClick={(): void => setPresentation('split')}
+            >
+              Split
+            </SegmentedButton>
+          </div>
+        )}
+        {toolbarActions && <div className="ml-auto">{toolbarActions}</div>}
+      </div>
+
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        {isUpdating && <DiagramOverlayBadge label="Updating…" tone="info" />}
+        {hasErrorOverlay && (
+          <DiagramOverlayBadge label="Update failed" tone="error" />
+        )}
+
+        {primaryView === 'current' && (
+          <LogicFlowGraph
+            nodes={currentNodes}
+            edges={currentLayout.edges}
+            onNodeClick={handleNodeClick}
+            onPaneClick={handlePaneClick}
+            onInstance={registerInstance}
+          />
+        )}
+
+        {primaryView === 'planned' && (
+          <LogicFlowGraph
+            nodes={plannedNodes}
+            edges={plannedLayout.edges}
+            onNodeClick={handleNodeClick}
+            onPaneClick={handlePaneClick}
+            onInstance={registerInstance}
+          />
+        )}
+
+        {primaryView === 'diff' && presentation === 'unified' && (
+          <LogicFlowGraph
+            nodes={unifiedNodes}
+            edges={unifiedLayout.edges}
+            onNodeClick={handleNodeClick}
+            onPaneClick={handlePaneClick}
+            onInstance={registerInstance}
+          />
+        )}
+
+        {primaryView === 'diff' && presentation === 'split' && (
+          <div className="flex min-h-0 flex-1 flex-col">
+            <div className="relative flex min-h-0 flex-1 flex-col border-b">
+              <span className="pointer-events-none absolute left-3 top-2 z-10 rounded-sm bg-card/90 px-1.5 py-0.5 text-3xs font-medium fg-secondary">
+                {currentLabel}
+              </span>
+              <LogicFlowGraph
+                nodes={currentNodes}
+                edges={currentLayout.edges}
+                onNodeClick={handleNodeClick}
+                onPaneClick={handlePaneClick}
+                onInstance={registerInstance}
+              />
+            </div>
+            <div className="relative flex min-h-0 flex-1 flex-col">
+              <span className="pointer-events-none absolute left-3 top-2 z-10 rounded-sm bg-card/90 px-1.5 py-0.5 text-3xs font-medium fg-secondary">
+                {plannedLabel}
+              </span>
+              <LogicFlowGraph
+                nodes={plannedNodes}
+                edges={plannedLayout.edges}
+                onNodeClick={handleNodeClick}
+                onPaneClick={handlePaneClick}
+                onInstance={registerInstance}
+              />
+            </div>
+          </div>
+        )}
+
+        {selected && (
+          <SelectedNodeDetail
+            key={selected.id}
+            node={selected}
+            onClose={(): void => setSelected(null)}
+            onAddNodeComment={onAddNodeComment}
+          />
+        )}
+      </div>
+    </div>
+  );
+});
+
+PlanLogicDiffDiagram.displayName = 'PlanLogicDiffDiagram';

@@ -1,0 +1,105 @@
+import { useEffect, useState } from 'react';
+import type { ActivityFileDiffResponse } from '@canopy/desktop-shared/types';
+import type {
+  FileDiffContext,
+  ReviewDiffIdentity,
+} from '@canopy/desktop-shared/types/code-review';
+import { useActivityStore } from '@/stores/activityStore';
+
+export interface FileDiffSnapshot {
+  data: ActivityFileDiffResponse;
+  identity: ReviewDiffIdentity;
+}
+
+/** Cancel stale responses and fingerprint the actual displayed bytes, not a mutable Git label. */
+export function useFileDiffSnapshot(
+  projectId: string,
+  worktreeId: string,
+  context: FileDiffContext | undefined,
+  enabled: boolean,
+  revision: number,
+): { snapshot: FileDiffSnapshot | null; error: string | null } {
+  const changedFiles = useActivityStore(
+    (state) => state.changedFiles[`${projectId}/${worktreeId}`],
+  );
+  const [result, setResult] = useState<{
+    key: string;
+    snapshot: FileDiffSnapshot | null;
+    error: string | null;
+  }>({ key: '', snapshot: null, error: null });
+  const key = JSON.stringify([projectId, worktreeId, context]);
+  useEffect(() => {
+    if (!enabled || !context) return;
+    let cancelled = false;
+    setResult({ key, snapshot: null, error: null });
+    const request = {
+      projectId,
+      worktreeId,
+      filePath: context.path,
+      repoId: context.repoId,
+    };
+    const promise =
+      context.source === 'turn' && context.startTree && context.endTree
+        ? window.api.activity.getTurnFileDiff({
+            ...request,
+            startTree: context.startTree,
+            endTree: context.endTree,
+          })
+        : window.api.activity.getFileDiff({
+            ...request,
+            source: context.source === 'turn' ? 'combined' : context.source,
+          });
+    void promise
+      .then(async (data) => {
+        const digest = await crypto.subtle.digest(
+          'SHA-256',
+          new TextEncoder().encode(
+            JSON.stringify([
+              context,
+              data.oldValue,
+              data.newValue,
+              data.imagePreview,
+            ]),
+          ),
+        );
+        const snapshotId = Array.from(new Uint8Array(digest), (byte) =>
+          byte.toString(16).padStart(2, '0'),
+        ).join('');
+        if (!cancelled)
+          setResult({
+            key,
+            error: null,
+            snapshot: {
+              data: {
+                ...data,
+                source: context.source === 'turn' ? 'combined' : context.source,
+              },
+              identity: {
+                source: context.source,
+                snapshotId,
+                previousPath: context.previousPath,
+                startTree: context.startTree,
+                endTree: context.endTree,
+              },
+            },
+          });
+      })
+      .catch((error: unknown) => {
+        if (!cancelled)
+          setResult({
+            key,
+            snapshot: null,
+            error:
+              error instanceof Error
+                ? error.message
+                : 'Unable to load changes.',
+          });
+      });
+    return (): void => {
+      cancelled = true;
+    };
+    // The serialized key includes every comparison field, while avoiding object-identity reloads.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, enabled, revision, changedFiles]);
+  return result.key === key ? result : { snapshot: null, error: null };
+}

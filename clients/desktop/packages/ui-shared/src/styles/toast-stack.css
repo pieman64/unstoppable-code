@@ -1,0 +1,248 @@
+/*
+ * Shared notification stack (`ToastStack` in @canopy/ui-shared), drawn over
+ * Base UI's headless toast. Base UI publishes per-card geometry as custom
+ * properties and data attributes; this file turns them into a deck:
+ *
+ * - At rest the newest card is in front and up to two older cards peek out
+ *   behind it, each a little smaller, away from the screen edge.
+ * - While the stack is hovered or focused (`data-expanded`), every card
+ *   slides to its own row with an 8px gap.
+ * - Cards slide in from the stack's side of the screen and leave toward it,
+ *   or toward the direction they were swiped.
+ *
+ * `--toast-dir` is the direction the stack grows: -1 (up) for the bottom
+ * corners, 1 (down) for the top corners. `--toast-side` is the side of the
+ * screen the stack sits against: 1 (right) or -1 (left). `--toast-wheel-x` is
+ * how far a host's own trackpad swipe has carried a card (the desktop sets
+ * it, with `data-wheel-swiping` while the fingers move). Motion is transform and opacity
+ * only, except the clip height a card animates to when the deck spreads.
+ * The shared reduced-motion rule in canopy-tokens.css removes the motion.
+ */
+
+.canopy-toast-viewport {
+  --toast-dir: -1;
+  --toast-side: 1;
+  --toast-gap: 8px;
+  --toast-peek: 8px;
+  outline: none;
+}
+
+.canopy-toast-viewport[data-edge='top'] {
+  --toast-dir: 1;
+}
+
+.canopy-toast-viewport[data-side='left'] {
+  --toast-side: -1;
+}
+
+.canopy-toast-stack {
+  position: relative;
+  isolation: isolate;
+}
+
+.canopy-toast {
+  --toast-scale: max(0, calc(1 - var(--toast-index) * 0.05));
+  --toast-shrink: calc(1 - var(--toast-scale));
+  /* The last card to leave has neither height: Base UI drops both as it
+   * starts to close. Without the final fallbacks `--toast-y` would be
+   * invalid, and with it the whole exit transform, so the card would snap
+   * back to its place and only fade. */
+  --toast-rest-height: var(--toast-frontmost-height, var(--toast-height, 0px));
+  --toast-y: calc(
+    var(--toast-dir) *
+      (
+        var(--toast-index) * var(--toast-peek) + var(--toast-shrink) *
+          var(--toast-rest-height)
+      )
+  );
+  position: absolute;
+  right: 0;
+  left: 0;
+  /* Context-local: newer cards paint over older ones inside the stack. */
+  z-index: calc(
+    30 - var(--toast-index)
+  ); /* z-exception: context-local deck order */
+  height: var(--toast-frontmost-height, var(--toast-height, auto));
+  transform: translateX(
+      calc(var(--toast-swipe-movement-x) + var(--toast-wheel-x, 0px))
+    )
+    translateY(calc(var(--toast-y) + var(--toast-swipe-movement-y)))
+    scale(var(--toast-scale));
+  transition:
+    transform 400ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 400ms cubic-bezier(0.22, 1, 0.36, 1),
+    height 150ms ease-out;
+}
+
+.canopy-toast-viewport[data-edge='bottom'] .canopy-toast {
+  bottom: 0;
+  transform-origin: bottom center;
+}
+
+.canopy-toast-viewport[data-edge='top'] .canopy-toast {
+  top: 0;
+  transform-origin: top center;
+}
+
+/* Bridges the gap between spread cards so the pointer never falls out of
+ * the stack (which would collapse it) while moving from one card to the
+ * next. */
+.canopy-toast::after {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  height: calc(var(--toast-gap) + 1px);
+  content: '';
+}
+
+.canopy-toast-viewport[data-edge='bottom'] .canopy-toast::after {
+  top: 100%;
+}
+
+.canopy-toast-viewport[data-edge='top'] .canopy-toast::after {
+  bottom: 100%;
+}
+
+.canopy-toast[data-expanded] {
+  --toast-scale: 1;
+  --toast-y: calc(
+    var(--toast-dir) *
+      (var(--toast-offset-y) + var(--toast-index) * var(--toast-gap))
+  );
+  height: var(--toast-height, auto);
+}
+
+/* The card follows the fingers during a trackpad swipe: no transform lag. */
+.canopy-toast[data-wheel-swiping] {
+  transition-duration: 0ms, 400ms, 150ms;
+}
+
+/* In from the side, clear of the corner's inset. A card has no measured
+ * height on its first frame, so this must not depend on `--toast-y`. */
+.canopy-toast[data-starting-style] {
+  transform: translateX(calc(var(--toast-side) * (100% + 32px)));
+}
+
+/* Out to the same side, from wherever the card rests in the deck. */
+.canopy-toast[data-ending-style]:not([data-limited]):not(
+    [data-swipe-direction]
+  ) {
+  transform: translateX(
+      calc(var(--toast-wheel-x, 0px) + var(--toast-side) * (100% + 32px))
+    )
+    translateY(var(--toast-y)) scale(var(--toast-scale));
+}
+
+.canopy-toast[data-starting-style],
+.canopy-toast[data-ending-style],
+.canopy-toast[data-limited] {
+  opacity: 0;
+}
+
+.canopy-toast[data-ending-style][data-swipe-direction='down'] {
+  transform: translateY(
+    calc(var(--toast-y) + var(--toast-swipe-movement-y) + 150%)
+  );
+}
+
+.canopy-toast[data-ending-style][data-swipe-direction='up'] {
+  transform: translateY(
+    calc(var(--toast-y) + var(--toast-swipe-movement-y) - 150%)
+  );
+}
+
+.canopy-toast[data-ending-style][data-swipe-direction='left'] {
+  transform: translateX(calc(var(--toast-swipe-movement-x) - 150%))
+    translateY(var(--toast-y));
+}
+
+.canopy-toast[data-ending-style][data-swipe-direction='right'] {
+  transform: translateX(calc(var(--toast-swipe-movement-x) + 150%))
+    translateY(var(--toast-y));
+}
+
+.canopy-toast-content {
+  overflow: hidden;
+  transition: opacity 250ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Cards behind the front one show only their edge until the deck spreads. */
+.canopy-toast-content[data-behind]:not([data-expanded]) {
+  opacity: 0;
+}
+
+/*
+ * The sidebar's Getting started deck (`GettingStartedSidebarTile`): the same
+ * resting deck as the toasts, one card per step. The steps still to come
+ * peek out above the front card, each 4px further up and 5% narrower. Skip
+ * slides the front card off toward the sidebar's edge (the stack's side) and
+ * the card behind it comes forward into its place.
+ */
+.getting-started-stack {
+  --stack-peek: 4px;
+  position: relative;
+  isolation: isolate;
+}
+
+.getting-started-stack-card {
+  transform-origin: top center;
+}
+
+.getting-started-stack-behind-1,
+.getting-started-stack-behind-2 {
+  position: absolute;
+  inset: 0;
+  transition: transform 400ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.getting-started-stack-behind-1 {
+  z-index: 2; /* z-exception: context-local deck order */
+  transform: translateY(calc(-1 * var(--stack-peek))) scale(0.95);
+}
+
+.getting-started-stack-behind-2 {
+  z-index: 1; /* z-exception: context-local deck order */
+  transform: translateY(calc(-2 * var(--stack-peek))) scale(0.9);
+}
+
+.getting-started-stack-front {
+  position: relative;
+  z-index: 3; /* z-exception: context-local deck order */
+}
+
+.getting-started-stack-leave {
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: 4; /* z-exception: context-local deck order */
+  pointer-events: none;
+  animation: getting-started-stack-leave 400ms cubic-bezier(0.22, 1, 0.36, 1)
+    forwards;
+}
+
+.getting-started-stack-enter {
+  animation: getting-started-stack-enter 400ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.getting-started-stack-enter > * {
+  animation: getting-started-stack-content-enter 250ms
+    cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes getting-started-stack-leave {
+  to {
+    transform: translateX(calc(-100% - 16px));
+    opacity: 0;
+  }
+}
+
+@keyframes getting-started-stack-enter {
+  from {
+    transform: translateY(calc(-1 * var(--stack-peek))) scale(0.95);
+  }
+}
+
+@keyframes getting-started-stack-content-enter {
+  from {
+    opacity: 0;
+  }
+}

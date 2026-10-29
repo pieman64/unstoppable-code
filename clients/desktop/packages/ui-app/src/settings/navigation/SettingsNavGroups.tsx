@@ -1,0 +1,134 @@
+'use client';
+
+import type { JSX, MouseEvent } from 'react';
+import {
+  SIDEBAR_NAV_ICON_CLASSNAME,
+  sidebarNavItemClassName,
+} from '@canopy/ui-shared/components';
+import { AttentionDot } from '@canopy/ui-shared/components/settings/AttentionDot';
+import { SidebarPageNavGroup } from '../../sidebar';
+import type { SettingsLinkComponent } from '../host';
+import type { SettingsNavGroup, SettingsNavRow } from './settings-nav-model';
+
+const ROW_CLASSNAME_SUFFIX = 'text-left pointer-coarse:min-h-11';
+
+function RowContent({
+  row,
+  testIdPrefix,
+}: {
+  readonly row: SettingsNavRow;
+  readonly testIdPrefix: string;
+}): JSX.Element {
+  const Icon = row.icon;
+  return (
+    <>
+      <span className={SIDEBAR_NAV_ICON_CLASSNAME}>
+        <Icon size={16} />
+      </span>
+      {row.attention ? (
+        // Outside any truncating span: the dot overhangs its label and a
+        // clipping ancestor would hide it.
+        <AttentionDot
+          label="Billing needs attention"
+          testId={`${testIdPrefix}${row.key}-attention-dot`}
+        >
+          {row.label}
+        </AttentionDot>
+      ) : (
+        <span className="min-w-0 truncate">{row.label}</span>
+      )}
+    </>
+  );
+}
+
+export interface SettingsNavGroupsProps {
+  readonly groups: readonly SettingsNavGroup<string>[];
+  /** The one selected row key, or `null`. */
+  readonly currentKey: string | null;
+  /** The host's link: `next/link` on web, an in-overlay link on desktop. */
+  readonly LinkComponent: SettingsLinkComponent;
+  /** Runs when a row is chosen, before the link navigates. */
+  readonly onNavigate?: (row: SettingsNavRow, event: MouseEvent) => void;
+  /**
+   * Test-id prefix for rows (`<prefix><row key>`) and groups
+   * (`<prefix>group-<group id>`). Web keeps `portal-settings-nav-`; desktop
+   * uses `settings-nav-`.
+   */
+  readonly testIdPrefix: string;
+  /** Extra class for the organization group's label (replay masking). */
+  readonly organizationLabelClassName?: string;
+}
+
+/**
+ * The hosted settings rail groups (Account, Organizations, and the browsed
+ * organization). Hosts own the surrounding `SidebarPageNav`, Back, and any
+ * groups of their own: web appends Admin, desktop appends its local settings
+ * groups.
+ */
+export function SettingsNavGroups({
+  groups,
+  currentKey,
+  LinkComponent,
+  onNavigate,
+  testIdPrefix,
+  organizationLabelClassName,
+}: SettingsNavGroupsProps): JSX.Element {
+  return (
+    <>
+      {groups.map((group) => (
+        <SidebarPageNavGroup
+          key={group.id}
+          label={
+            group.id === 'organization' ? (
+              <span
+                className={`block truncate${organizationLabelClassName ? ` ${organizationLabelClassName}` : ''}`}
+                title={group.label}
+              >
+                {group.label}
+              </span>
+            ) : (
+              group.label
+            )
+          }
+          testId={`${testIdPrefix}group-${group.id}`}
+        >
+          {group.rows.map((row) => {
+            const selected = row.key === currentKey;
+            const testId = `${testIdPrefix}${row.key}`;
+            if (row.disabled) {
+              return (
+                <span
+                  key={row.key}
+                  role="link"
+                  aria-disabled="true"
+                  aria-current={selected ? 'page' : undefined}
+                  data-testid={testId}
+                  data-disabled="true"
+                  data-sidebar-nav-row=""
+                  className={`${sidebarNavItemClassName(selected)} ${ROW_CLASSNAME_SUFFIX} cursor-not-allowed opacity-50`}
+                >
+                  <RowContent row={row} testIdPrefix={testIdPrefix} />
+                </span>
+              );
+            }
+            return (
+              <LinkComponent
+                key={row.key}
+                href={row.href}
+                aria-current={selected ? 'page' : undefined}
+                data-testid={testId}
+                data-sidebar-nav-row=""
+                // Links get a hand cursor by default; settings rows keep the
+                // arrow, like the app's other menus and the button rows here.
+                className={`${sidebarNavItemClassName(selected)} ${ROW_CLASSNAME_SUFFIX} cursor-default`}
+                onClick={(event) => onNavigate?.(row, event)}
+              >
+                <RowContent row={row} testIdPrefix={testIdPrefix} />
+              </LinkComponent>
+            );
+          })}
+        </SidebarPageNavGroup>
+      ))}
+    </>
+  );
+}

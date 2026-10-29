@@ -1,0 +1,69 @@
+name: Git Workspace Details
+description: Gather diff and instruction-scope context for the current git workspace.
+scope: [directory, worktree]
+inputs:
+  base_branch:
+    description: Optional base branch used to resolve the merge base for committed changes.
+    required: false
+  include_uncommitted:
+    description: Whether to include uncommitted and untracked changes in the generated diff artifact.
+    required: false
+    default: true
+  checkpoint_file:
+    description: Optional workspace checkpoint JSON from an earlier run used to classify pre-existing changes versus pipeline-owned changes.
+    required: false
+  plan_scope_file:
+    description: Optional plan-scope JSON used to mark protected pre-existing changes as plan-authorized review changes.
+    required: false
+outputs:
+  repo_root:
+    description: Absolute path to the git repository root.
+  current_branch:
+    description: Current checked out branch name.
+  base_branch:
+    description: Resolved base branch used for merge-base lookup.
+  merge_base:
+    description: Merge-base commit hash against the base branch when available.
+  has_uncommitted_changes:
+    description: Whether the working tree has tracked or untracked changes.
+  committed_diff_available:
+    description: Whether a committed diff against the merge base was available.
+  changed_file_count:
+    description: Total number of changed files in the combined workspace view.
+  pipeline_changed_file_count:
+    description: Number of changed files that were introduced or altered after the optional checkpoint.
+  protected_changed_file_count:
+    description: Number of changed files already present in the optional checkpoint and therefore protected from unrelated cleanup.
+  review_changed_file_count:
+    description: Number of files included in the scoped review diff.
+  protected_drift_file_count:
+    description: Number of protected pre-existing files changed outside the plan scope.
+  instruction_file_count:
+    description: Number of candidate CLAUDE.md or AGENTS.md files in scope.
+  workspace_checkpoint_file:
+    description: File path containing a reusable workspace checkpoint JSON snapshot.
+  workspace_details_file:
+    description: File path containing structured workspace details JSON.
+  workspace_summary_file:
+    description: File path containing a readable workspace summary.
+  changed_files_file:
+    description: File path containing the combined changed-files JSON list.
+  baseline_classification_file:
+    description: File path containing baseline-aware classification for current and protected checkpoint changes.
+  pipeline_changed_files_file:
+    description: File path containing only files introduced or altered after the optional checkpoint.
+  review_changed_files_file:
+    description: File path containing files included in the scoped review diff.
+  protected_drift_file:
+    description: File path containing protected pre-existing files changed outside the plan scope.
+  protected_drift_summary_file:
+    description: File path containing a readable protected-drift summary.
+  instruction_scopes_file:
+    description: File path containing the candidate instruction files JSON list.
+  diff_file:
+    description: File path containing the committed and uncommitted diff artifact.
+  review_diff_file:
+    description: File path containing the diff filtered to pipeline-owned and plan-authorized changes.
+runs:
+  using: node
+  main: index.js

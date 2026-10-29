@@ -1,0 +1,52 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Form controls</title>
+    <style>
+      body { font: 14px/1.4 sans-serif; margin: 7.5px; }
+      .half { padding-left: 0.5px; margin-top: 3.25px; }
+    </style>
+  </head>
+  <body>
+    <form id="profile">
+      <label for="email">Email address</label>
+      <input id="email" type="email" placeholder="you@example.test" data-testid="email" value="default@example.test">
+      <label class="half">Full name <input id="full-name" value="Ada"></label>
+      <span id="search-label">Search</span> <span id="search-hint">products</span>
+      <input id="search" type="search" aria-labelledby="search-label search-hint">
+      <label for="notes">Notes</label>
+      <textarea id="notes">default notes</textarea>
+      <label for="color">Color</label>
+      <select id="color">
+        <option value="red">Red</option>
+        <option>  Plain   text option </option>
+        <optgroup label="Cool"><option value="blue">Blue</option></optgroup>
+      </select>
+      <label><input id="subscribe" type="checkbox"> Subscribe</label>
+      <label><input type="radio" name="size" value="s" checked> Small</label>
+      <label><input id="size-large" type="radio" name="size" value="l"> Large</label>
+      <input type="range" aria-label="Volume" value="30">
+      <input type="number" title="Quantity" value="2">
+      <button type="submit"><span>Save</span>
+        <span>now</span></button>
+      <button type="button" disabled>Disabled</button>
+      <input type="submit" value="Send">
+    </form>
+    <a href="/help" title="Help center">Help</a>
+    <a>Not a link</a>
+    <div role="switch" aria-label="Feature" aria-checked="false" tabindex="0"></div>
+    <div role="button" aria-disabled="true">Fake <b>button</b></div>
+    <div contenteditable="true">Edit me</div>
+    <span tabindex="0">Focusable span</span>
+    <span tabindex="-1">Not focusable</span>
+    <img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" alt="Logo" tabindex="0">
+    <script>
+      // Values are concatenated so the script's own text never contains one.
+      document.querySelector('#email').value = 'live' + '@example.test';
+      document.querySelector('#notes').value = 'live' + ' notes';
+      document.querySelector('#color').selectedIndex = 1;
+      document.querySelector('#subscribe').checked = true;
+      document.querySelector('#size-large').checked = true;
+    </script>
+  </body>
+</html>

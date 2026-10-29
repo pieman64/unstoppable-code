@@ -1,0 +1,30 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Hidden controls</title>
+    <style>
+      .gone { display: none; }
+      .ghost { visibility: hidden; }
+      .contents { display: contents; }
+      .faded { opacity: 0; }
+    </style>
+  </head>
+  <body>
+    <input id="visible" value="shown">
+    <input id="stylesheet-none" class="gone" value="none">
+    <div role="tab" class="gone">Hidden tab</div>
+    <div class="ghost"><input id="under-hidden-visibility" value="ghost"><button type="button" style="visibility: visible">Visible again</button></div>
+    <div class="contents" role="button" id="contents-button">Contents <input id="in-contents" value="contents child"></div>
+    <div class="gone">
+      <input id="under-display-none" value="under none">
+      <div role="tab" id="tab-under-none">Tab under none</div>
+      <a href="/x" hidden>Hidden attribute link</a>
+    </div>
+    <input id="hidden-attribute" hidden value="h">
+    <input id="aria-hidden" aria-hidden="true" value="a">
+    <button type="button" style="display:none">Inline none</button>
+    <input type="hidden" id="type-hidden" value="t">
+    <button type="button" class="faded">Transparent</button>
+    <details><summary>More</summary><input id="in-details" value="details"></details>
+  </body>
+</html>

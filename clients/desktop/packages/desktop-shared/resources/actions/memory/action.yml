@@ -1,0 +1,40 @@
+name: Memory
+description: Store and query durable namespace-scoped key/value data in SQLite.
+inputs:
+  operation:
+    description: get, set, delete, list, or query.
+    required: true
+  namespace:
+    description: Namespace for the memory operation.
+    required: false
+    default: default
+  key:
+    description: Key for get, set, or delete.
+    required: false
+  value:
+    description: Value for set.
+    required: false
+    default: ""
+  query:
+    description: Query string for search.
+    required: false
+    default: ""
+  limit:
+    description: Maximum rows returned by list or query.
+    required: false
+    default: 20
+  db_path:
+    description: Optional override for the SQLite database path.
+    required: false
+outputs:
+  db_path:
+    description: Absolute path to the SQLite database file.
+  value:
+    description: Value returned by get or set.
+  entries:
+    description: JSON array of rows returned by list or query.
+  count:
+    description: Number of affected or returned rows.
+runs:
+  using: node
+  main: index.js

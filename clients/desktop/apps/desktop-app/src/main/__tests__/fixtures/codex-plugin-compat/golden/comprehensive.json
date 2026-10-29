@@ -1,0 +1,67 @@
+{
+  "pluginName": "golden-plugin",
+  "category": "Development Tools",
+  "warnings": [],
+  "files": [
+    {
+      "path": "canopy-compatibility.json",
+      "content": "{\n  \"canopyCompatibilityVersion\": 5,\n  \"sourcePluginName\": \"golden-plugin\",\n  \"sourceVersion\": \"2.4.0:mcp-true\",\n  \"sourceLastUpdatedAt\": \"2026-08-26T12:00:00.000Z\"\n}"
+    },
+    {
+      "path": "local/.codex-plugin/plugin.json",
+      "content": "{\n  \"name\": \"golden-plugin\",\n  \"version\": \"2.4.0\",\n  \"description\": \"Golden compatibility plugin\",\n  \"author\": {\n    \"name\": \"Fixture Author\"\n  },\n  \"skills\": \"./skills/\",\n  \"mcpServers\": \"./.mcp.json\",\n  \"interface\": {\n    \"displayName\": \"Golden Plugin\",\n    \"shortDescription\": \"Golden compatibility plugin\",\n    \"category\": \"Development Tools\",\n    \"developerName\": \"Fixture Author\"\n  }\n}"
+    },
+    {
+      "path": "local/.mcp.json",
+      "content": "{\n  \"mcpServers\": {\n    \"manifest-server\": {\n      \"command\": \"node\",\n      \"args\": [\n        \"<CACHE_ROOT>/golden-market/golden-plugin/local/server.js\"\n      ],\n      \"cwd\": \"<CACHE_ROOT>/golden-market/golden-plugin/local\"\n    }\n  }\n}"
+    },
+    {
+      "path": "local/hooks/hooks.json",
+      "content": "{\n  \"hooks\": {\n    \"PreToolUse\": [\n      {\n        \"matcher\": \"Bash\",\n        \"hooks\": [{ \"type\": \"command\", \"command\": \"scripts/check.sh\" }]\n      }\n    ]\n  }\n}\n"
+    },
+    {
+      "path": "local/README.md",
+      "content": "# Generated Codex Plugin\n\nThis compatibility projection was generated for `golden-plugin`.\n\n## Projected Skills\n\n- `with-support`\n- `without-support`\n- `review-deep-thing`\n- `review-agent`\n\n## Compatibility Notes\n\n- Skill \"without-support\" sets user-invocable=false in Claude metadata. Codex compatibility keeps it as an explicitly invokable skill.\n- Agent \"review-agent\" is emitted as explicit skill \"review-agent\" because Codex plugin packaging is skill-based.\n"
+    },
+    {
+      "path": "local/skills/review-agent/agents/openai.yaml",
+      "content": "interface:\n  display_name: Review Agent\n  short_description: Review changes\npolicy:\n  allow_implicit_invocation: false\n"
+    },
+    {
+      "path": "local/skills/review-agent/SKILL.md",
+      "content": "---\nname: review-agent\ndescription: $golden-plugin:review-agent only. Review changes\n---\n# Review Agent Agent\n\nThis skill is generated from a Claude subagent definition.\nInvoke it explicitly with `$golden-plugin:review-agent`. Codex will not auto-invoke it.\n\n# Review Agent\n\nInvoke explicit skill `$golden-plugin:review-agent` with description `Inspect the diff`.\n"
+    },
+    {
+      "path": "local/skills/review-deep-thing/agents/openai.yaml",
+      "content": "interface:\n  display_name: Review/deep:thing\n  short_description: Review deeply\npolicy:\n  allow_implicit_invocation: false\n"
+    },
+    {
+      "path": "local/skills/review-deep-thing/SKILL.md",
+      "content": "---\nname: review-deep-thing\ndescription: $golden-plugin:review-deep-thing only. Review deeply\n---\n# Review/deep:thing Command\n\nThis skill is generated from `commands/review.md`.\nUse it only through explicit `$golden-plugin:review-deep-thing` invocation. Codex will not invoke it implicitly.\n\n# Review Deeply\n\nUse $golden-plugin:with-support and the terminal.\n"
+    },
+    {
+      "path": "local/skills/with-support/agents/openai.yaml",
+      "content": "policy:\n  allow_implicit_invocation: false\n"
+    },
+    {
+      "path": "local/skills/with-support/references/guide.md",
+      "content": "# Guide\n\nRun `<CACHE_ROOT>/golden-market/golden-plugin/local/scripts/check.sh` with the terminal.\n"
+    },
+    {
+      "path": "local/skills/with-support/scripts/check.sh",
+      "content": "#!/bin/sh\nexit 0\n"
+    },
+    {
+      "path": "local/skills/with-support/SKILL.md",
+      "content": "---\nname: with-support\ndescription: Skill with supporting files\ndisable-model-invocation: true\n---\n\n# With Support\n\nRead [the guide](../../custom-skills/with-support/references/guide.md) and Ask the user directly how to proceed.\n\nUse $golden-plugin:review-agent when review is needed.\n"
+    },
+    {
+      "path": "local/skills/without-support/SKILL.md",
+      "content": "---\nname: without-support\ndescription: Skill without supporting files\nuser-invocable: false\n---\n\n# Without Support\n\nInvoke $golden-plugin:review-deep-thing explicitly.\n"
+    },
+    {
+      "path": "local/SOURCE_README.md",
+      "content": "# Source Plugin\n\nSee [the command](commands/review.md).\n"
+    }
+  ]
+}

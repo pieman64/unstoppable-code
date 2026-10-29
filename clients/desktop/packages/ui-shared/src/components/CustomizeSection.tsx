@@ -1,0 +1,50 @@
+import type { JSX, ReactNode } from 'react';
+
+export interface CustomizeSectionProps {
+  /** Stable DOM id; also the target of `#customize-section-<id>` anchors. */
+  readonly domId: string;
+  readonly title: string;
+  /** Matching entries before any preview, shown beside the title. */
+  readonly count?: number;
+  /** Trailing heading controls (Update all, pipeline filters). */
+  readonly actions?: ReactNode;
+  readonly children: ReactNode;
+}
+
+/** One headed band of the Customize page: heading, hairline, then content. */
+export function CustomizeSection({
+  domId,
+  title,
+  count,
+  actions,
+  children,
+}: CustomizeSectionProps): JSX.Element {
+  const headingId = `${domId}-heading`;
+  return (
+    <section
+      id={domId}
+      data-testid={domId}
+      aria-labelledby={headingId}
+      className="scroll-mt-6"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b pb-2">
+        <h2
+          id={headingId}
+          className="inline-flex h-7 min-w-0 items-center gap-2 text-m font-medium fg-primary"
+        >
+          <span className="truncate">{title}</span>
+          {count !== undefined && (
+            <span
+              data-testid={`${domId}-count`}
+              className="shrink-0 text-s font-normal fg-tertiary"
+            >
+              {count}
+            </span>
+          )}
+        </h2>
+        {actions}
+      </div>
+      {children}
+    </section>
+  );
+}

@@ -1,0 +1,31 @@
+name: Spec Writer
+description: Produce the main specification document.
+log_format_hint: agent
+inputs:
+  model:
+    description: Optional Claude model override.
+    required: false
+outputs:
+  text_response:
+    description: Main specification text.
+    value: ${{ steps.spec.outputs.text_response }}
+  transcript_file:
+    description: Spec writer transcript file.
+    value: ${{ steps.spec.outputs.transcript_file }}
+runs:
+  using: composite
+  steps:
+    - id: spec
+      uses: builtin/agent-prompt
+      with:
+        model: ${{ inputs.model }}
+        permission_preset: read_only
+        prompt: |
+          Produce a detailed implementation specification for the current task.
+
+          Include:
+          1. problem statement
+          2. relevant context
+          3. design and implementation approach
+          4. risks and edge cases
+          5. verification strategy

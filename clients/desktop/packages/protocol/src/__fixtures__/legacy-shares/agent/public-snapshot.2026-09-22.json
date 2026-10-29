@@ -1,0 +1,15 @@
+{
+  "entity": "agent",
+  "externalId": "91582f59-c7c8-4a4d-93cf-0e7edb927a68",
+  "agent": {
+    "version": 1,
+    "id": "agent_model_legacy_reviewer",
+    "name": "Legacy Reviewer",
+    "baseModel": "claude-sonnet-4-6",
+    "instructions": "Review carefully.",
+    "plugins": []
+  },
+  "contentHash": "add13bd7a0da0a1080c9b309844554d8c8381d49be18f499c5ff75f7d351d062",
+  "authorUsername": "legacy-author",
+  "updatedAt": "2026-09-22T00:00:00.000Z"
+}

@@ -1,0 +1,349 @@
+/* Artwork pigments preserve the user-approved Figma illustrations, an intentional
+ exception to DESIGN.md semantic-color and decorative-gradient rules for this picker. */
+.workspace-layout-toggle-reveal {
+  display: inline-flex;
+  flex: none;
+  width: 0;
+  overflow: hidden;
+  mask-image: linear-gradient(
+    to right,
+    #000 calc(100% - 8px),
+    transparent 100%
+  );
+  visibility: hidden;
+}
+.workspace-layout-toggle-reveal-content {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  padding-right: 4px;
+  opacity: 0;
+}
+.workspace-layout-toggle-reveal[data-open='true'] {
+  /* Two shared 28px titlebar buttons, their gap, and the trailing gap. */
+  width: 64px;
+  /* Not `visible`: that would show the toggles through a hidden ancestor,
+     such as the main window while Settings covers it. */
+  visibility: inherit;
+}
+.workspace-layout-toggle-reveal[data-open='true']
+  .workspace-layout-toggle-reveal-content {
+  opacity: 1;
+}
+.workspace-layout-toggle-reveal-content[data-highlight-pressed='true']
+  button[aria-pressed='true'] {
+  /* A visible Side Panel or Bottom Drawer keeps its toggle in the hover
+     look: the shared subtle surface and primary ink. */
+  background-color: var(--bg-subtle);
+  color: var(--fg-primary);
+}
+.workspace-layout-toggle-reveal[data-open='true']:focus-within {
+  overflow: visible;
+  mask-image: none;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .workspace-layout-toggle-reveal {
+    transition:
+      width 200ms ease-out,
+      visibility 0s linear 200ms;
+  }
+  .workspace-layout-toggle-reveal-content {
+    transition: opacity 200ms ease-out;
+  }
+  .workspace-layout-toggle-reveal[data-open='true'] {
+    transition-delay: 0s;
+  }
+}
+
+.workspace-layout-picker .label {
+  margin: 0;
+  padding: 8px 8px 4px;
+  font-weight: 400;
+  color: var(--fg-secondary);
+}
+.workspace-layout-picker .layouts {
+  display: grid;
+  grid-template-columns: repeat(2, 96px);
+  justify-content: center;
+  gap: 4px;
+  padding: 8px 8px 2px;
+}
+.workspace-layout-picker .option {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg-secondary);
+  cursor: pointer;
+}
+.workspace-layout-picker .caption {
+  color: var(--fg-secondary);
+}
+.workspace-layout-picker .option[aria-checked='true'] .caption {
+  color: var(--fg-primary);
+}
+.workspace-layout-picker .option:disabled {
+  cursor: default;
+}
+.workspace-layout-picker .option:focus-visible {
+  outline: none;
+}
+.workspace-layout-picker .option:focus-visible .caption {
+  color: var(--fg-primary);
+  text-decoration: underline;
+  text-decoration-color: var(--line-accent);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 4px;
+}
+@media (hover: hover) {
+  .workspace-layout-picker .option:hover .caption {
+    color: var(--fg-primary);
+  }
+}
+.workspace-layout-picker .setting-section + .setting-section {
+  border-top: var(--border-hairline) solid var(--line-base);
+  margin: 4px -4px 0;
+  padding: 4px 4px 0;
+}
+.workspace-layout-picker .divider {
+  margin: 4px -4px;
+  border: 0;
+  border-top: var(--border-hairline) solid var(--line-base);
+}
+.workspace-layout-picker .chat-width-art {
+  position: relative;
+  display: block;
+  flex: none;
+  width: 60px;
+  height: 40px;
+  border: 0.5px solid rgba(0, 0, 0, 0.04);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg-muted), #000 8%);
+  background-origin: border-box;
+  background-repeat: no-repeat;
+  outline: 0 solid transparent;
+  outline-offset: 2px;
+}
+.workspace-layout-picker .chat-width-art::before {
+  content: '';
+  position: absolute;
+  inset: -0.5px;
+  border-radius: inherit;
+  background: linear-gradient(180deg, #191180 0%, #5b44d1 50%, #6578b4 100%);
+  opacity: 0;
+  pointer-events: none;
+}
+.workspace-layout-picker .option[aria-checked='true'] .chat-width-art::before,
+.workspace-layout-picker .chat-width-art[data-selected='true']::before {
+  opacity: 1;
+}
+.workspace-layout-picker .chat-width-art-panel {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 52px;
+  height: 32px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 3px 5px -3px rgba(0, 0, 0, 0.56);
+}
+.workspace-layout-picker .chat-width-art-title,
+.workspace-layout-picker .chat-width-art-line {
+  position: absolute;
+  border-radius: 1px;
+  background: rgba(0, 0, 0, 0.22);
+}
+.workspace-layout-picker .chat-width-art-title {
+  left: 16px;
+  top: 3px;
+  width: 20px;
+  height: 3px;
+}
+.workspace-layout-picker .chat-width-art-line {
+  left: 17px;
+  height: 1px;
+}
+.workspace-layout-picker .chat-width-art-line.line-0 {
+  top: 9px;
+  width: 17px;
+}
+.workspace-layout-picker .chat-width-art-line.line-1 {
+  top: 11px;
+  width: 15px;
+}
+.workspace-layout-picker .chat-width-art-line.line-2 {
+  top: 13px;
+  width: 12px;
+}
+.workspace-layout-picker .chat-width-art-line.line-3 {
+  top: 17px;
+  width: 17px;
+}
+.workspace-layout-picker .chat-width-art-line.line-4 {
+  top: 19px;
+  width: 15px;
+}
+.workspace-layout-picker .chat-width-art-composer {
+  position: absolute;
+  left: 50%;
+  top: 24px;
+  transform: translateX(-50%);
+  width: 20px;
+  height: 5px;
+  border-radius: 1px;
+  background: white;
+  box-shadow: 0 1px 4px -1px rgba(0, 0, 0, 0.32);
+}
+.workspace-layout-picker .chat-width-art-full .chat-width-art-title {
+  left: 3px;
+  width: 46px;
+}
+.workspace-layout-picker .chat-width-art-full .chat-width-art-line {
+  left: 4px;
+}
+.workspace-layout-picker .chat-width-art-full .line-0,
+.workspace-layout-picker .chat-width-art-full .line-3 {
+  width: 43px;
+}
+.workspace-layout-picker .chat-width-art-full .line-1,
+.workspace-layout-picker .chat-width-art-full .line-4 {
+  width: 38px;
+}
+.workspace-layout-picker .chat-width-art-full .line-2 {
+  width: 30px;
+}
+.workspace-layout-picker .chat-width-art-full .chat-width-art-composer {
+  width: 46px;
+}
+.workspace-layout-picker .option[aria-checked='true'] .chat-width-art,
+.workspace-layout-picker .chat-width-art[data-selected='true'] {
+  outline-width: 2px;
+  outline-color: var(--bg-accent);
+}
+.workspace-layout-picker .layout-window {
+  top: calc(50% + 0.5px);
+}
+.workspace-layout-picker .layout-window-title,
+.workspace-layout-picker .layout-window-line {
+  position: absolute;
+  border-radius: 1px;
+  background: rgba(0, 0, 0, 0.22);
+}
+.workspace-layout-picker .layout-window-title {
+  left: 3px;
+  top: 3px;
+  height: 3px;
+}
+.workspace-layout-picker .layout-window-line {
+  height: 1px;
+}
+.workspace-layout-picker .layout-window-composer {
+  position: absolute;
+  height: 5px;
+  border-radius: 1px;
+  background: white;
+  box-shadow: 0 1px 4px -1px rgba(0, 0, 0, 0.32);
+}
+.workspace-layout-picker .layout-window-divider {
+  position: absolute;
+  display: block;
+  max-width: none;
+  color: var(--fg-primary);
+  background: rgba(0, 0, 0, 0.12);
+}
+.workspace-layout-picker .layout-window-divider.drawer {
+  left: 0;
+  top: 24px;
+  width: 52px;
+  height: 1px;
+}
+.workspace-layout-picker .layout-window-divider.sidebar {
+  left: 36px;
+  top: 24px;
+  width: 24px;
+  height: 1px;
+  transform: rotate(-90deg);
+  transform-origin: top left;
+}
+.workspace-layout-picker .layout-window-divider.split {
+  left: 25px;
+  top: 32px;
+  width: 32px;
+  height: 1px;
+  transform: rotate(-90deg);
+  transform-origin: top left;
+}
+.workspace-layout-picker .layout-window-divider.tabs-top {
+  left: 26px;
+  top: 0;
+  width: 26px;
+  height: 3px;
+}
+.workspace-layout-picker .layout-window-divider.tabs-bottom {
+  left: 26px;
+  top: 15px;
+  width: 26px;
+  height: 3px;
+}
+.workspace-layout-picker .option[aria-checked='false'] .chat-width-art-panel,
+.workspace-layout-picker
+  .chat-width-art[data-selected='false']
+  .chat-width-art-panel:not(.composer-layer) {
+  opacity: 0.64;
+}
+html:not(.dark) .workspace-layout-picker .chat-width-art-composer,
+html:not(.dark) .workspace-layout-picker .layout-window-composer {
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.1),
+    0 2px 4px -1px rgba(0, 0, 0, 0.2);
+}
+.dark .workspace-layout-picker .chat-width-art {
+  background: color-mix(in srgb, var(--bg-muted), #fff 12%);
+}
+.dark .workspace-layout-picker .chat-width-art-panel {
+  background: var(--bg-secondary);
+}
+.dark .workspace-layout-picker .chat-width-art-title,
+.dark .workspace-layout-picker .chat-width-art-line,
+.dark .workspace-layout-picker .layout-window-title,
+.dark .workspace-layout-picker .layout-window-line {
+  background: rgba(255, 255, 255, 0.24);
+}
+.dark .workspace-layout-picker .chat-width-art-composer,
+.dark .workspace-layout-picker .layout-window-composer {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.dark .workspace-layout-picker .layout-window-divider {
+  background: rgba(0, 0, 0, 0.14);
+}
+.workspace-layout-picker .chat-width-art-panel.composer-layer {
+  background: transparent;
+  box-shadow: none;
+  pointer-events: none;
+}
+.workspace-layout-picker .option[aria-checked='false'] .composer-layer {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .workspace-layout-picker .caption {
+    transition: color 200ms ease-out;
+  }
+  .workspace-layout-picker .chat-width-art {
+    transition:
+      outline-width 100ms ease-out,
+      outline-color 100ms ease-out;
+  }
+  .workspace-layout-picker .chat-width-art::before,
+  .workspace-layout-picker .chat-width-art-panel {
+    transition: opacity 200ms ease-out;
+  }
+}

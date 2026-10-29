@@ -1,0 +1,30 @@
+name: Spec Gatherer
+description: Collect codebase context needed to write the spec.
+log_format_hint: agent
+inputs:
+  model:
+    description: Optional Claude model override.
+    required: false
+outputs:
+  text_response:
+    description: Gathered specification context.
+    value: ${{ steps.gather.outputs.text_response }}
+  transcript_file:
+    description: Spec gatherer transcript file.
+    value: ${{ steps.gather.outputs.transcript_file }}
+runs:
+  using: composite
+  steps:
+    - id: gather
+      uses: builtin/agent-prompt
+      with:
+        model: ${{ inputs.model }}
+        permission_preset: read_only
+        prompt: |
+          Gather the codebase context needed to write a solid implementation spec.
+
+          Include:
+          1. relevant files and modules
+          2. current behavior
+          3. interfaces and contracts that must be preserved
+          4. likely change surface

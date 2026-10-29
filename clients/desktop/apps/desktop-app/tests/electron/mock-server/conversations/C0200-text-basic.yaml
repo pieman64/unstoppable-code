@@ -1,0 +1,15 @@
+# Basic single-turn streamed text reply. Bind a chat to this script by typing
+# `[Canopy-C0200]` into the composer (Doc 5 §4). Used by the "chat send →
+# streamed text reply" live-turn tier and as a turn-timer fixture (fixed
+# `streamMs` keeps the live timer deterministic).
+id: C0200
+description: Single streamed text turn with fixed timing.
+defaultUsage:
+  inputTokens: 900
+  outputTokens: 32
+  cacheReadInputTokens: 400
+steps:
+  - text: 'Hello from the deterministic Canopy mock provider.'
+    stopReason: end_turn
+    streamMs: 1500
+    chunkChars: 8

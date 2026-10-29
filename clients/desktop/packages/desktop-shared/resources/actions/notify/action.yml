@@ -1,0 +1,18 @@
+name: Notify
+description: Send a desktop OS notification from the desktop runtime.
+inputs:
+  channel:
+    description: Notification channel. Defaults to desktop.
+    default: desktop
+  body:
+    description: Notification body text.
+  body_file:
+    description: File path containing notification body content.
+  title:
+    description: Desktop notification title. Required when channel is desktop.
+outputs:
+  sent:
+    description: 'true when the notification request was emitted.'
+runs:
+  using: node
+  main: index.js

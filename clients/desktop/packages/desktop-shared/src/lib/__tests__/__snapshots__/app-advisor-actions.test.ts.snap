@@ -1,0 +1,717 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`searchAppAdvisorActions ranking characterization keeps the categories list and result key order 1`] = `
+[
+  "code-graph",
+  "sidebar",
+  "sharing",
+  "worktree-chat",
+  "navigation",
+  "preferences",
+  "settings",
+  "ollama",
+  "remote-control",
+  "file-tree",
+  "usage",
+  "skills",
+  "plugins",
+  "collections",
+  "workspace",
+  "worktree",
+  "hook",
+  "code-review",
+  "runs",
+  "chat",
+  "delegation",
+  "home",
+  "tracked-plan",
+  "pipeline-assistant-chat",
+  "standalone-chat",
+  "archived",
+  "environment",
+  "pipeline",
+  "plan",
+  "shared-containers",
+  "file",
+  "terminal",
+  "panel",
+  "ledger",
+  "account",
+  "portal",
+  "app-advisor",
+  "watchers",
+  "automations",
+  "browser",
+  "projects",
+  "bots",
+]
+`;
+
+exports[`searchAppAdvisorActions ranking characterization keeps the categories list and result key order 2`] = `
+[
+  "type,category,summary,fields,example,additionalExamples,hookTriggers,notes,requiredFields,optionalFields",
+  "type,category,summary,fields,example,requiredFields,optionalFields",
+  "type,category,summary,fields,example,notes,requiredFields,optionalFields",
+]
+`;
+
+exports[`searchAppAdvisorActions ranking characterization ranks allowed types with query 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "pipeline.run [pipeline] req=pipelineId,projectId,worktreeId opt=inputs,runMode,planPath,taskPath,planId,repoId,watchers",
+    "pipeline.list [pipeline] req= opt=projectId,worktreeId,query,runModes,includeDisabled,limit",
+    "worktree.run_script [worktree] req=projectId,worktreeId,scriptId opt=repo,waitSeconds",
+  ],
+  "category": undefined,
+  "query": "run pipeline",
+  "returned": 3,
+  "totalMatches": 3,
+}
+`;
+
+exports[`searchAppAdvisorActions ranking characterization ranks allowed types without query 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "worktree.list_scripts [worktree] req=projectId,worktreeId opt=",
+    "worktree.run_script [worktree] req=projectId,worktreeId,scriptId opt=repo,waitSeconds",
+  ],
+  "category": undefined,
+  "query": "",
+  "returned": 2,
+  "totalMatches": 2,
+}
+`;
+
+exports[`searchAppAdvisorActions ranking characterization ranks bot send 1`] = `
+{
+  "actionType": "bots.send_message",
+  "actions": [
+    "bots.send_message [bots] req=botId,taskId,chatId,text opt=watchers",
+  ],
+  "category": undefined,
+  "query": "",
+  "returned": 1,
+  "totalMatches": 1,
+}
+`;
+
+exports[`searchAppAdvisorActions ranking characterization ranks category alias 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "automation.open_editor [automations] req=id opt=section",
+    "automation.open_shared_pipeline_review [automations] req=id opt=",
+    "automation.list [automations] req= opt=includeRuns",
+    "automation.get [automations] req=id opt=",
+    "automation.create [automations] req=input opt=watchers",
+    "automation.update [automations] req=id,patch opt=",
+    "automation.delete [automations] req=id opt=",
+    "automation.disable [automations] req=id opt=",
+    "automation.run_now [automations] req=id opt=watchers",
+    "automation.share [automations] req=id opt=shareScope,teamId,organizationId,description",
+    "automation.list_shared [automations] req= opt=query,limit,cursor,createdBy",
+    "automation.read_shared [automations] req=automationId opt=",
+  ],
+  "category": "automation",
+  "query": "",
+  "returned": 12,
+  "totalMatches": 13,
+}
+`;
+
+exports[`searchAppAdvisorActions ranking characterization ranks category alias with query 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "watcher.list [watchers] req= opt=",
+    "watcher.delete [watchers] req=id opt=notifySubscriber",
+  ],
+  "category": "watcher",
+  "query": "chat",
+  "returned": 2,
+  "totalMatches": 2,
+}
+`;
+
+exports[`searchAppAdvisorActions ranking characterization ranks category token stripped from query 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "skill_suggestions.list [skills] req= opt=",
+    "skills.list_marketplace [skills] req= opt=query,limit",
+    "skills.list [skills] req= opt=query,customOnly,limit",
+    "skills.list_shared [skills] req= opt=query,limit,cursor,createdBy",
+    "skill_suggestions.open [skills] req= opt=",
+    "skills.open_viewer [skills] req=sourceId,skillName opt=filePath",
+    "skills.open_shared_viewer [skills] req=skillId opt=",
+    "skills.read [skills] req=sourceId,skillName opt=",
+    "skills.read_file [skills] req=sourceId,skillName,filePath opt=",
+    "skills.read_shared [skills] req=skillId opt=",
+  ],
+  "category": "skills",
+  "query": "skills list",
+  "returned": 10,
+  "totalMatches": 10,
+}
+`;
+
+exports[`searchAppAdvisorActions ranking characterization ranks category with small limit 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "browser.profile.preview_clear [browser] req=profileId,storageGeneration,metadataRevision,operation opt=projectId,worktreeId",
+    "browser.profile.clear [browser] req=operationId,token opt=projectId,worktreeId",
+    "browser.profile.job_get [browser] req=jobId opt=projectId,worktreeId",
+    "browser.profile.job_cancel [browser] req=jobId opt=projectId,worktreeId",
+    "browser.profile.list [browser] req= opt=projectId,worktreeId,offset",
+  ],
+  "category": "browser",
+  "query": "",
+  "returned": 5,
+  "totalMatches": 42,
+}
+`;
+
+exports[`searchAppAdvisorActions ranking characterization ranks delegation category alias 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "delegation.stop [delegation] req=projectId,worktreeId,chatId,delegationId opt=",
+    "delegation.stop_all [delegation] req=projectId,worktreeId,chatId opt=",
+  ],
+  "category": "delegations",
+  "query": "stop",
+  "returned": 2,
+  "totalMatches": 2,
+}
+`;
+
+exports[`searchAppAdvisorActions ranking characterization ranks empty input 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "code-graph.get_context [code-graph] req=projectId,worktreeId opt=",
+    "code-graph.build [code-graph] req=projectId,worktreeId opt=",
+    "code-graph.query [code-graph] req=projectId,worktreeId,mode opt=target,to,repoId,maxDepth,maxNodes,detailLevel,limit",
+    "code-graph.search [code-graph] req=projectId,worktreeId,query opt=detailLevel,limit",
+    "code-graph.explain [code-graph] req=projectId,worktreeId,qualifiedName opt=repoId",
+    "code-graph.impact [code-graph] req=projectId,worktreeId,target opt=maxDepth,maxNodes,detailLevel",
+    "code-graph.detect_changes [code-graph] req=projectId,worktreeId opt=baseRef,repoId,detailLevel",
+    "code-graph.compare_changes [code-graph] req=projectId,worktreeId opt=baseRef,repoId,maxDepth,detailLevel",
+    "code-graph.review [code-graph] req=projectId,worktreeId opt=baseRef,repoId,detailLevel",
+    "sidebar.item_groups.set_item [sidebar] req=scope,itemId opt=groupId,newGroup",
+    "sidebar.item_groups.list_items [sidebar] req=scope,groupId opt=",
+    "sidebar.item_groups.list [sidebar] req=scope opt=",
+  ],
+  "category": undefined,
+  "query": "",
+  "returned": 12,
+  "totalMatches": 391,
+}
+`;
+
+exports[`searchAppAdvisorActions ranking characterization ranks exact action type 1`] = `
+{
+  "actionType": "pipeline.run",
+  "actions": [
+    "pipeline.run [pipeline] req=pipelineId,projectId,worktreeId opt=inputs,runMode,planPath,taskPath,planId,repoId,watchers",
+  ],
+  "category": undefined,
+  "query": "",
+  "returned": 1,
+  "totalMatches": 1,
+}
+`;
+
+exports[`searchAppAdvisorActions ranking characterization ranks exact action type outside category 1`] = `
+{
+  "actionType": "pipeline.run",
+  "actions": [
+    "pipeline.run [pipeline] req=pipelineId,projectId,worktreeId opt=inputs,runMode,planPath,taskPath,planId,repoId,watchers",
+  ],
+  "category": "skills",
+  "query": "",
+  "returned": 1,
+  "totalMatches": 1,
+}
+`;
+
+exports[`searchAppAdvisorActions ranking characterization ranks feature flag disabled 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "org_project.list [workspace] req= opt=",
+    "org_project.setup_start [workspace] req=projectId opt=",
+    "org_project.setup_cancel [workspace] req=projectId opt=",
+    "projects.list [projects] req= opt=query,name,pageSize,cursor,sort,order,types,purposes,readiness,owner,includeDefault",
+    "navigation.open_import_projects [navigation] req= opt=",
+    "standalone-chat.switch_project [standalone-chat] req=projectId opt=",
+    "projects.create_task [projects] req=projectId opt=title,initialMessage",
+    "projects.create_task_chat [projects] req=projectId,taskId opt=initialMessage",
+    "projects.steer_queued_message [projects] req=projectId,taskId,chatId,queuedMessageId opt=",
+    "projects.schedule_message [projects] req=projectId,taskId,chatId,text,runAt opt=timezone,name,attachments,inputMode",
+    "projects.send_message [projects] req=projectId,taskId,chatId,text opt=queueForSetup,watchers",
+    "projects.list_tasks [projects] req=projectId opt=query,name,pageSize,cursor,sort,order,statuses,retentionStates,hasRunningChats,pinned,branchName",
+  ],
+  "category": undefined,
+  "query": "org project",
+  "returned": 12,
+  "totalMatches": 217,
+}
+`;
+
+exports[`searchAppAdvisorActions ranking characterization ranks fractional limit 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "chat.set_harness [worktree-chat] req=pickerId,harness opt=",
+    "navigation.open_chat_turn [navigation] req=projectId,chatId,userMessageId opt=worktreeId",
+    "chat.open_import_session_modal [chat] req= opt=workspaceId",
+  ],
+  "category": undefined,
+  "query": "chat",
+  "returned": 3,
+  "totalMatches": 118,
+}
+`;
+
+exports[`searchAppAdvisorActions ranking characterization ranks hook trigger phrase 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "hook.pause [hook] req=projectId,worktreeId opt=hookKey,all hooks=worktree:precommit:failure,pr:create",
+    "hook.resume [hook] req=projectId,worktreeId opt=hookKey,all hooks=worktree:precommit:failure,pr:create",
+    "worktree.get_settings [worktree] req=projectId,worktreeId opt=",
+    "worktree.run_script [worktree] req=projectId,worktreeId,scriptId opt=repo,waitSeconds",
+    "worktree.update_settings [worktree] req=projectId,worktreeId opt=hidden,pausedHookKeys,branchGroupingOverride",
+    "worktree.create [worktree] req=workspaceId opt=baseWorktreeId,baseBranch,select",
+    "worktree.create_from [worktree] req=workspaceId,source,reference opt=baseBranch,select",
+    "worktree.add_workspace [worktree] req=sourceWorkspaceId,sourceWorktreeId,joinWorkspaceId opt=mode,select",
+    "worktree.add_existing_worktree [worktree] req=sourceWorkspaceId,sourceWorktreeId,joinWorkspaceId,joinWorktreeId opt=mode,select",
+    "worktree.list_scripts [worktree] req=projectId,worktreeId opt=",
+    "worktree.run_git_action [worktree] req=projectId,worktreeId,action opt=repoIds,ignoreUnresolvedCommentsWarning",
+    "navigation.open_editor_setup [navigation] req= opt=workspaceId",
+  ],
+  "category": undefined,
+  "query": "pause hook after setup worktree created",
+  "returned": 12,
+  "totalMatches": 207,
+}
+`;
+
+exports[`searchAppAdvisorActions ranking characterization ranks hook trigger query 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "hook.pause [hook] req=projectId,worktreeId opt=hookKey,all hooks=",
+    "hook.resume [hook] req=projectId,worktreeId opt=hookKey,all hooks=",
+    "worktree.get_settings [worktree] req=projectId,worktreeId opt=",
+    "worktree.update_settings [worktree] req=projectId,worktreeId opt=hidden,pausedHookKeys,branchGroupingOverride",
+    "workspace.read_readiness [workspace] req=workspaceId opt=worktreeId",
+    "workspace.start_readiness_fix [workspace] req=workspaceId,issueCode opt=worktreeId,repoId",
+    "workspace.update_local_settings [workspace] req=workspaceId opt=archiveRetentionDays,autoArchiveDays,autoArchiveDeleteBranch,defaultPluginSelections,alwaysShow,scripts,hooks,repoScripts,repoHooks",
+    "workspace.apply_source_edits [workspace] req=workspaceId opt=worktreeId,createWorktree,claudeMd,scripts,hooks,plugins,repoScriptChanges,repoHookChanges,repoAdds,repoRemovals",
+  ],
+  "category": undefined,
+  "query": "hook",
+  "returned": 8,
+  "totalMatches": 8,
+}
+`;
+
+exports[`searchAppAdvisorActions ranking characterization ranks multi word query 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "pipeline.run [pipeline] req=pipelineId,projectId,worktreeId opt=inputs,runMode,planPath,taskPath,planId,repoId,watchers",
+    "pipeline.open_run [pipeline] req=executionId opt=jobId",
+    "pipeline.debug_run [pipeline] req=executionId opt=",
+    "pipeline.open_editor [pipeline] req= opt=pipelineId,cwd,filePath,projectId,worktreeId,repoId,sharedRemoteId,section",
+    "pipeline.set_enabled [pipeline] req=pipelineId,enabled opt=projectId,worktreeId",
+    "pipeline.list [pipeline] req= opt=projectId,worktreeId,query,runModes,includeDisabled,limit",
+    "pipeline.get [pipeline] req=pipelineId opt=projectId,worktreeId,includeYaml",
+    "pipeline.execution_cancel [pipeline] req=executionId opt=",
+    "pipeline.execution_cancel_matrix_variant [pipeline] req=executionId,jobId,variantJobId opt=",
+    "pipeline.execution_start_over [pipeline] req=executionId opt=",
+    "pipeline.execution_chain [pipeline] req=executionId,pipelineId opt=inputs,repoId",
+    "worktree.run_script [worktree] req=projectId,worktreeId,scriptId opt=repo,waitSeconds",
+  ],
+  "category": undefined,
+  "query": "run pipeline",
+  "returned": 12,
+  "totalMatches": 120,
+}
+`;
+
+exports[`searchAppAdvisorActions ranking characterization ranks non-finite limit 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "chat.set_harness [worktree-chat] req=pickerId,harness opt=",
+    "navigation.open_chat_turn [navigation] req=projectId,chatId,userMessageId opt=worktreeId",
+    "chat.open_import_session_modal [chat] req= opt=workspaceId",
+    "worktree-chat.list_background_processes [worktree-chat] req=projectId,worktreeId opt=chatId",
+    "worktree-chat.stop_background_process [worktree-chat] req=projectId,worktreeId,chatId,taskId opt=",
+    "worktree-chat.retry_state_refresh [worktree-chat] req=projectId,worktreeId opt=",
+    "worktree-chat.dismiss_state_notice [worktree-chat] req=projectId,worktreeId opt=",
+    "worktree-chat.open_archives [worktree-chat] req= opt=projectId,worktreeId",
+    "worktree-chat.switch_tab [worktree-chat] req=tabId opt=projectId,worktreeId",
+    "worktree-chat.run_chat_action [worktree-chat] req=action opt=projectId,worktreeId,chatId",
+    "worktree-chat.set_plan_mode [worktree-chat] req=enabled opt=projectId,worktreeId,chatId",
+    "worktree-chat.set_interface_mode [worktree-chat] req=mode opt=projectId,worktreeId,chatId",
+  ],
+  "category": undefined,
+  "query": "chat",
+  "returned": 12,
+  "totalMatches": 118,
+}
+`;
+
+exports[`searchAppAdvisorActions ranking characterization ranks normalized punctuation 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "skills.list_marketplace [skills] req= opt=query,limit",
+    "skills.list [skills] req= opt=query,customOnly,limit",
+    "skills.list_shared [skills] req= opt=query,limit,cursor,createdBy",
+    "skill_suggestions.list [skills] req= opt=",
+    "skills.open_viewer [skills] req=sourceId,skillName opt=filePath",
+    "skills.open_shared_viewer [skills] req=skillId opt=",
+    "skills.read [skills] req=sourceId,skillName opt=",
+    "skills.read_file [skills] req=sourceId,skillName,filePath opt=",
+    "skills.read_shared [skills] req=skillId opt=",
+    "worktree-chat.list_plugins [worktree-chat] req= opt=projectId,worktreeId,chatId,query,kind,limit",
+    "pipeline-assistant-chat.list_plugins [pipeline-assistant-chat] req= opt=chatId,query,kind,limit",
+    "standalone-chat.list_plugins [standalone-chat] req= opt=projectId,chatId,query,kind,limit",
+  ],
+  "category": undefined,
+  "query": "Skills.LIST",
+  "returned": 12,
+  "totalMatches": 118,
+}
+`;
+
+exports[`searchAppAdvisorActions ranking characterization ranks partial action type 1`] = `
+{
+  "actionType": "pipeline",
+  "actions": [
+    "pipeline-assistant-chat.list_tabs [pipeline-assistant-chat] req= opt=",
+    "pipeline-assistant-chat.create_tab [pipeline-assistant-chat] req= opt=initialMessage",
+    "pipeline-assistant-chat.switch_tab [pipeline-assistant-chat] req=tabId opt=",
+    "pipeline-assistant-chat.get_last_user_message [pipeline-assistant-chat] req= opt=chatId",
+    "pipeline-assistant-chat.get_last_agent_response [pipeline-assistant-chat] req= opt=chatId",
+    "pipeline-assistant-chat.read_history [pipeline-assistant-chat] req= opt=chatId,query,limit",
+    "pipeline-assistant-chat.send_message [pipeline-assistant-chat] req=chatId,text opt=",
+    "pipeline-assistant-chat.set_model [pipeline-assistant-chat] req=model opt=chatId",
+    "pipeline-assistant-chat.set_thinking_level [pipeline-assistant-chat] req=level opt=chatId",
+    "pipeline-assistant-chat.list_plugins [pipeline-assistant-chat] req= opt=chatId,query,kind,limit",
+    "pipeline-assistant-chat.update_plugin_selection [pipeline-assistant-chat] req=kind,key,enabled opt=chatId",
+    "pipeline-assistant-chat.set_plugin_selections [pipeline-assistant-chat] req=selections opt=chatId",
+  ],
+  "category": undefined,
+  "query": "",
+  "returned": 12,
+  "totalMatches": 43,
+}
+`;
+
+exports[`searchAppAdvisorActions ranking characterization ranks project schedule 1`] = `
+{
+  "actionType": "projects.schedule_message",
+  "actions": [
+    "projects.schedule_message [projects] req=projectId,taskId,chatId,text,runAt opt=timezone,name,attachments,inputMode",
+  ],
+  "category": undefined,
+  "query": "",
+  "returned": 1,
+  "totalMatches": 1,
+}
+`;
+
+exports[`searchAppAdvisorActions ranking characterization ranks project send 1`] = `
+{
+  "actionType": "projects.send_message",
+  "actions": [
+    "projects.send_message [projects] req=projectId,taskId,chatId,text opt=queueForSetup,watchers",
+  ],
+  "category": undefined,
+  "query": "",
+  "returned": 1,
+  "totalMatches": 1,
+}
+`;
+
+exports[`searchAppAdvisorActions ranking characterization ranks project steer 1`] = `
+{
+  "actionType": "projects.steer_queued_message",
+  "actions": [
+    "projects.steer_queued_message [projects] req=projectId,taskId,chatId,queuedMessageId opt=",
+  ],
+  "category": undefined,
+  "query": "",
+  "returned": 1,
+  "totalMatches": 1,
+}
+`;
+
+exports[`searchAppAdvisorActions ranking characterization ranks schedule phrase 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "automation.create [automations] req=input opt=watchers",
+    "projects.schedule_message [projects] req=projectId,taskId,chatId,text,runAt opt=timezone,name,attachments,inputMode",
+    "navigation.go_to_page [navigation] req=page opt=tab",
+    "automation.open_editor [automations] req=id opt=section",
+    "automation.list [automations] req= opt=includeRuns",
+    "automation.get [automations] req=id opt=",
+    "automation.update [automations] req=id,patch opt=",
+    "automation.delete [automations] req=id opt=",
+    "automation.disable [automations] req=id opt=",
+    "automation.run_now [automations] req=id opt=watchers",
+  ],
+  "category": undefined,
+  "query": "schedule recurring reminder",
+  "returned": 10,
+  "totalMatches": 10,
+}
+`;
+
+exports[`searchAppAdvisorActions ranking characterization ranks segment-prefixed word 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "skills.open_viewer [skills] req=sourceId,skillName opt=filePath",
+    "skills.open_shared_viewer [skills] req=skillId opt=",
+    "code-graph.get_context [code-graph] req=projectId,worktreeId opt=",
+    "code-graph.build [code-graph] req=projectId,worktreeId opt=",
+    "code-graph.query [code-graph] req=projectId,worktreeId,mode opt=target,to,repoId,maxDepth,maxNodes,detailLevel,limit",
+    "code-graph.search [code-graph] req=projectId,worktreeId,query opt=detailLevel,limit",
+    "code-graph.explain [code-graph] req=projectId,worktreeId,qualifiedName opt=repoId",
+    "code-graph.impact [code-graph] req=projectId,worktreeId,target opt=maxDepth,maxNodes,detailLevel",
+    "code-graph.detect_changes [code-graph] req=projectId,worktreeId opt=baseRef,repoId,detailLevel",
+    "code-graph.compare_changes [code-graph] req=projectId,worktreeId opt=baseRef,repoId,maxDepth,detailLevel",
+    "code-graph.review [code-graph] req=projectId,worktreeId opt=baseRef,repoId,detailLevel",
+    "navigation.go_to_page [navigation] req=page opt=tab",
+  ],
+  "category": undefined,
+  "query": "view",
+  "returned": 12,
+  "totalMatches": 57,
+}
+`;
+
+exports[`searchAppAdvisorActions ranking characterization ranks short abbreviation 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "navigation.open_pr_picker [navigation] req= opt=",
+    "worktree.start_pr_comment_triage [worktree] req=projectId,worktreeId opt=repoId,repoName,branchName",
+    "github.split_pr [worktree] req=projectId,worktreeId opt=",
+    "code-graph.get_context [code-graph] req=projectId,worktreeId opt=",
+    "code-graph.build [code-graph] req=projectId,worktreeId opt=",
+    "code-graph.query [code-graph] req=projectId,worktreeId,mode opt=target,to,repoId,maxDepth,maxNodes,detailLevel,limit",
+    "code-graph.search [code-graph] req=projectId,worktreeId,query opt=detailLevel,limit",
+    "code-graph.explain [code-graph] req=projectId,worktreeId,qualifiedName opt=repoId",
+    "code-graph.impact [code-graph] req=projectId,worktreeId,target opt=maxDepth,maxNodes,detailLevel",
+    "code-graph.detect_changes [code-graph] req=projectId,worktreeId opt=baseRef,repoId,detailLevel",
+    "code-graph.compare_changes [code-graph] req=projectId,worktreeId opt=baseRef,repoId,maxDepth,detailLevel",
+    "code-graph.review [code-graph] req=projectId,worktreeId opt=baseRef,repoId,detailLevel",
+  ],
+  "category": undefined,
+  "query": "pr",
+  "returned": 12,
+  "totalMatches": 264,
+}
+`;
+
+exports[`searchAppAdvisorActions ranking characterization ranks short abbreviation above the limit cap 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "navigation.open_pr_picker [navigation] req= opt=",
+    "worktree.start_pr_comment_triage [worktree] req=projectId,worktreeId opt=repoId,repoName,branchName",
+    "github.split_pr [worktree] req=projectId,worktreeId opt=",
+    "code-graph.get_context [code-graph] req=projectId,worktreeId opt=",
+    "code-graph.build [code-graph] req=projectId,worktreeId opt=",
+    "code-graph.query [code-graph] req=projectId,worktreeId,mode opt=target,to,repoId,maxDepth,maxNodes,detailLevel,limit",
+    "code-graph.search [code-graph] req=projectId,worktreeId,query opt=detailLevel,limit",
+    "code-graph.explain [code-graph] req=projectId,worktreeId,qualifiedName opt=repoId",
+    "code-graph.impact [code-graph] req=projectId,worktreeId,target opt=maxDepth,maxNodes,detailLevel",
+    "code-graph.detect_changes [code-graph] req=projectId,worktreeId opt=baseRef,repoId,detailLevel",
+    "code-graph.compare_changes [code-graph] req=projectId,worktreeId opt=baseRef,repoId,maxDepth,detailLevel",
+    "code-graph.review [code-graph] req=projectId,worktreeId opt=baseRef,repoId,detailLevel",
+    "sidebar.item_groups.set_item [sidebar] req=scope,itemId opt=groupId,newGroup",
+    "sidebar.item_groups.list_items [sidebar] req=scope,groupId opt=",
+    "sidebar.item_groups.list [sidebar] req=scope opt=",
+    "sidebar.item_groups.ungroup [sidebar] req=scope,groupId opt=",
+    "sharing.open_dialog [sharing] req=target opt=",
+    "navigation.go_to_page [navigation] req=page opt=tab",
+    "navigation.open_chat_turn [navigation] req=projectId,chatId,userMessageId opt=worktreeId",
+    "preferences.get_global_plugin_selections [preferences] req= opt=",
+    "preferences.set_global_plugin_selections [preferences] req=selections opt=",
+    "navigation.go_back [navigation] req= opt=",
+    "navigation.open_settings [navigation] req= opt=section",
+    "navigation.open_workspace_settings [navigation] req=workspaceId opt=tab",
+    "navigation.open_code_graph [navigation] req=workspaceId opt=",
+    "account_proxy.set_routing [settings] req= opt=claude,codex,keepChatOnOneAccount",
+    "account_proxy.status [settings] req= opt=refresh",
+    "opencode.connection [settings] req=operation opt=",
+    "cursor.approval_check [settings] req=operation opt=",
+    "workspace_context.switch [navigation] req=context opt=",
+    "settings.personalCatalog.set [settings] req=enabled opt=",
+    "settings.review_privacy_opt_in [settings] req=feature,organizationId opt=",
+    "settings.set_local_memory_enabled [settings] req=enabled opt=",
+    "settings.set_ledger_agent_recording_enabled [settings] req=enabled opt=",
+    "settings.set_skill_suggestions_enabled [settings] req=enabled opt=",
+    "settings.get_handoff_model [settings] req= opt=",
+    "settings.set_handoff_model [settings] req=model opt=thinkingLevel",
+    "settings.set_managed_delegation_mode [settings] req=mode opt=",
+    "settings.set_managed_delegation_max_depth [settings] req=maxDepth opt=",
+    "memory.import_external [settings] req= opt=",
+    "memory.consolidate_now [settings] req= opt=",
+    "memory.rebuild [settings] req=scope opt=workspaceId",
+    "memory.list_snapshots [settings] req=scope opt=workspaceId",
+    "memory.restore_snapshot [settings] req=scope,snapshotId opt=workspaceId",
+    "settings.set_profile_role [settings] req=role opt=roleDetail",
+    "navigation.open_import_projects [navigation] req= opt=",
+    "navigation.open_editor_setup [navigation] req= opt=workspaceId",
+    "script_actions.list [settings] req=workspaceId,inWorktreeId opt=",
+    "script_actions.open_review [settings] req=workspaceId,inWorktreeId opt=",
+    "script_actions.rescan [settings] req=workspaceId,inWorktreeId opt=",
+  ],
+  "category": undefined,
+  "query": "pr",
+  "returned": 50,
+  "totalMatches": 264,
+}
+`;
+
+exports[`searchAppAdvisorActions ranking characterization ranks single word query 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "pipeline-assistant-chat.list_tabs [pipeline-assistant-chat] req= opt=",
+    "pipeline-assistant-chat.create_tab [pipeline-assistant-chat] req= opt=initialMessage",
+    "pipeline-assistant-chat.switch_tab [pipeline-assistant-chat] req=tabId opt=",
+    "pipeline-assistant-chat.get_last_user_message [pipeline-assistant-chat] req= opt=chatId",
+    "pipeline-assistant-chat.get_last_agent_response [pipeline-assistant-chat] req= opt=chatId",
+    "pipeline-assistant-chat.read_history [pipeline-assistant-chat] req= opt=chatId,query,limit",
+    "pipeline-assistant-chat.send_message [pipeline-assistant-chat] req=chatId,text opt=",
+    "pipeline-assistant-chat.set_model [pipeline-assistant-chat] req=model opt=chatId",
+    "pipeline-assistant-chat.set_thinking_level [pipeline-assistant-chat] req=level opt=chatId",
+    "pipeline-assistant-chat.list_plugins [pipeline-assistant-chat] req= opt=chatId,query,kind,limit",
+    "pipeline-assistant-chat.update_plugin_selection [pipeline-assistant-chat] req=kind,key,enabled opt=chatId",
+    "pipeline-assistant-chat.set_plugin_selections [pipeline-assistant-chat] req=selections opt=chatId",
+  ],
+  "category": undefined,
+  "query": "pipeline",
+  "returned": 12,
+  "totalMatches": 51,
+}
+`;
+
+exports[`searchAppAdvisorActions ranking characterization ranks two letter word 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "code-graph.build [code-graph] req=projectId,worktreeId opt=",
+    "code-graph.query [code-graph] req=projectId,worktreeId,mode opt=target,to,repoId,maxDepth,maxNodes,detailLevel,limit",
+    "code-graph.search [code-graph] req=projectId,worktreeId,query opt=detailLevel,limit",
+    "code-graph.explain [code-graph] req=projectId,worktreeId,qualifiedName opt=repoId",
+    "code-graph.impact [code-graph] req=projectId,worktreeId,target opt=maxDepth,maxNodes,detailLevel",
+    "code-graph.detect_changes [code-graph] req=projectId,worktreeId opt=baseRef,repoId,detailLevel",
+    "code-graph.compare_changes [code-graph] req=projectId,worktreeId opt=baseRef,repoId,maxDepth,detailLevel",
+    "code-graph.review [code-graph] req=projectId,worktreeId opt=baseRef,repoId,detailLevel",
+    "sidebar.item_groups.set_item [sidebar] req=scope,itemId opt=groupId,newGroup",
+    "sidebar.item_groups.list_items [sidebar] req=scope,groupId opt=",
+    "sidebar.item_groups.list [sidebar] req=scope opt=",
+    "sidebar.item_groups.create [sidebar] req=scope,itemId opt=name,color,labelHidden",
+  ],
+  "category": undefined,
+  "query": "me",
+  "returned": 12,
+  "totalMatches": 197,
+}
+`;
+
+exports[`searchAppAdvisorActions ranking characterization ranks unknown action type 1`] = `
+{
+  "actionType": "nonexistent.action",
+  "actions": [],
+  "category": undefined,
+  "query": "",
+  "returned": 0,
+  "totalMatches": 0,
+}
+`;
+
+exports[`searchAppAdvisorActions ranking characterization ranks unmatched query 1`] = `
+{
+  "actionType": undefined,
+  "actions": [],
+  "category": undefined,
+  "query": "zzzz qqqq",
+  "returned": 0,
+  "totalMatches": 0,
+}
+`;
+
+exports[`searchAppAdvisorActions ranking characterization ranks watcher phrase 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "pipeline.update_shared [pipeline] req= opt=pipelineId,remoteId,rawYaml,name,description,icon",
+    "pipeline.execution_resume [pipeline] req=executionId opt=statusReasonIds,pauseResponses",
+    "pipeline-assistant-chat.create_tab [pipeline-assistant-chat] req= opt=initialMessage",
+    "pipeline-assistant-chat.get_last_user_message [pipeline-assistant-chat] req= opt=chatId",
+    "pipeline-assistant-chat.read_history [pipeline-assistant-chat] req= opt=chatId,query,limit",
+    "pipeline-assistant-chat.send_message [pipeline-assistant-chat] req=chatId,text opt=",
+    "pipeline-assistant-chat.set_plugin_selections [pipeline-assistant-chat] req=selections opt=chatId",
+    "pipeline.create [pipeline] req= opt=rawYaml,yamlFilePath,name,description,icon",
+    "pipeline.update [pipeline] req=pipelineId opt=rawYaml,yamlFilePath,name,description,icon",
+    "pipeline.share [pipeline] req=pipelineId,shareScope opt=teamId,organizationId,projectId,worktreeId",
+    "pipeline.delete_shared [pipeline] req= opt=pipelineId,remoteId",
+    "pipeline.list [pipeline] req= opt=projectId,worktreeId,query,runModes,includeDisabled,limit",
+  ],
+  "category": undefined,
+  "query": "notify me when pipeline finished",
+  "returned": 12,
+  "totalMatches": 239,
+}
+`;
+
+exports[`searchAppAdvisorActions ranking characterization ranks zero limit 1`] = `
+{
+  "actionType": undefined,
+  "actions": [
+    "chat.set_harness [worktree-chat] req=pickerId,harness opt=",
+  ],
+  "category": undefined,
+  "query": "chat",
+  "returned": 1,
+  "totalMatches": 118,
+}
+`;
+
+exports[`searchAppAdvisorActions ranking characterization returns hook triggers as fresh copies ranked by the query 1`] = `
+[
+  "pr:reviews:new:has-comments",
+  "pr:update:comments",
+  "pr:reviews:new",
+  "worktree:precommit:failure",
+  "pr:create",
+  "pr:update:labels",
+  "pr:checks:fail",
+  "pr:checks:pass",
+  "pr:checks:pass:all",
+  "pr:checks:finished",
+  "pr:checks:finished:has-fail",
+  "pr:merge-conflicts",
+  "pr:queue:removed",
+  "pr:queue:entered",
+  "pr:merged",
+  "pr:closed",
+]
+`;

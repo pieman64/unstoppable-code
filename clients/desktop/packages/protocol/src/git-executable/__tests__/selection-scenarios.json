@@ -1,0 +1,1750 @@
+{
+  "$comment": [
+    "Test-only, host-neutral Git executable selection goldens. Not exported.",
+    "builders: inputs and outputs of the pure @canopy/protocol/git-executable helpers.",
+    "scenarios: whole-selection cases each host runner replays through its own filesystem and process seams.",
+    "filesystem kinds: missing, eacces (lookup fails with EACCES), directory, executable (stdout is what `--version` prints), shim (an Apple or Homebrew shim that must never run), symlink (resolves to target). Unlisted paths are missing.",
+    "developerDir: raw `xcode-select --print-path` stdout, or null when the command fails. whereExe: `where.exe <name>` stdout by name; an unlisted name fails.",
+    "attempts: the candidate paths the selection looked up, in order (Windows trims each candidate first). expected applies to every path-join flavor; expectedByJoin keys it by flavor when Windows candidate paths differ.",
+    "status.error: a string must match exactly, null must be absent, and an omitted field is not asserted.",
+    "Padded win32-flavor values use trailing whitespace: Node releases differ on prefixing .\\ when a leading-space segment holds a colon.",
+    "arch (Linux only, default x64): any other value is a Linux target without login-shell discovery.",
+    "transient (executable only): \"timeout\" makes every run of that file time out without changing the file.",
+    "noexec: a regular file the user may not execute.",
+    "steps: later spawn resolutions against the same host state. filesystem patches the table, select is a validated user selection, elapsedMs advances only TTL clocks. resolved is the executable spawned, or null when resolution fails."
+  ],
+  "builders": {
+    "parseGitVersion": [
+      {
+        "output": "git version 2.43.0\n",
+        "numeric": false,
+        "expected": "git version 2.43.0"
+      },
+      {
+        "output": "git version 2.39.5 (Apple Git-154)",
+        "numeric": true,
+        "expected": "git version 2.39.5"
+      },
+      {
+        "output": "git version banana",
+        "numeric": false,
+        "expected": "git version banana"
+      },
+      {
+        "output": "git version banana",
+        "numeric": true,
+        "expected": null
+      },
+      {
+        "output": "not git\n",
+        "numeric": false,
+        "expected": null
+      }
+    ],
+    "isMacGitShim": [
+      {
+        "path": "/usr/bin/git",
+        "expected": true
+      },
+      {
+        "path": "/usr/bin/xcrun",
+        "expected": true
+      },
+      {
+        "path": "/opt/homebrew/Library/Homebrew/shims/shared/git",
+        "expected": true
+      },
+      {
+        "path": "/usr/local/Homebrew/Library/Homebrew/shims/mac/super/git",
+        "expected": true
+      },
+      {
+        "path": "/usr/bin//git",
+        "expected": false
+      },
+      {
+        "path": "/usr/bin/git2",
+        "expected": false
+      },
+      {
+        "path": "/usr/local/bin/git",
+        "expected": false
+      },
+      {
+        "path": "/USR/BIN/GIT",
+        "expected": false
+      }
+    ],
+    "linux": [
+      {
+        "name": "keeps login PATH order",
+        "loginPath": "/usr/local/bin:/usr/bin:/bin",
+        "expected": [
+          {
+            "path": "/usr/local/bin/git",
+            "source": "login-path"
+          },
+          {
+            "path": "/usr/bin/git",
+            "source": "login-path"
+          },
+          {
+            "path": "/bin/git",
+            "source": "login-path"
+          }
+        ]
+      },
+      {
+        "name": "drops duplicates after collapsing slashes, then adds the system location",
+        "loginPath": "/opt/git/bin:/opt/git/bin/:/opt//git/bin",
+        "expected": [
+          {
+            "path": "/opt/git/bin/git",
+            "source": "login-path"
+          },
+          {
+            "path": "/usr/bin/git",
+            "source": "system"
+          }
+        ]
+      },
+      {
+        "name": "drops relative and empty entries",
+        "loginPath": ":bin:./x:/usr/local/bin:",
+        "expected": [
+          {
+            "path": "/usr/local/bin/git",
+            "source": "login-path"
+          },
+          {
+            "path": "/usr/bin/git",
+            "source": "system"
+          }
+        ]
+      },
+      {
+        "name": "falls back to the system location for an empty PATH",
+        "loginPath": "",
+        "expected": [
+          {
+            "path": "/usr/bin/git",
+            "source": "system"
+          }
+        ]
+      },
+      {
+        "name": "treats a trailing-slash system directory as covering the system location",
+        "loginPath": "/usr/bin/",
+        "expected": [
+          {
+            "path": "/usr/bin/git",
+            "source": "login-path"
+          }
+        ]
+      },
+      {
+        "name": "does not resolve dot-dot segments",
+        "loginPath": "/custom/../usr/bin",
+        "expected": [
+          {
+            "path": "/custom/../usr/bin/git",
+            "source": "login-path"
+          },
+          {
+            "path": "/usr/bin/git",
+            "source": "system"
+          }
+        ]
+      }
+    ],
+    "mac": [
+      {
+        "name": "keeps duplicate, shim and normalized PATH entries but drops relative and empty ones",
+        "loginPath": "/custom/bin::bin:/custom/bin/:./x:/usr/bin:/custom/../opt/bin:/usr//local/bin",
+        "developerDir": "/Applications/Xcode.app/Contents/Developer",
+        "join": "posix",
+        "expected": [
+          "/custom/bin/git",
+          "/custom/bin/git",
+          "/usr/bin/git",
+          "/opt/bin/git",
+          "/usr/local/bin/git",
+          "/Library/Developer/CommandLineTools/usr/bin/git",
+          "/Applications/Xcode.app/Contents/Developer/usr/bin/git",
+          "/opt/homebrew/bin/git",
+          "/usr/local/bin/git"
+        ]
+      },
+      {
+        "name": "normalizes a trailing-slash developer directory",
+        "loginPath": "/usr/bin",
+        "developerDir": "/Applications/Xcode-beta.app/Contents/Developer/",
+        "join": "posix",
+        "expected": [
+          "/usr/bin/git",
+          "/Library/Developer/CommandLineTools/usr/bin/git",
+          "/Applications/Xcode-beta.app/Contents/Developer/usr/bin/git",
+          "/opt/homebrew/bin/git",
+          "/usr/local/bin/git"
+        ]
+      },
+      {
+        "name": "skips a non-absolute developer directory",
+        "loginPath": "/usr/bin",
+        "developerDir": "Applications/Xcode.app/Contents/Developer",
+        "join": "posix",
+        "expected": [
+          "/usr/bin/git",
+          "/Library/Developer/CommandLineTools/usr/bin/git",
+          "/opt/homebrew/bin/git",
+          "/usr/local/bin/git"
+        ]
+      },
+      {
+        "name": "skips an empty developer directory",
+        "loginPath": "/usr/bin",
+        "developerDir": "",
+        "join": "posix",
+        "expected": [
+          "/usr/bin/git",
+          "/Library/Developer/CommandLineTools/usr/bin/git",
+          "/opt/homebrew/bin/git",
+          "/usr/local/bin/git"
+        ]
+      },
+      {
+        "name": "uses only known locations for an empty PATH and no developer directory",
+        "loginPath": "",
+        "developerDir": null,
+        "join": "posix",
+        "expected": [
+          "/Library/Developer/CommandLineTools/usr/bin/git",
+          "/opt/homebrew/bin/git",
+          "/usr/local/bin/git"
+        ]
+      },
+      {
+        "name": "uses the injected Windows path flavor; a drive colon splits like any PATH separator",
+        "loginPath": "/usr/local/bin:C:\\tools:relative",
+        "developerDir": "C:\\Xcode",
+        "join": "win32",
+        "expected": [
+          "\\usr\\local\\bin\\git",
+          "\\tools\\git",
+          "/Library/Developer/CommandLineTools/usr/bin/git",
+          "C:\\Xcode\\usr\\bin\\git",
+          "/opt/homebrew/bin/git",
+          "/usr/local/bin/git"
+        ]
+      }
+    ],
+    "windows": [
+      {
+        "name": "orders ProgramFiles, ProgramFiles(x86), then LOCALAPPDATA",
+        "programFiles": "C:\\Program Files",
+        "programFilesX86": "C:\\Program Files (x86)",
+        "localAppData": "C:\\Users\\me\\AppData\\Local",
+        "join": "win32",
+        "expected": [
+          "C:\\Program Files\\Git\\cmd\\git.exe",
+          "C:\\Program Files\\Git\\bin\\git.exe",
+          "C:\\Program Files (x86)\\Git\\cmd\\git.exe",
+          "C:\\Program Files (x86)\\Git\\bin\\git.exe",
+          "C:\\Users\\me\\AppData\\Local\\Git\\cmd\\git.exe",
+          "C:\\Users\\me\\AppData\\Local\\Git\\bin\\git.exe",
+          "C:\\Users\\me\\AppData\\Local\\Programs\\Git\\cmd\\git.exe",
+          "C:\\Users\\me\\AppData\\Local\\Programs\\Git\\bin\\git.exe"
+        ]
+      },
+      {
+        "name": "joins with the POSIX flavor a non-Windows host uses",
+        "programFiles": "C:\\Program Files",
+        "programFilesX86": "C:\\Program Files (x86)",
+        "localAppData": "C:\\Users\\me\\AppData\\Local",
+        "join": "posix",
+        "expected": [
+          "C:\\Program Files/Git/cmd/git.exe",
+          "C:\\Program Files/Git/bin/git.exe",
+          "C:\\Program Files (x86)/Git/cmd/git.exe",
+          "C:\\Program Files (x86)/Git/bin/git.exe",
+          "C:\\Users\\me\\AppData\\Local/Git/cmd/git.exe",
+          "C:\\Users\\me\\AppData\\Local/Git/bin/git.exe",
+          "C:\\Users\\me\\AppData\\Local/Programs/Git/cmd/git.exe",
+          "C:\\Users\\me\\AppData\\Local/Programs/Git/bin/git.exe"
+        ]
+      },
+      {
+        "name": "skips whitespace-only bases and joins padded bases untrimmed (win32)",
+        "programFiles": "   ",
+        "programFilesX86": "D:\\Apps ",
+        "localAppData": "\t",
+        "join": "win32",
+        "expected": [
+          "D:\\Apps \\Git\\cmd\\git.exe",
+          "D:\\Apps \\Git\\bin\\git.exe"
+        ]
+      },
+      {
+        "name": "skips whitespace-only bases and joins padded bases untrimmed (posix)",
+        "programFiles": " D:\\Apps ",
+        "programFilesX86": "\t",
+        "localAppData": " E:\\Local ",
+        "join": "posix",
+        "expected": [
+          " D:\\Apps /Git/cmd/git.exe",
+          " D:\\Apps /Git/bin/git.exe",
+          " E:\\Local /Git/cmd/git.exe",
+          " E:\\Local /Git/bin/git.exe",
+          " E:\\Local /Programs/Git/cmd/git.exe",
+          " E:\\Local /Programs/Git/bin/git.exe"
+        ]
+      },
+      {
+        "name": "normalizes a trailing separator only in the win32 flavor",
+        "programFiles": "C:\\Program Files\\",
+        "join": "win32",
+        "expected": [
+          "C:\\Program Files\\Git\\cmd\\git.exe",
+          "C:\\Program Files\\Git\\bin\\git.exe"
+        ]
+      },
+      {
+        "name": "keeps a trailing backslash in the posix flavor",
+        "programFiles": "C:\\Program Files\\",
+        "join": "posix",
+        "expected": [
+          "C:\\Program Files\\/Git/cmd/git.exe",
+          "C:\\Program Files\\/Git/bin/git.exe"
+        ]
+      },
+      {
+        "name": "returns nothing for empty values",
+        "programFiles": "",
+        "programFilesX86": "",
+        "localAppData": "",
+        "join": "win32",
+        "expected": []
+      },
+      {
+        "name": "returns nothing when no base is set",
+        "join": "win32",
+        "expected": []
+      }
+    ],
+    "whereExe": [
+      {
+        "stdout": "C:\\Program Files\\Git\\cmd\\git.exe\r\nC:\\Other\\git.exe\r\n",
+        "expected": [
+          "C:\\Program Files\\Git\\cmd\\git.exe",
+          "C:\\Other\\git.exe"
+        ]
+      },
+      {
+        "stdout": "  C:\\a\\git.exe  \n\n\r\n   \nC:\\b\\git.exe",
+        "expected": ["C:\\a\\git.exe", "C:\\b\\git.exe"]
+      },
+      {
+        "stdout": "C:\\a\\git.exe\rC:\\b\\git.exe",
+        "expected": ["C:\\a\\git.exe\rC:\\b\\git.exe"]
+      },
+      {
+        "stdout": "",
+        "expected": []
+      },
+      {
+        "stdout": "\r\n",
+        "expected": []
+      }
+    ]
+  },
+  "scenarios": [
+    {
+      "name": "macOS without tools never runs the Apple shim",
+      "os": "darwin",
+      "environment": {},
+      "saved": null,
+      "loginPath": "/usr/bin",
+      "developerDir": null,
+      "filesystem": {
+        "/usr/bin/git": {
+          "kind": "shim"
+        }
+      },
+      "expected": {
+        "attempts": [
+          "/Library/Developer/CommandLineTools/usr/bin/git",
+          "/opt/homebrew/bin/git",
+          "/usr/local/bin/git"
+        ],
+        "status": {
+          "ready": false,
+          "path": null,
+          "source": "not-found"
+        }
+      }
+    },
+    {
+      "name": "macOS dedupes repeated login PATH entries and uses an absolute developer dir",
+      "os": "darwin",
+      "environment": {},
+      "saved": null,
+      "loginPath": "::bin:/custom/bin:/custom/bin/:/usr/bin",
+      "developerDir": "  /Applications/Xcode.app/Contents/Developer \n",
+      "filesystem": {
+        "/usr/bin/git": {
+          "kind": "shim"
+        },
+        "/Applications/Xcode.app/Contents/Developer/usr/bin/git": {
+          "kind": "executable",
+          "stdout": "git version 2.39.5 (Apple Git-154)\n"
+        }
+      },
+      "expected": {
+        "attempts": [
+          "/custom/bin/git",
+          "/Library/Developer/CommandLineTools/usr/bin/git",
+          "/Applications/Xcode.app/Contents/Developer/usr/bin/git"
+        ],
+        "status": {
+          "ready": true,
+          "path": "/Applications/Xcode.app/Contents/Developer/usr/bin/git",
+          "version": "git version 2.39.5",
+          "source": "auto-detected"
+        },
+        "savedAfter": "/Applications/Xcode.app/Contents/Developer/usr/bin/git"
+      }
+    },
+    {
+      "name": "macOS ignores a non-absolute developer dir",
+      "os": "darwin",
+      "environment": {},
+      "saved": null,
+      "loginPath": "/usr/bin",
+      "developerDir": "Applications/Xcode.app/Contents/Developer\n",
+      "filesystem": {
+        "/usr/bin/git": {
+          "kind": "shim"
+        },
+        "Applications/Xcode.app/Contents/Developer/usr/bin/git": {
+          "kind": "executable",
+          "stdout": "git version 2.39.5\n"
+        },
+        "/usr/local/bin/git": {
+          "kind": "executable",
+          "stdout": "git version 2.50.1\n"
+        }
+      },
+      "expected": {
+        "attempts": [
+          "/Library/Developer/CommandLineTools/usr/bin/git",
+          "/opt/homebrew/bin/git",
+          "/usr/local/bin/git"
+        ],
+        "status": {
+          "ready": true,
+          "path": "/usr/local/bin/git",
+          "version": "git version 2.50.1",
+          "source": "auto-detected"
+        }
+      }
+    },
+    {
+      "name": "macOS ignores a blank developer dir",
+      "os": "darwin",
+      "environment": {},
+      "saved": null,
+      "loginPath": "/Library/Developer/CommandLineTools/usr/bin:/opt/homebrew/bin:/usr/local/bin",
+      "developerDir": " \n",
+      "filesystem": {
+        "/usr/local/bin/git": {
+          "kind": "executable",
+          "stdout": "not git\n"
+        }
+      },
+      "expected": {
+        "attempts": [
+          "/Library/Developer/CommandLineTools/usr/bin/git",
+          "/opt/homebrew/bin/git",
+          "/usr/local/bin/git"
+        ],
+        "status": {
+          "ready": false,
+          "path": null,
+          "source": "not-found",
+          "error": "Selected executable did not report a Git version"
+        }
+      }
+    },
+    {
+      "name": "macOS never tries relative login PATH entries or a relative developer dir",
+      "os": "darwin",
+      "environment": {},
+      "saved": null,
+      "loginPath": "/Library/Developer/CommandLineTools/usr/bin:/opt/homebrew/bin:/usr/local/bin:bin:",
+      "developerDir": "Applications/Xcode.app/Contents/Developer\n",
+      "filesystem": {
+        "/usr/local/bin/git": {
+          "kind": "executable",
+          "stdout": "not git\n"
+        }
+      },
+      "expected": {
+        "attempts": [
+          "/Library/Developer/CommandLineTools/usr/bin/git",
+          "/opt/homebrew/bin/git",
+          "/usr/local/bin/git"
+        ],
+        "status": {
+          "ready": false,
+          "path": null,
+          "source": "not-found",
+          "error": "Selected executable did not report a Git version"
+        }
+      }
+    },
+    {
+      "name": "macOS rejects a symlink to the Apple shim and continues",
+      "os": "darwin",
+      "environment": {},
+      "saved": null,
+      "loginPath": "/custom/bin",
+      "developerDir": null,
+      "filesystem": {
+        "/custom/bin/git": {
+          "kind": "symlink",
+          "target": "/usr/bin/git"
+        },
+        "/usr/bin/git": {
+          "kind": "shim"
+        },
+        "/Library/Developer/CommandLineTools/usr/bin/git": {
+          "kind": "executable",
+          "stdout": "git version 2.39.5 (Apple Git-154)\n"
+        }
+      },
+      "expected": {
+        "attempts": [
+          "/custom/bin/git",
+          "/Library/Developer/CommandLineTools/usr/bin/git"
+        ],
+        "status": {
+          "ready": true,
+          "path": "/Library/Developer/CommandLineTools/usr/bin/git",
+          "version": "git version 2.39.5",
+          "source": "auto-detected"
+        }
+      }
+    },
+    {
+      "name": "macOS selects the resolved target of a Homebrew symlink",
+      "os": "darwin",
+      "environment": {},
+      "saved": null,
+      "loginPath": "/usr/bin",
+      "developerDir": null,
+      "filesystem": {
+        "/usr/bin/git": {
+          "kind": "shim"
+        },
+        "/opt/homebrew/bin/git": {
+          "kind": "symlink",
+          "target": "/opt/homebrew/Cellar/git/2.50.1/bin/git"
+        },
+        "/opt/homebrew/Cellar/git/2.50.1/bin/git": {
+          "kind": "executable",
+          "stdout": "git version 2.50.1\n"
+        }
+      },
+      "expected": {
+        "attempts": [
+          "/Library/Developer/CommandLineTools/usr/bin/git",
+          "/opt/homebrew/bin/git"
+        ],
+        "status": {
+          "ready": true,
+          "path": "/opt/homebrew/Cellar/git/2.50.1/bin/git",
+          "version": "git version 2.50.1",
+          "source": "auto-detected"
+        },
+        "savedAfter": "/opt/homebrew/Cellar/git/2.50.1/bin/git"
+      }
+    },
+    {
+      "name": "macOS skips Homebrew shims, non-Git output, directories and EACCES",
+      "os": "darwin",
+      "environment": {},
+      "saved": null,
+      "loginPath": "/opt/homebrew/Library/Homebrew/shims/shared:/custom/bin:/dir/bin:/locked/bin",
+      "developerDir": null,
+      "filesystem": {
+        "/opt/homebrew/Library/Homebrew/shims/shared/git": {
+          "kind": "shim"
+        },
+        "/custom/bin/git": {
+          "kind": "executable",
+          "stdout": "not git\n"
+        },
+        "/dir/bin/git": {
+          "kind": "directory"
+        },
+        "/locked/bin/git": {
+          "kind": "eacces"
+        },
+        "/Library/Developer/CommandLineTools/usr/bin/git": {
+          "kind": "executable",
+          "stdout": "git version 2.39.5 (Apple Git-154)\n"
+        }
+      },
+      "expected": {
+        "attempts": [
+          "/custom/bin/git",
+          "/dir/bin/git",
+          "/locked/bin/git",
+          "/Library/Developer/CommandLineTools/usr/bin/git"
+        ],
+        "status": {
+          "ready": true,
+          "path": "/Library/Developer/CommandLineTools/usr/bin/git",
+          "source": "auto-detected"
+        }
+      }
+    },
+    {
+      "name": "macOS uses a valid saved selection first",
+      "os": "darwin",
+      "environment": {},
+      "saved": "/opt/git/bin/git",
+      "loginPath": "/usr/local/bin",
+      "developerDir": null,
+      "filesystem": {
+        "/opt/git/bin/git": {
+          "kind": "executable",
+          "stdout": "git version 2.51.0\n"
+        },
+        "/usr/local/bin/git": {
+          "kind": "executable",
+          "stdout": "git version 2.50.1\n"
+        }
+      },
+      "expected": {
+        "attempts": ["/opt/git/bin/git"],
+        "status": {
+          "ready": true,
+          "path": "/opt/git/bin/git",
+          "version": "git version 2.51.0",
+          "source": "cache"
+        },
+        "savedAfter": "/opt/git/bin/git"
+      }
+    },
+    {
+      "name": "macOS replaces a missing saved selection with discovery",
+      "os": "darwin",
+      "environment": {},
+      "saved": "/removed/git",
+      "loginPath": "/usr/bin",
+      "developerDir": null,
+      "filesystem": {
+        "/usr/bin/git": {
+          "kind": "shim"
+        },
+        "/usr/local/bin/git": {
+          "kind": "executable",
+          "stdout": "git version 2.50.1\n"
+        }
+      },
+      "expected": {
+        "attempts": [
+          "/removed/git",
+          "/Library/Developer/CommandLineTools/usr/bin/git",
+          "/opt/homebrew/bin/git",
+          "/usr/local/bin/git"
+        ],
+        "status": {
+          "ready": true,
+          "path": "/usr/local/bin/git",
+          "source": "auto-detected"
+        },
+        "savedAfter": "/usr/local/bin/git"
+      }
+    },
+    {
+      "name": "Linux reports a stock image without Git",
+      "os": "linux",
+      "environment": {},
+      "saved": null,
+      "loginPath": "/usr/local/bin:/usr/bin:/bin",
+      "developerDir": null,
+      "filesystem": {},
+      "expected": {
+        "attempts": ["/usr/local/bin/git", "/usr/bin/git", "/bin/git"],
+        "status": {
+          "ready": false,
+          "path": null,
+          "source": "not-found",
+          "error": "Git was not found on the login PATH or at /usr/bin/git. Install Git with your package manager, then recheck."
+        }
+      }
+    },
+    {
+      "name": "Linux dedupes the login PATH and falls back to the system location",
+      "os": "linux",
+      "environment": {},
+      "saved": null,
+      "loginPath": ":bin:/opt/git/bin:/opt//git/bin/:./x:",
+      "developerDir": null,
+      "filesystem": {
+        "/usr/bin/git": {
+          "kind": "executable",
+          "stdout": "git version 2.43.0\n"
+        }
+      },
+      "expected": {
+        "attempts": ["/opt/git/bin/git", "/usr/bin/git"],
+        "status": {
+          "ready": true,
+          "path": "/usr/bin/git",
+          "version": "git version 2.43.0",
+          "source": "system"
+        },
+        "savedAfter": ""
+      }
+    },
+    {
+      "name": "Linux prefers login PATH Git and reports the symlink path itself",
+      "os": "linux",
+      "environment": {},
+      "saved": null,
+      "loginPath": "/home/me/.local/bin:/usr/bin",
+      "developerDir": null,
+      "filesystem": {
+        "/home/me/.local/bin/git": {
+          "kind": "symlink",
+          "target": "/opt/git/2.47/bin/git"
+        },
+        "/opt/git/2.47/bin/git": {
+          "kind": "executable",
+          "stdout": "git version 2.47.1\n"
+        },
+        "/usr/bin/git": {
+          "kind": "executable",
+          "stdout": "git version 2.43.0\n"
+        }
+      },
+      "expected": {
+        "attempts": ["/home/me/.local/bin/git"],
+        "status": {
+          "ready": true,
+          "path": "/home/me/.local/bin/git",
+          "version": "git version 2.47.1",
+          "source": "login-path"
+        }
+      }
+    },
+    {
+      "name": "Linux explains Git that exists but cannot be used",
+      "os": "linux",
+      "environment": {},
+      "saved": null,
+      "loginPath": "/a/bin:/b/bin:/c/bin",
+      "developerDir": null,
+      "filesystem": {
+        "/a/bin/git": {
+          "kind": "executable",
+          "stdout": "git version banana\n"
+        },
+        "/b/bin/git": {
+          "kind": "directory"
+        },
+        "/c/bin/git": {
+          "kind": "eacces"
+        }
+      },
+      "expected": {
+        "attempts": ["/a/bin/git", "/b/bin/git", "/c/bin/git", "/usr/bin/git"],
+        "status": {
+          "ready": false,
+          "path": null,
+          "source": "not-found",
+          "error": "Git was found but cannot be used: Git executable did not report a Git version: /a/bin/git; Git executable is not a file: /b/bin/git; Git executable cannot be accessed (EACCES): /c/bin/git. Fix or reinstall Git, then recheck."
+        }
+      }
+    },
+    {
+      "name": "Linux uses the saved selection over discovery",
+      "os": "linux",
+      "environment": {},
+      "saved": "/opt/custom/git",
+      "loginPath": "/usr/bin",
+      "developerDir": null,
+      "filesystem": {
+        "/opt/custom/git": {
+          "kind": "executable",
+          "stdout": "git version 2.45.0\n"
+        },
+        "/usr/bin/git": {
+          "kind": "executable",
+          "stdout": "git version 2.43.0\n"
+        }
+      },
+      "expected": {
+        "attempts": ["/opt/custom/git"],
+        "status": {
+          "ready": true,
+          "path": "/opt/custom/git",
+          "version": "git version 2.45.0",
+          "source": "user-selected"
+        },
+        "savedAfter": "/opt/custom/git"
+      }
+    },
+    {
+      "name": "Linux reports a broken saved selection instead of replacing it",
+      "os": "linux",
+      "environment": {},
+      "saved": "/removed/git",
+      "loginPath": "/usr/bin",
+      "developerDir": null,
+      "filesystem": {
+        "/usr/bin/git": {
+          "kind": "executable",
+          "stdout": "git version 2.43.0\n"
+        }
+      },
+      "expected": {
+        "attempts": ["/removed/git"],
+        "status": {
+          "ready": false,
+          "path": null,
+          "source": "not-found",
+          "error": "Selected Git executable cannot be used. Git executable does not exist: /removed/git"
+        },
+        "savedAfter": "/removed/git"
+      }
+    },
+    {
+      "name": "Linux treats an environment override as the explicit choice",
+      "os": "linux",
+      "environment": {
+        "CANOPY_GIT_EXECUTABLE": " /env/git "
+      },
+      "saved": null,
+      "loginPath": "/usr/bin",
+      "developerDir": null,
+      "filesystem": {
+        "/env/git": {
+          "kind": "executable",
+          "stdout": "git version 2.44.0\n"
+        },
+        "/usr/bin/git": {
+          "kind": "executable",
+          "stdout": "git version 2.43.0\n"
+        }
+      },
+      "expected": {
+        "attempts": ["/env/git"],
+        "status": {
+          "ready": true,
+          "path": "/env/git",
+          "version": "git version 2.44.0",
+          "source": "user-selected"
+        },
+        "savedAfter": ""
+      }
+    },
+    {
+      "name": "Windows uses a valid saved selection first",
+      "os": "win32",
+      "environment": {
+        "ProgramFiles": "C:\\Program Files"
+      },
+      "saved": "C:\\Git\\cmd\\git.exe",
+      "loginPath": "",
+      "developerDir": null,
+      "whereExe": {
+        "git": "C:\\Program Files\\Git\\cmd\\git.exe\r\n"
+      },
+      "filesystem": {
+        "C:\\Git\\cmd\\git.exe": {
+          "kind": "executable",
+          "stdout": "git version 2.51.0.windows.1\n"
+        },
+        "C:\\Program Files\\Git\\cmd\\git.exe": {
+          "kind": "executable",
+          "stdout": "git version 2.50.0.windows.1\n"
+        }
+      },
+      "expected": {
+        "attempts": ["C:\\Git\\cmd\\git.exe"],
+        "status": {
+          "ready": true,
+          "path": "C:\\Git\\cmd\\git.exe",
+          "version": "git version 2.51.0.windows.1",
+          "source": "cache",
+          "wingetAvailable": false
+        },
+        "savedAfter": "C:\\Git\\cmd\\git.exe"
+      }
+    },
+    {
+      "name": "Windows reports nothing found without an error",
+      "os": "win32",
+      "environment": {},
+      "saved": null,
+      "loginPath": "",
+      "developerDir": null,
+      "filesystem": {},
+      "expected": {
+        "attempts": [],
+        "status": {
+          "ready": false,
+          "path": null,
+          "source": "not-found",
+          "wingetAvailable": false,
+          "error": null
+        }
+      }
+    },
+    {
+      "name": "Windows tries where.exe results, then common paths with blank bases skipped",
+      "os": "win32",
+      "environment": {
+        "ProgramFiles": "   ",
+        "ProgramFiles(x86)": "C:\\Program Files (x86)",
+        "LOCALAPPDATA": "C:\\Users\\me\\AppData\\Local"
+      },
+      "saved": null,
+      "loginPath": "",
+      "developerDir": null,
+      "whereExe": {
+        "git": "\r\n  C:\\Tools\\git.exe  \r\n\r\n",
+        "winget": "C:\\Users\\me\\AppData\\Local\\Microsoft\\WindowsApps\\winget.exe\r\n"
+      },
+      "filesystem": {
+        "C:\\Users\\me\\AppData\\Local\\Programs\\Git\\cmd\\git.exe": {
+          "kind": "executable",
+          "stdout": "git version 2.50.0.windows.1\n"
+        },
+        "C:\\Users\\me\\AppData\\Local/Programs/Git/cmd/git.exe": {
+          "kind": "executable",
+          "stdout": "git version 2.50.0.windows.1\n"
+        }
+      },
+      "expectedByJoin": {
+        "win32": {
+          "attempts": [
+            "C:\\Tools\\git.exe",
+            "C:\\Program Files (x86)\\Git\\cmd\\git.exe",
+            "C:\\Program Files (x86)\\Git\\bin\\git.exe",
+            "C:\\Users\\me\\AppData\\Local\\Git\\cmd\\git.exe",
+            "C:\\Users\\me\\AppData\\Local\\Git\\bin\\git.exe",
+            "C:\\Users\\me\\AppData\\Local\\Programs\\Git\\cmd\\git.exe"
+          ],
+          "status": {
+            "ready": true,
+            "path": "C:\\Users\\me\\AppData\\Local\\Programs\\Git\\cmd\\git.exe",
+            "version": "git version 2.50.0.windows.1",
+            "source": "auto-detected",
+            "wingetAvailable": true
+          },
+          "savedAfter": "C:\\Users\\me\\AppData\\Local\\Programs\\Git\\cmd\\git.exe"
+        },
+        "posix": {
+          "attempts": [
+            "C:\\Tools\\git.exe",
+            "C:\\Program Files (x86)/Git/cmd/git.exe",
+            "C:\\Program Files (x86)/Git/bin/git.exe",
+            "C:\\Users\\me\\AppData\\Local/Git/cmd/git.exe",
+            "C:\\Users\\me\\AppData\\Local/Git/bin/git.exe",
+            "C:\\Users\\me\\AppData\\Local/Programs/Git/cmd/git.exe"
+          ],
+          "status": {
+            "ready": true,
+            "path": "C:\\Users\\me\\AppData\\Local/Programs/Git/cmd/git.exe",
+            "version": "git version 2.50.0.windows.1",
+            "source": "auto-detected",
+            "wingetAvailable": true
+          },
+          "savedAfter": "C:\\Users\\me\\AppData\\Local/Programs/Git/cmd/git.exe"
+        }
+      }
+    },
+    {
+      "name": "Windows skips non-git.exe and case-duplicate results and joins a padded base untrimmed",
+      "os": "win32",
+      "environment": {
+        "ProgramFiles": "C:\\Program Files",
+        "LOCALAPPDATA": "C:\\Users\\me\\AppData\\Local "
+      },
+      "saved": null,
+      "loginPath": "",
+      "developerDir": null,
+      "whereExe": {
+        "git": "C:\\Program Files\\Git\\cmd\\git.exe\r\nC:\\PROGRAM FILES\\GIT\\CMD\\GIT.EXE\r\nC:\\tools\\git.cmd\r\n"
+      },
+      "filesystem": {
+        "C:\\Users\\me\\AppData\\Local \\Git\\cmd\\git.exe": {
+          "kind": "executable",
+          "stdout": "git version 2.49.0.windows.1\n"
+        },
+        "C:\\Users\\me\\AppData\\Local /Git/cmd/git.exe": {
+          "kind": "executable",
+          "stdout": "git version 2.49.0.windows.1\n"
+        }
+      },
+      "expectedByJoin": {
+        "win32": {
+          "attempts": [
+            "C:\\Program Files\\Git\\cmd\\git.exe",
+            "C:\\Program Files\\Git\\bin\\git.exe",
+            "C:\\Users\\me\\AppData\\Local \\Git\\cmd\\git.exe"
+          ],
+          "status": {
+            "ready": true,
+            "path": "C:\\Users\\me\\AppData\\Local \\Git\\cmd\\git.exe",
+            "version": "git version 2.49.0.windows.1",
+            "source": "auto-detected"
+          },
+          "savedAfter": "C:\\Users\\me\\AppData\\Local \\Git\\cmd\\git.exe"
+        },
+        "posix": {
+          "attempts": [
+            "C:\\Program Files\\Git\\cmd\\git.exe",
+            "C:\\Program Files/Git/cmd/git.exe",
+            "C:\\Program Files/Git/bin/git.exe",
+            "C:\\Users\\me\\AppData\\Local /Git/cmd/git.exe"
+          ],
+          "status": {
+            "ready": true,
+            "path": "C:\\Users\\me\\AppData\\Local /Git/cmd/git.exe",
+            "version": "git version 2.49.0.windows.1",
+            "source": "auto-detected"
+          },
+          "savedAfter": "C:\\Users\\me\\AppData\\Local /Git/cmd/git.exe"
+        }
+      }
+    },
+    {
+      "name": "Windows skips whitespace-only bases and joins a padded ProgramFiles untrimmed",
+      "os": "win32",
+      "environment": {
+        "ProgramFiles": "C:\\Program Files ",
+        "ProgramFiles(x86)": "\t",
+        "LOCALAPPDATA": "  "
+      },
+      "saved": null,
+      "loginPath": "",
+      "developerDir": null,
+      "filesystem": {},
+      "expectedByJoin": {
+        "win32": {
+          "attempts": [
+            "C:\\Program Files \\Git\\cmd\\git.exe",
+            "C:\\Program Files \\Git\\bin\\git.exe"
+          ],
+          "status": {
+            "ready": false,
+            "path": null,
+            "source": "not-found",
+            "wingetAvailable": false
+          }
+        },
+        "posix": {
+          "attempts": [
+            "C:\\Program Files /Git/cmd/git.exe",
+            "C:\\Program Files /Git/bin/git.exe"
+          ],
+          "status": {
+            "ready": false,
+            "path": null,
+            "source": "not-found",
+            "wingetAvailable": false
+          }
+        }
+      }
+    },
+    {
+      "name": "Windows tries ProgramFiles before ProgramFiles(x86) and skips a whitespace-only LOCALAPPDATA",
+      "os": "win32",
+      "environment": {
+        "ProgramFiles": "C:\\Program Files",
+        "ProgramFiles(x86)": "C:\\Program Files (x86)",
+        "LOCALAPPDATA": " \t "
+      },
+      "saved": null,
+      "loginPath": "",
+      "developerDir": null,
+      "filesystem": {},
+      "expectedByJoin": {
+        "win32": {
+          "attempts": [
+            "C:\\Program Files\\Git\\cmd\\git.exe",
+            "C:\\Program Files\\Git\\bin\\git.exe",
+            "C:\\Program Files (x86)\\Git\\cmd\\git.exe",
+            "C:\\Program Files (x86)\\Git\\bin\\git.exe"
+          ],
+          "status": {
+            "ready": false,
+            "path": null,
+            "source": "not-found",
+            "wingetAvailable": false
+          }
+        },
+        "posix": {
+          "attempts": [
+            "C:\\Program Files/Git/cmd/git.exe",
+            "C:\\Program Files/Git/bin/git.exe",
+            "C:\\Program Files (x86)/Git/cmd/git.exe",
+            "C:\\Program Files (x86)/Git/bin/git.exe"
+          ],
+          "status": {
+            "ready": false,
+            "path": null,
+            "source": "not-found",
+            "wingetAvailable": false
+          }
+        }
+      }
+    },
+    {
+      "name": "macOS replaces a saved selection that is not Git",
+      "os": "darwin",
+      "environment": {},
+      "saved": "/opt/fake/git",
+      "loginPath": "/usr/bin",
+      "developerDir": null,
+      "filesystem": {
+        "/usr/bin/git": {
+          "kind": "shim"
+        },
+        "/opt/fake/git": {
+          "kind": "executable",
+          "stdout": "not git\n"
+        },
+        "/usr/local/bin/git": {
+          "kind": "executable",
+          "stdout": "git version 2.50.1\n"
+        }
+      },
+      "expected": {
+        "attempts": [
+          "/opt/fake/git",
+          "/Library/Developer/CommandLineTools/usr/bin/git",
+          "/opt/homebrew/bin/git",
+          "/usr/local/bin/git"
+        ],
+        "status": {
+          "ready": true,
+          "path": "/usr/local/bin/git",
+          "source": "auto-detected"
+        },
+        "savedAfter": "/usr/local/bin/git"
+      }
+    },
+    {
+      "name": "macOS replaces an EACCES saved selection with discovery",
+      "os": "darwin",
+      "environment": {},
+      "saved": "/locked/git",
+      "loginPath": "/usr/bin",
+      "developerDir": null,
+      "filesystem": {
+        "/usr/bin/git": {
+          "kind": "shim"
+        },
+        "/locked/git": {
+          "kind": "eacces"
+        },
+        "/usr/local/bin/git": {
+          "kind": "executable",
+          "stdout": "git version 2.50.1\n"
+        }
+      },
+      "expected": {
+        "attempts": [
+          "/locked/git",
+          "/Library/Developer/CommandLineTools/usr/bin/git",
+          "/opt/homebrew/bin/git",
+          "/usr/local/bin/git"
+        ],
+        "status": {
+          "ready": true,
+          "path": "/usr/local/bin/git",
+          "source": "auto-detected"
+        },
+        "savedAfter": "/usr/local/bin/git"
+      }
+    },
+    {
+      "name": "macOS saved Homebrew symlink follows a Homebrew upgrade",
+      "os": "darwin",
+      "environment": {},
+      "saved": "/opt/homebrew/bin/git",
+      "loginPath": "/usr/bin",
+      "developerDir": null,
+      "filesystem": {
+        "/usr/bin/git": {
+          "kind": "shim"
+        },
+        "/opt/homebrew/bin/git": {
+          "kind": "symlink",
+          "target": "/opt/homebrew/Cellar/git/2.50.1/bin/git"
+        },
+        "/opt/homebrew/Cellar/git/2.50.1/bin/git": {
+          "kind": "executable",
+          "stdout": "git version 2.50.1\n"
+        }
+      },
+      "expected": {
+        "attempts": ["/opt/homebrew/bin/git"],
+        "status": {
+          "ready": true,
+          "path": "/opt/homebrew/Cellar/git/2.50.1/bin/git",
+          "version": "git version 2.50.1",
+          "source": "cache"
+        },
+        "savedAfter": "/opt/homebrew/bin/git"
+      },
+      "steps": [
+        {
+          "name": "Homebrew upgrades Git and removes the old keg",
+          "filesystem": {
+            "/opt/homebrew/bin/git": {
+              "kind": "symlink",
+              "target": "/opt/homebrew/Cellar/git/2.51.0/bin/git"
+            },
+            "/opt/homebrew/Cellar/git/2.50.1/bin/git": {
+              "kind": "missing"
+            },
+            "/opt/homebrew/Cellar/git/2.51.0/bin/git": {
+              "kind": "executable",
+              "stdout": "git version 2.51.0\n"
+            }
+          },
+          "expected": {
+            "resolved": "/opt/homebrew/Cellar/git/2.51.0/bin/git",
+            "savedAfter": "/opt/homebrew/bin/git"
+          }
+        }
+      ]
+    },
+    {
+      "name": "macOS discovered Git follows a Homebrew upgrade",
+      "os": "darwin",
+      "environment": {},
+      "saved": null,
+      "loginPath": "/usr/bin",
+      "developerDir": null,
+      "filesystem": {
+        "/usr/bin/git": {
+          "kind": "shim"
+        },
+        "/opt/homebrew/bin/git": {
+          "kind": "symlink",
+          "target": "/opt/homebrew/Cellar/git/2.50.1/bin/git"
+        },
+        "/opt/homebrew/Cellar/git/2.50.1/bin/git": {
+          "kind": "executable",
+          "stdout": "git version 2.50.1\n"
+        }
+      },
+      "expected": {
+        "attempts": [
+          "/Library/Developer/CommandLineTools/usr/bin/git",
+          "/opt/homebrew/bin/git"
+        ],
+        "status": {
+          "ready": true,
+          "path": "/opt/homebrew/Cellar/git/2.50.1/bin/git",
+          "source": "auto-detected"
+        },
+        "savedAfter": "/opt/homebrew/Cellar/git/2.50.1/bin/git"
+      },
+      "steps": [
+        {
+          "name": "Homebrew upgrades Git and removes the old keg",
+          "filesystem": {
+            "/opt/homebrew/bin/git": {
+              "kind": "symlink",
+              "target": "/opt/homebrew/Cellar/git/2.51.0/bin/git"
+            },
+            "/opt/homebrew/Cellar/git/2.50.1/bin/git": {
+              "kind": "missing"
+            },
+            "/opt/homebrew/Cellar/git/2.51.0/bin/git": {
+              "kind": "executable",
+              "stdout": "git version 2.51.0\n"
+            }
+          },
+          "expected": {
+            "resolved": "/opt/homebrew/Cellar/git/2.51.0/bin/git",
+            "savedAfter": "/opt/homebrew/Cellar/git/2.51.0/bin/git"
+          }
+        }
+      ]
+    },
+    {
+      "name": "macOS saved symlink retargeted to another Git",
+      "os": "darwin",
+      "environment": {},
+      "saved": "/custom/bin/git",
+      "loginPath": "/usr/bin",
+      "developerDir": null,
+      "filesystem": {
+        "/usr/bin/git": {
+          "kind": "shim"
+        },
+        "/custom/bin/git": {
+          "kind": "symlink",
+          "target": "/opt/a/bin/git"
+        },
+        "/opt/a/bin/git": {
+          "kind": "executable",
+          "stdout": "git version 2.50.1\n"
+        },
+        "/opt/b/bin/git": {
+          "kind": "executable",
+          "stdout": "git version 2.51.0\n"
+        }
+      },
+      "expected": {
+        "attempts": ["/custom/bin/git"],
+        "status": {
+          "ready": true,
+          "path": "/opt/a/bin/git",
+          "source": "cache"
+        },
+        "savedAfter": "/custom/bin/git"
+      },
+      "steps": [
+        {
+          "name": "the saved symlink now points at another Git",
+          "filesystem": {
+            "/custom/bin/git": {
+              "kind": "symlink",
+              "target": "/opt/b/bin/git"
+            }
+          },
+          "expected": {
+            "resolved": "/opt/a/bin/git",
+            "savedAfter": "/custom/bin/git"
+          }
+        }
+      ]
+    },
+    {
+      "name": "macOS saved selection that becomes unreadable is kept and reported",
+      "os": "darwin",
+      "environment": {},
+      "saved": "/opt/git/bin/git",
+      "loginPath": "/usr/bin",
+      "developerDir": null,
+      "filesystem": {
+        "/usr/bin/git": {
+          "kind": "shim"
+        },
+        "/opt/git/bin/git": {
+          "kind": "executable",
+          "stdout": "git version 2.51.0\n"
+        },
+        "/usr/local/bin/git": {
+          "kind": "executable",
+          "stdout": "git version 2.50.1\n"
+        }
+      },
+      "expected": {
+        "attempts": ["/opt/git/bin/git"],
+        "status": {
+          "ready": true,
+          "path": "/opt/git/bin/git",
+          "source": "cache"
+        },
+        "savedAfter": "/opt/git/bin/git"
+      },
+      "steps": [
+        {
+          "name": "the saved Git can no longer be looked up (EACCES)",
+          "filesystem": {
+            "/opt/git/bin/git": {
+              "kind": "eacces"
+            }
+          },
+          "expected": {
+            "resolved": null,
+            "savedAfter": "/opt/git/bin/git"
+          }
+        }
+      ]
+    },
+    {
+      "name": "macOS saved selection re-selected with the same string after a transient timeout",
+      "os": "darwin",
+      "environment": {},
+      "saved": "/opt/git/bin/git",
+      "loginPath": "/usr/bin",
+      "developerDir": null,
+      "filesystem": {
+        "/usr/bin/git": {
+          "kind": "shim"
+        },
+        "/opt/git/bin/git": {
+          "kind": "executable",
+          "stdout": "git version 2.51.0\n",
+          "transient": "timeout"
+        },
+        "/usr/local/bin/git": {
+          "kind": "executable",
+          "stdout": "git version 2.50.1\n"
+        }
+      },
+      "expected": {
+        "attempts": [
+          "/opt/git/bin/git",
+          "/Library/Developer/CommandLineTools/usr/bin/git",
+          "/opt/homebrew/bin/git",
+          "/usr/local/bin/git"
+        ],
+        "status": {
+          "ready": true,
+          "path": "/usr/local/bin/git",
+          "source": "auto-detected"
+        },
+        "savedAfter": "/usr/local/bin/git"
+      },
+      "steps": [
+        {
+          "name": "the timeout clears and the user re-selects the same path",
+          "filesystem": {
+            "/opt/git/bin/git": {
+              "kind": "executable",
+              "stdout": "git version 2.51.0\n"
+            }
+          },
+          "select": "/opt/git/bin/git",
+          "expected": {
+            "resolved": "/opt/git/bin/git",
+            "savedAfter": "/opt/git/bin/git"
+          }
+        },
+        {
+          "name": "five minutes later",
+          "elapsedMs": 300000,
+          "expected": {
+            "resolved": "/opt/git/bin/git",
+            "savedAfter": "/opt/git/bin/git"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Linux reports an EACCES saved selection",
+      "os": "linux",
+      "environment": {},
+      "saved": "/locked/git",
+      "loginPath": "/usr/bin",
+      "developerDir": null,
+      "filesystem": {
+        "/locked/git": {
+          "kind": "eacces"
+        },
+        "/usr/bin/git": {
+          "kind": "executable",
+          "stdout": "git version 2.43.0\n"
+        }
+      },
+      "expected": {
+        "attempts": ["/locked/git"],
+        "status": {
+          "ready": false,
+          "path": null,
+          "source": "not-found",
+          "error": "Selected Git executable cannot be used. Git executable cannot be accessed (EACCES): /locked/git"
+        },
+        "savedAfter": "/locked/git"
+      }
+    },
+    {
+      "name": "Linux broken saved selection repaired in place",
+      "os": "linux",
+      "environment": {},
+      "saved": "/opt/custom/git",
+      "loginPath": "/usr/bin",
+      "developerDir": null,
+      "filesystem": {
+        "/opt/custom/git": {
+          "kind": "executable",
+          "stdout": "not git\n"
+        },
+        "/usr/bin/git": {
+          "kind": "executable",
+          "stdout": "git version 2.43.0\n"
+        }
+      },
+      "expected": {
+        "attempts": ["/opt/custom/git"],
+        "status": {
+          "ready": false,
+          "path": null,
+          "source": "not-found",
+          "error": "Selected Git executable cannot be used. Git executable did not report a Git version: /opt/custom/git"
+        },
+        "savedAfter": "/opt/custom/git"
+      },
+      "steps": [
+        {
+          "name": "the saved file is replaced by a working Git",
+          "filesystem": {
+            "/opt/custom/git": {
+              "kind": "executable",
+              "stdout": "git version 2.45.0\n"
+            }
+          },
+          "expected": {
+            "resolved": "/opt/custom/git",
+            "savedAfter": "/opt/custom/git"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Linux non-executable saved selection after chmod",
+      "os": "linux",
+      "environment": {},
+      "saved": "/opt/custom/git",
+      "loginPath": "/usr/bin",
+      "developerDir": null,
+      "filesystem": {
+        "/opt/custom/git": {
+          "kind": "noexec"
+        },
+        "/usr/bin/git": {
+          "kind": "executable",
+          "stdout": "git version 2.43.0\n"
+        }
+      },
+      "expected": {
+        "attempts": ["/opt/custom/git"],
+        "status": {
+          "ready": false,
+          "path": null,
+          "source": "not-found",
+          "error": "Selected Git executable cannot be used. Git executable /opt/custom/git is not executable by this user"
+        },
+        "savedAfter": "/opt/custom/git"
+      },
+      "steps": [
+        {
+          "name": "chmod +x fixes the saved file",
+          "filesystem": {
+            "/opt/custom/git": {
+              "kind": "executable",
+              "stdout": "git version 2.45.0\n"
+            }
+          },
+          "expected": {
+            "resolved": "/opt/custom/git",
+            "savedAfter": "/opt/custom/git"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Linux saved selection after a transient timeout",
+      "os": "linux",
+      "environment": {},
+      "saved": "/opt/custom/git",
+      "loginPath": "/usr/bin",
+      "developerDir": null,
+      "filesystem": {
+        "/opt/custom/git": {
+          "kind": "executable",
+          "stdout": "git version 2.45.0\n",
+          "transient": "timeout"
+        },
+        "/usr/bin/git": {
+          "kind": "executable",
+          "stdout": "git version 2.43.0\n"
+        }
+      },
+      "expected": {
+        "attempts": ["/opt/custom/git"],
+        "status": {
+          "ready": false,
+          "path": null,
+          "source": "not-found",
+          "error": "Selected Git executable cannot be used. Git executable did not respond within 5 seconds: /opt/custom/git"
+        },
+        "savedAfter": "/opt/custom/git"
+      },
+      "steps": [
+        {
+          "name": "the timeout clears",
+          "filesystem": {
+            "/opt/custom/git": {
+              "kind": "executable",
+              "stdout": "git version 2.45.0\n"
+            }
+          },
+          "expected": {
+            "resolved": "/opt/custom/git",
+            "savedAfter": "/opt/custom/git"
+          }
+        },
+        {
+          "name": "five minutes later",
+          "elapsedMs": 300000,
+          "expected": {
+            "resolved": "/opt/custom/git",
+            "savedAfter": "/opt/custom/git"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Linux revalidates the discovery cache",
+      "os": "linux",
+      "environment": {},
+      "saved": null,
+      "loginPath": "/a/bin:/usr/bin",
+      "developerDir": null,
+      "filesystem": {
+        "/a/bin/git": {
+          "kind": "executable",
+          "stdout": "git version 2.47.1\n"
+        },
+        "/usr/bin/git": {
+          "kind": "executable",
+          "stdout": "git version 2.43.0\n"
+        }
+      },
+      "expected": {
+        "attempts": ["/a/bin/git"],
+        "status": {
+          "ready": true,
+          "path": "/a/bin/git",
+          "source": "login-path"
+        },
+        "savedAfter": ""
+      },
+      "steps": [
+        {
+          "name": "the login-PATH Git is removed",
+          "filesystem": {
+            "/a/bin/git": {
+              "kind": "missing"
+            }
+          },
+          "expected": {
+            "resolved": "/usr/bin/git",
+            "savedAfter": ""
+          }
+        }
+      ]
+    },
+    {
+      "name": "Linux treats a broken inherited override as the explicit choice",
+      "os": "linux",
+      "environment": {
+        "CANOPY_GIT_EXECUTABLE": "/removed/git"
+      },
+      "saved": null,
+      "loginPath": "/usr/bin",
+      "developerDir": null,
+      "filesystem": {
+        "/usr/bin/git": {
+          "kind": "executable",
+          "stdout": "git version 2.43.0\n"
+        }
+      },
+      "expected": {
+        "attempts": ["/removed/git"],
+        "status": {
+          "ready": false,
+          "path": null,
+          "source": "not-found",
+          "error": "Selected Git executable cannot be used. Git executable does not exist: /removed/git"
+        },
+        "savedAfter": ""
+      }
+    },
+    {
+      "name": "Linux arm64 spawns git from PATH without validation",
+      "os": "linux",
+      "arch": "arm64",
+      "environment": {},
+      "saved": "/opt/custom/git",
+      "loginPath": "/usr/bin",
+      "developerDir": null,
+      "filesystem": {
+        "/usr/bin/git": {
+          "kind": "executable",
+          "stdout": "git version 2.43.0\n"
+        }
+      },
+      "expected": {
+        "attempts": [],
+        "status": {
+          "ready": true,
+          "path": null,
+          "source": "not-found"
+        },
+        "savedAfter": "/opt/custom/git"
+      }
+    },
+    {
+      "name": "Linux arm64 uses the environment override",
+      "os": "linux",
+      "arch": "arm64",
+      "environment": {
+        "CANOPY_GIT_EXECUTABLE": " /env/git "
+      },
+      "saved": null,
+      "loginPath": "/usr/bin",
+      "developerDir": null,
+      "filesystem": {
+        "/env/git": {
+          "kind": "executable",
+          "stdout": "git version 2.44.0\n"
+        }
+      },
+      "expected": {
+        "attempts": ["/env/git"],
+        "status": {
+          "ready": true,
+          "path": "/env/git",
+          "source": "cache"
+        },
+        "savedAfter": ""
+      }
+    },
+    {
+      "name": "Windows accepts a relative saved selection",
+      "os": "win32",
+      "environment": {
+        "ProgramFiles": "C:\\Program Files"
+      },
+      "saved": "git.exe",
+      "loginPath": "",
+      "developerDir": null,
+      "filesystem": {
+        "git.exe": {
+          "kind": "executable",
+          "stdout": "git version 2.51.0.windows.1\n"
+        },
+        "C:\\Program Files\\Git\\cmd\\git.exe": {
+          "kind": "executable",
+          "stdout": "git version 2.50.0.windows.1\n"
+        }
+      },
+      "expected": {
+        "attempts": ["git.exe"],
+        "status": {
+          "ready": true,
+          "path": "git.exe",
+          "source": "cache"
+        },
+        "savedAfter": "git.exe"
+      }
+    }
+  ]
+}

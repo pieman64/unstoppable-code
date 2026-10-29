@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "runtime": {
+    "package": "web-tree-sitter",
+    "version": "0.26.10"
+  },
+  "grammars": [
+    {
+      "package": "@tree-sitter-grammars/tree-sitter-markdown",
+      "grammar": "markdown",
+      "version": "0.3.2",
+      "built": true
+    },
+    {
+      "package": "@tree-sitter-grammars/tree-sitter-markdown",
+      "grammar": "markdown-inline",
+      "version": "0.3.2",
+      "built": true
+    },
+    {
+      "package": "tree-sitter-javascript",
+      "version": "0.25.0"
+    },
+    {
+      "package": "tree-sitter-swift",
+      "grammar": "swift",
+      "version": "0.7.1",
+      "built": true
+    },
+    {
+      "package": "tree-sitter-typescript",
+      "version": "0.23.2"
+    }
+  ]
+}

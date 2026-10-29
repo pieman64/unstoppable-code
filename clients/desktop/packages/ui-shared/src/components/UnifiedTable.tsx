@@ -1,0 +1,974 @@
+import {
+  type JSX,
+  type ReactNode,
+  memo,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { createPortal } from 'react-dom';
+import { useVirtualizer } from '@tanstack/react-virtual';
+import {
+  ClaudeLogo,
+  CodexLogo,
+  PluginsIcon,
+  SkillIcon,
+  StorefrontIcon,
+} from '../icons';
+import { BundleIcon, RepoIcon } from '../icons/AppIcons';
+import { formatDate } from '../lib/format-date';
+import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
+import {
+  ProviderSupportIcons,
+  type ProviderSupportScope,
+  type UnifiedProviderSupport,
+} from './ProviderSupportIcons';
+import { getUnifiedTableItemKey } from './unified-table-virtualization';
+import { LoadingPlaceholder } from './StatusBlocks';
+import { SegmentedControl } from './SegmentedControl';
+import { useLoadingIndicatorStyle } from './LoadingIndicatorStyle';
+
+/**
+ * Row kinds. MCP servers are one kind however the host built the row: the
+ * portal's catalog refs and the desktop's device and account servers both
+ * project as `mcp` (REG-3033). Device versus account is the Source column.
+ */
+export type UnifiedTableKind = 'skill' | 'plugin' | 'collection' | 'mcp';
+export type UnifiedTableSelectedFilter = 'all' | 'yes' | 'no';
+export type UnifiedTableSourceIcon =
+  | 'repo'
+  | 'marketplace'
+  | 'claude'
+  | 'codex'
+  | 'mixed'
+  | 'app'
+  | 'none';
+export type UnifiedTableBadgeTone = 'neutral' | 'info' | 'warning' | 'danger';
+export type UnifiedTableToggleMode =
+  | 'normal'
+  | 'locked'
+  | 'disabled'
+  | 'unsupported';
+
+export interface UnifiedTableBadge {
+  label: string;
+  tone: UnifiedTableBadgeTone;
+}
+
+export interface UnifiedTableRow {
+  kind: UnifiedTableKind;
+  key: string;
+  name: string;
+  description: string;
+  logoUrl?: string;
+  curatedKey?: string;
+  /**
+   * Keep this row out of the "N selected" summary even while it is in
+   * `selectedKeys`. For rows that are checked to state a fact rather than to
+   * record a choice — a capability linked on the user's provider account is
+   * checked, unchangeable, and never written to any saved configuration, so
+   * counting it tells the user they selected something they did not.
+   */
+  excludeFromSelectionCount?: boolean;
+  source: string;
+  /** Stable filter identity; falls back to `source` for legacy desktop rows. */
+  sourceId?: string;
+  sourceSubtitle: string;
+  sourceIcon: UnifiedTableSourceIcon;
+  lastUpdated: string;
+  badges?: UnifiedTableBadge[];
+  toggleMode?: UnifiedTableToggleMode;
+  toggleReason?: string;
+  /** Display-only host action for a row that needs setup before selection. */
+  selectionAction?: ReactNode;
+  /**
+   * Host action for a row that stays selectable while it needs attention,
+   * such as connecting a server chosen before it is connected. Renders in the
+   * trailing cell, before View.
+   */
+  rowAction?: ReactNode;
+  providerSupport?: UnifiedProviderSupport;
+  codexCompatDisabled?: boolean;
+  viewDisabled?: boolean;
+  /** Optional plugin contents, already resolved for the host's provider. */
+  members?: { name: string; description: string; kind: string }[];
+}
+
+export interface UnifiedTableSourceOption {
+  value: string;
+  label: string;
+  subtitle?: string;
+  icon: Exclude<UnifiedTableSourceIcon, 'none'>;
+}
+
+export interface UnifiedTableProps {
+  rows: UnifiedTableRow[];
+  sourceOptions: UnifiedTableSourceOption[];
+  selectedKeys: Set<string>;
+  onToggle: (key: string) => void;
+  onView: (row: UnifiedTableRow) => void;
+  showCollectionKind: boolean;
+  loading?: boolean;
+  defaultSelectedFilter?: UnifiedTableSelectedFilter;
+  hideSelectionSummary?: boolean;
+  providerIconScope?: ProviderSupportScope;
+  /** Host renderer for desktop's resolved MCP logos. */
+  renderMcpLogo?: (row: UnifiedTableRow) => ReactNode;
+  /** Host renderer for a brand-aware first-party source mark. */
+  renderAppLogo?: () => ReactNode;
+  rowCheckboxTestId?: string;
+  /**
+   * Mark only the rows' table body with the session-replay block class, so a
+   * recorder keeps a same-size placeholder while the controls stay recorded.
+   */
+  blockRowsFromReplay?: boolean;
+  /** Rendered at the end of the filter row, such as a scope chip. */
+  toolbarTrailing?: ReactNode;
+}
+
+function SourceOptionIcon({
+  icon,
+  renderAppLogo,
+}: {
+  icon: UnifiedTableSourceOption['icon'];
+  renderAppLogo?: () => ReactNode;
+}): JSX.Element {
+  if (icon === 'repo') return <RepoIcon width={12} height={12} />;
+  if (icon === 'marketplace') return <StorefrontIcon width={12} height={12} />;
+  if (icon === 'codex') return <CodexLogo width={12} height={12} />;
+  if (icon === 'mixed') {
+    return (
+      <span className="inline-flex gap-0.5">
+        <ClaudeLogo width={10} height={10} />
+        <CodexLogo width={10} height={10} />
+      </span>
+    );
+  }
+  if (icon === 'app') {
+    return (
+      <>{renderAppLogo?.() ?? <StorefrontIcon width={12} height={12} />}</>
+    );
+  }
+  return <ClaudeLogo width={12} height={12} />;
+}
+
+function SourceMultiSelect({
+  options,
+  active,
+  onChange,
+  renderAppLogo,
+}: {
+  options: UnifiedTableSourceOption[];
+  active: Set<string>;
+  onChange: (next: Set<string>) => void;
+  renderAppLogo?: () => ReactNode;
+}): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const [position, setPosition] = useState({ top: 0, left: 0 });
+  const updatePosition = useCallback((): void => {
+    const button = buttonRef.current;
+    if (!button) return;
+    const rect = button.getBoundingClientRect();
+    setPosition({ top: rect.bottom + 4, left: rect.left });
+  }, []);
+  useLayoutEffect(() => {
+    if (open) updatePosition();
+  }, [open, updatePosition]);
+  useEffect(() => {
+    if (!open) return;
+    const handleClick = (event: MouseEvent): void => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (
+        buttonRef.current?.contains(target) ||
+        dropdownRef.current?.contains(target)
+      ) {
+        return;
+      }
+      setOpen(false);
+    };
+    const handleKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', handleClick);
+    document.addEventListener('keydown', handleKey);
+    window.addEventListener('scroll', updatePosition, true);
+    return (): void => {
+      document.removeEventListener('mousedown', handleClick);
+      document.removeEventListener('keydown', handleKey);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [open, updatePosition]);
+  useEffect(() => {
+    if (!open) return;
+    setSearch('');
+    requestAnimationFrame(() => searchRef.current?.focus());
+  }, [open]);
+  const foldedSearch = search.toLowerCase();
+  const filtered = useMemo(
+    () =>
+      options.filter(
+        (option) =>
+          option.label.toLowerCase().includes(foldedSearch) ||
+          option.subtitle?.toLowerCase().includes(foldedSearch),
+      ),
+    [foldedSearch, options],
+  );
+  const toggle = (value: string): void => {
+    const next = new Set(active);
+    if (next.has(value)) next.delete(value);
+    else next.add(value);
+    onChange(next);
+  };
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className="focus-ring flex items-center gap-1 rounded-md border bg-base px-2 py-1.5 text-xs fg-primary"
+      >
+        <span className="max-w-30 truncate">
+          {active.size === 0
+            ? 'All sources'
+            : `${String(active.size)} source${active.size === 1 ? '' : 's'}`}
+        </span>
+        <span aria-hidden>⌄</span>
+      </button>
+      {open &&
+        createPortal(
+          <div
+            ref={dropdownRef}
+            className="fixed z-dropdown w-64 rounded-lg bg-card shadow-xl"
+            style={position}
+          >
+            <div className="p-1.5 pb-0">
+              <input
+                ref={searchRef}
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Search sources…"
+                className="focus-ring w-full rounded-md border bg-base px-2 py-1 text-xs"
+              />
+            </div>
+            <div className="max-h-60 overflow-y-auto p-1.5">
+              {filtered.length === 0 && (
+                <p className="px-2 py-3 text-center text-xs fg-secondary">
+                  {options.length === 0
+                    ? 'No sources available'
+                    : 'No matching sources'}
+                </p>
+              )}
+              {filtered.map((option) => (
+                <label
+                  key={option.value}
+                  className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 transition-colors hover:bg-secondary/50"
+                >
+                  <input
+                    type="checkbox"
+                    checked={active.has(option.value)}
+                    onChange={() => toggle(option.value)}
+                    className="shrink-0 rounded"
+                  />
+                  <span className="shrink-0 fg-secondary">
+                    <SourceOptionIcon
+                      icon={option.icon}
+                      renderAppLogo={renderAppLogo}
+                    />
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block truncate text-xs fg-primary">
+                      {option.label}
+                    </span>
+                    {option.subtitle && (
+                      <span className="block truncate text-3xs fg-secondary">
+                        {option.subtitle}
+                      </span>
+                    )}
+                  </span>
+                </label>
+              ))}
+            </div>
+            {active.size > 0 && (
+              <div className="border-t px-2 py-1.5">
+                <button
+                  type="button"
+                  onClick={() => onChange(new Set())}
+                  className="text-3xs fg-secondary transition-colors hover:fg-primary"
+                >
+                  Clear all
+                </button>
+              </div>
+            )}
+          </div>,
+          document.body,
+        )}
+    </>
+  );
+}
+
+const BADGE_TONE_CLASS: Record<UnifiedTableBadgeTone, string> = {
+  neutral: 'bg-fg-primary/10 fg-primary/80',
+  info: 'bg-accent-subtle fg-accent',
+  warning: 'bg-warning-subtle fg-warning',
+  danger: 'bg-destructive-subtle fg-destructive',
+};
+
+function KindIcon({
+  row,
+  renderMcpLogo,
+}: {
+  row: UnifiedTableRow;
+  renderMcpLogo?: (row: UnifiedTableRow) => ReactNode;
+}): JSX.Element {
+  if (row.kind === 'skill') return <SkillIcon width={14} height={14} />;
+  if (row.kind === 'plugin') return <PluginsIcon width={14} height={14} />;
+  if (row.kind === 'collection') return <BundleIcon size={14} />;
+  if (row.kind === 'mcp' && renderMcpLogo) return <>{renderMcpLogo(row)}</>;
+  return (
+    <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-subtle text-3xs font-medium fg-secondary">
+      {row.name.trim().charAt(0).toUpperCase() || '•'}
+    </span>
+  );
+}
+
+function SourceIcon({
+  icon,
+  renderAppLogo,
+}: {
+  icon: UnifiedTableSourceIcon;
+  renderAppLogo?: () => ReactNode;
+}): JSX.Element | null {
+  if (icon === 'none') return null;
+  if (icon === 'mixed') {
+    return (
+      <span className="inline-flex gap-0.5" data-testid="source-icon-mixed">
+        <ClaudeLogo
+          width={10}
+          height={10}
+          data-testid="source-icon-mixed-claude"
+        />
+        <CodexLogo
+          width={10}
+          height={10}
+          data-testid="source-icon-mixed-codex"
+        />
+      </span>
+    );
+  }
+  const testId = `source-icon-${icon}`;
+  if (icon === 'repo')
+    return <RepoIcon width={12} height={12} data-testid={testId} />;
+  if (icon === 'marketplace')
+    return <StorefrontIcon width={12} height={12} data-testid={testId} />;
+  if (icon === 'claude')
+    return <ClaudeLogo width={12} height={12} data-testid={testId} />;
+  if (icon === 'codex')
+    return <CodexLogo width={12} height={12} data-testid={testId} />;
+  return (
+    <span data-testid={testId}>
+      {renderAppLogo?.() ?? <StorefrontIcon width={12} height={12} />}
+    </span>
+  );
+}
+
+const COLUMN_COUNT = 5;
+const VIRTUALIZED_ROW_THRESHOLD = 120;
+const ESTIMATED_ROW_HEIGHT_PX = 48;
+
+interface RowViewProps {
+  row: UnifiedTableRow;
+  checked: boolean;
+  expanded: boolean;
+  onExpand: (key: string) => void;
+  providerIconScope: ProviderSupportScope;
+  onToggle: (key: string) => void;
+  onView: (row: UnifiedTableRow) => void;
+  renderMcpLogo?: (row: UnifiedTableRow) => ReactNode;
+  renderAppLogo?: () => ReactNode;
+  measureRef?: (element: HTMLTableRowElement | null) => void;
+  virtualIndex?: number;
+  rowCheckboxTestId?: string;
+}
+
+const UnifiedTableRowView = memo(function UnifiedTableRowView({
+  row,
+  checked,
+  expanded,
+  onExpand,
+  providerIconScope,
+  onToggle,
+  onView,
+  renderMcpLogo,
+  renderAppLogo,
+  measureRef,
+  virtualIndex,
+  rowCheckboxTestId,
+}: RowViewProps): JSX.Element {
+  const toggleMode = row.toggleMode ?? 'normal';
+  const locked = toggleMode === 'locked';
+  const disabled =
+    locked ||
+    toggleMode === 'disabled' ||
+    (toggleMode === 'unsupported' && !checked);
+  const handleToggle = (): void => {
+    if (!disabled) onToggle(row.key);
+  };
+  return (
+    <tr
+      ref={measureRef}
+      data-index={virtualIndex}
+      className="border-b transition-colors last:border-b-0 hover:bg-secondary/30"
+      title={row.toggleReason}
+    >
+      <td className="px-3 py-1 text-center">
+        {row.selectionAction}
+        {(!row.selectionAction || checked) && (
+          <input
+            type="checkbox"
+            checked={locked || checked}
+            onChange={handleToggle}
+            disabled={disabled}
+            className={`rounded ${disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'} ${toggleMode === 'unsupported' ? 'opacity-70' : ''}`}
+            data-toggle-mode={toggleMode}
+            data-testid={rowCheckboxTestId}
+            data-row-key={row.key}
+            aria-label={
+              toggleMode === 'unsupported' && row.toggleReason
+                ? `Select ${row.name} (${row.toggleReason})`
+                : `Select ${row.name}`
+            }
+          />
+        )}
+      </td>
+      <td className="max-w-0 px-3 py-1">
+        <button
+          type="button"
+          onClick={handleToggle}
+          disabled={disabled}
+          className={`flex w-full min-w-0 items-center gap-2 text-left ${disabled ? 'cursor-not-allowed' : ''} ${toggleMode === 'unsupported' ? 'opacity-70' : ''}`}
+        >
+          <span className="shrink-0 fg-secondary">
+            <KindIcon row={row} renderMcpLogo={renderMcpLogo} />
+          </span>
+          <span className="min-w-0 flex-1">
+            {row.badges && row.badges.length > 0 && (
+              <span className="mb-1 flex flex-wrap gap-1">
+                {row.badges.map((badge, index) => (
+                  <span
+                    key={`${badge.label}-${String(index)}`}
+                    className={`rounded px-1.5 py-0.5 text-3xs font-medium leading-none ${BADGE_TONE_CLASS[badge.tone]}`}
+                  >
+                    {badge.label}
+                  </span>
+                ))}
+              </span>
+            )}
+            <span className="flex min-w-0 items-center gap-1.5">
+              <span
+                className="block min-w-0 truncate text-s font-medium fg-primary"
+                title={row.name}
+              >
+                {row.name}
+              </span>
+              {row.kind === 'plugin' && row.providerSupport && (
+                <ProviderSupportIcons
+                  support={row.providerSupport}
+                  codexCompatDisabled={row.codexCompatDisabled}
+                  scope={providerIconScope}
+                  size={12}
+                  className="shrink-0"
+                />
+              )}
+            </span>
+            {row.description && (
+              <span
+                className="block truncate text-xs fg-secondary"
+                title={row.description}
+              >
+                {row.description}
+              </span>
+            )}
+          </span>
+        </button>
+        {row.members && row.members.length > 0 && (
+          <div className="mt-2">
+            <button
+              type="button"
+              aria-expanded={expanded}
+              onClick={() => onExpand(row.key)}
+              className="focus-ring rounded px-1 py-1 text-xs fg-accent"
+              data-testid="plugin-members-toggle"
+            >
+              {expanded
+                ? 'Hide capabilities'
+                : `${row.members.length} capabilities`}
+            </button>
+            {expanded && (
+              <ul
+                className="mt-1 space-y-2 border-l pl-3"
+                aria-label={`${row.name} capabilities`}
+              >
+                {row.members.map((member, index) => (
+                  <li
+                    key={`${member.kind}:${member.name}:${index}`}
+                    className="text-xs"
+                  >
+                    <span className="font-medium fg-primary">
+                      {member.name}
+                    </span>
+                    <span className="ml-2 fg-secondary">{member.kind}</span>
+                    <p className="whitespace-normal break-words fg-secondary">
+                      {member.description}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+        {row.members && (
+          <p className="mt-1 text-xs fg-secondary">
+            {row.toggleReason ?? (checked ? 'Selected' : 'Available to enable')}
+          </p>
+        )}
+      </td>
+      <td className="max-w-0 px-3 py-1">
+        {row.source ? (
+          <span className="flex items-start gap-1.5">
+            <span className="mt-0.5 shrink-0 fg-secondary">
+              <SourceIcon icon={row.sourceIcon} renderAppLogo={renderAppLogo} />
+            </span>
+            <span className="min-w-0">
+              <span className="block truncate text-s fg-primary">
+                {row.source}
+              </span>
+              {row.sourceSubtitle && (
+                <span className="block truncate text-xs fg-secondary">
+                  {row.sourceSubtitle}
+                </span>
+              )}
+            </span>
+          </span>
+        ) : (
+          <span className="fg-secondary">—</span>
+        )}
+      </td>
+      <td className="whitespace-nowrap px-3 py-1 fg-secondary">
+        {row.lastUpdated ? formatDate(row.lastUpdated) : '—'}
+      </td>
+      <td className="px-3 py-1 text-right">
+        <span className="inline-flex items-center justify-end gap-1">
+          {row.rowAction}
+          {row.viewDisabled ? (
+            row.rowAction ? null : (
+              <span className="inline-block px-1.5 py-0.5 text-3xs fg-secondary/60">
+                —
+              </span>
+            )
+          ) : (
+            <button
+              type="button"
+              onClick={() => onView(row)}
+              className="focus-ring shrink-0 rounded px-1.5 py-0.5 text-3xs font-medium fg-accent transition-colors hover:bg-secondary"
+            >
+              View
+            </button>
+          )}
+        </span>
+      </td>
+    </tr>
+  );
+});
+
+function SelectionFilterCount({
+  value,
+  testId,
+}: {
+  value: number;
+  testId: string;
+}): JSX.Element {
+  return (
+    <span className="tabular-nums fg-tertiary" data-testid={testId}>
+      {' '}
+      {value}
+    </span>
+  );
+}
+
+function isKindFilter(value: string): value is UnifiedTableKind | 'all' {
+  return (
+    value === 'all' ||
+    value === 'skill' ||
+    value === 'plugin' ||
+    value === 'collection' ||
+    value === 'mcp'
+  );
+}
+
+export function UnifiedTable({
+  rows,
+  sourceOptions,
+  selectedKeys,
+  onToggle,
+  onView,
+  showCollectionKind,
+  loading = false,
+  defaultSelectedFilter = 'all',
+  hideSelectionSummary = false,
+  providerIconScope = 'mixed',
+  renderMcpLogo,
+  renderAppLogo,
+  rowCheckboxTestId,
+  blockRowsFromReplay = false,
+  toolbarTrailing,
+}: UnifiedTableProps): JSX.Element {
+  const [selectedFilter, setSelectedFilter] =
+    useState<UnifiedTableSelectedFilter>(defaultSelectedFilter);
+  const [nameSearch, setNameSearch] = useState('');
+  const [expandedKeys, setExpandedKeys] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const toggleExpanded = useCallback((key: string): void => {
+    setExpandedKeys((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+  const [kindFilter, setKindFilter] = useState<UnifiedTableKind | 'all'>('all');
+  const [activeSources, setActiveSources] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const deferredNameSearch = useDeferredValue(nameSearch);
+  const query = deferredNameSearch.toLowerCase();
+
+  const onToggleRef = useRef(onToggle);
+  const onViewRef = useRef(onView);
+  useEffect(() => {
+    onToggleRef.current = onToggle;
+    onViewRef.current = onView;
+  }, [onToggle, onView]);
+  const stableToggle = useCallback((key: string): void => {
+    onToggleRef.current(key);
+  }, []);
+  const stableView = useCallback((row: UnifiedTableRow): void => {
+    onViewRef.current(row);
+  }, []);
+
+  const rowKindByKey = useMemo(() => {
+    const result = new Map<string, UnifiedTableKind>();
+    for (const row of rows) {
+      if (row.excludeFromSelectionCount) continue;
+      result.set(row.key, row.kind);
+    }
+    return result;
+  }, [rows]);
+  const availableKinds = useMemo(
+    () => new Set(rows.map((row) => row.kind)),
+    [rows],
+  );
+  const selection = useMemo(() => {
+    const counts = new Map<UnifiedTableKind, number>();
+    let total = 0;
+    for (const key of selectedKeys) {
+      const kind = rowKindByKey.get(key);
+      if (kind) {
+        counts.set(kind, (counts.get(kind) ?? 0) + 1);
+        total += 1;
+      }
+    }
+    const labels: Array<[UnifiedTableKind, string]> = [
+      ['collection', 'collection'],
+      ['skill', 'skill'],
+      ['plugin', 'plugin'],
+      ['mcp', 'MCP server'],
+    ];
+    const parts = labels.flatMap(([kind, label]) => {
+      const count = counts.get(kind) ?? 0;
+      return count === 0
+        ? []
+        : [`${String(count)} ${label}${count === 1 ? '' : 's'}`];
+    });
+    return {
+      count: total,
+      summary: parts.length === 0 ? undefined : `${parts.join(', ')} selected`,
+    };
+  }, [rowKindByKey, selectedKeys]);
+  const selectionFilterOptions = useMemo(
+    () => [
+      {
+        value: 'all' as const,
+        label: 'All',
+        dataTestId: 'unified-table-filter-all',
+        trailing: hideSelectionSummary ? undefined : (
+          <SelectionFilterCount
+            value={rows.length}
+            testId="unified-table-total-count"
+          />
+        ),
+      },
+      {
+        value: 'yes' as const,
+        label: 'Selected',
+        dataTestId: 'unified-table-filter-selected',
+        tooltip: hideSelectionSummary ? undefined : selection.summary,
+        trailing: hideSelectionSummary ? undefined : (
+          <SelectionFilterCount
+            value={selection.count}
+            testId="unified-table-selected-count"
+          />
+        ),
+      },
+      {
+        value: 'no' as const,
+        label: 'Not selected',
+        dataTestId: 'unified-table-filter-not-selected',
+      },
+    ],
+    [hideSelectionSummary, rows.length, selection],
+  );
+
+  const sortedEntries = useMemo(() => {
+    const entries = rows.map((row) => ({
+      row,
+      foldedName: row.name.toLowerCase(),
+      foldedDescription: row.description.toLowerCase(),
+      foldedMembers: row.members?.map((member) =>
+        `${member.name} ${member.description}`.toLowerCase(),
+      ),
+    }));
+    entries.sort((left, right) => left.row.name.localeCompare(right.row.name));
+    return entries;
+  }, [rows]);
+  const selectionFilterKeys = selectedFilter === 'all' ? null : selectedKeys;
+  const filteredRows = useMemo(() => {
+    const result: UnifiedTableRow[] = [];
+    for (const entry of sortedEntries) {
+      const row = entry.row;
+      if (
+        selectionFilterKeys &&
+        ((selectedFilter === 'yes' && !selectionFilterKeys.has(row.key)) ||
+          (selectedFilter === 'no' && selectionFilterKeys.has(row.key)))
+      ) {
+        continue;
+      }
+      if (
+        query &&
+        !entry.foldedName.includes(query) &&
+        !entry.foldedDescription.includes(query) &&
+        !entry.foldedMembers?.some((member) => member.includes(query))
+      )
+        continue;
+      if (kindFilter !== 'all' && row.kind !== kindFilter) continue;
+      if (
+        activeSources.size > 0 &&
+        !activeSources.has(row.sourceId ?? row.source)
+      ) {
+        continue;
+      }
+      result.push(row);
+    }
+    return result;
+  }, [
+    activeSources,
+    kindFilter,
+    query,
+    selectedFilter,
+    selectionFilterKeys,
+    sortedEntries,
+  ]);
+
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const virtualized = filteredRows.length > VIRTUALIZED_ROW_THRESHOLD;
+  const getItemKey = useCallback(
+    (index: number) => getUnifiedTableItemKey(filteredRows, index),
+    [filteredRows],
+  );
+  const rowVirtualizer = useVirtualizer({
+    count: virtualized ? filteredRows.length : 0,
+    getScrollElement: () => scrollRef.current,
+    getItemKey,
+    estimateSize: () => ESTIMATED_ROW_HEIGHT_PX,
+    overscan: 10,
+  });
+  const measureRow = useCallback(
+    (element: HTMLTableRowElement | null): void => {
+      rowVirtualizer.measureElement(element);
+    },
+    [rowVirtualizer],
+  );
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
+  }, [activeSources, kindFilter, query, selectedFilter]);
+  const virtualItems = virtualized ? rowVirtualizer.getVirtualItems() : [];
+  const firstVirtualItem = virtualItems[0];
+  const lastVirtualItem = virtualItems[virtualItems.length - 1];
+  const paddingTop = firstVirtualItem?.start ?? 0;
+  const paddingBottom = lastVirtualItem
+    ? rowVirtualizer.getTotalSize() - lastVirtualItem.end
+    : 0;
+  const showLoading = loading && rows.length === 0;
+  const loadingIndicatorStyle = useLoadingIndicatorStyle();
+
+  return (
+    <div
+      className="flex min-h-0 flex-1 flex-col gap-2"
+      data-testid="unified-table"
+      data-row-count={filteredRows.length}
+      data-virtualized={virtualized ? 'true' : 'false'}
+    >
+      <div className="flex shrink-0 flex-wrap items-center gap-2">
+        <SegmentedControl
+          value={selectedFilter}
+          options={selectionFilterOptions}
+          onChange={setSelectedFilter}
+          label="Selection filter"
+          width="content"
+          dataTestId="unified-table-selection-filter"
+        />
+        <input
+          value={nameSearch}
+          onChange={(event) => setNameSearch(event.target.value)}
+          placeholder="Search by name…"
+          aria-label="Search by name"
+          className="focus-ring min-w-35 flex-1 rounded-md border bg-base px-2.5 py-1.5 text-xs"
+        />
+        <select
+          value={kindFilter}
+          onChange={(event) => {
+            if (isKindFilter(event.target.value))
+              setKindFilter(event.target.value);
+          }}
+          aria-label="Kind filter"
+          className="focus-ring rounded-md border bg-base px-2 py-1.5 text-xs fg-primary"
+        >
+          <option value="all">All kinds</option>
+          <option value="skill">Skill</option>
+          <option value="plugin">Plugin</option>
+          {showCollectionKind && <option value="collection">Collection</option>}
+          {availableKinds.has('mcp') && <option value="mcp">MCP server</option>}
+        </select>
+        <SourceMultiSelect
+          options={sourceOptions}
+          active={activeSources}
+          onChange={setActiveSources}
+          renderAppLogo={renderAppLogo}
+        />
+        {toolbarTrailing}
+      </div>
+      <div className="flex min-h-0 flex-1 flex-col">
+        {showLoading &&
+          (loadingIndicatorStyle === 'spinner' ? (
+            <LoadingPlaceholder space="panel" />
+          ) : (
+            <p className="py-12 text-center text-s fg-secondary">Loading…</p>
+          ))}
+        {!showLoading && filteredRows.length === 0 && (
+          <p className="py-8 text-center text-s fg-secondary">
+            {deferredNameSearch ||
+            selectedFilter !== 'all' ||
+            kindFilter !== 'all' ||
+            activeSources.size > 0
+              ? 'No results match the current filters.'
+              : 'No items available.'}
+          </p>
+        )}
+        {filteredRows.length > 0 && (
+          <div
+            ref={scrollRef}
+            className="min-h-0 flex-1 overflow-auto rounded-lg border"
+          >
+            <table className="w-full table-fixed text-s">
+              <colgroup>
+                <col className="w-10" />
+                <col className="w-2/5" />
+                <col className="w-3/10" />
+                <col className="w-28" />
+                <col className="w-14" />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th className="sticky top-0 z-10 border-b bg-secondary px-3 py-2" />
+                  <th className="sticky top-0 z-10 border-b bg-secondary px-3 py-2 text-left font-medium fg-secondary">
+                    Name
+                  </th>
+                  <th className="sticky top-0 z-10 border-b bg-secondary px-3 py-2 text-left font-medium fg-secondary">
+                    Source
+                  </th>
+                  <th className="sticky top-0 z-10 whitespace-nowrap border-b bg-secondary px-3 py-2 text-left font-medium fg-secondary">
+                    Last updated
+                  </th>
+                  <th className="sticky top-0 z-10 border-b bg-secondary px-3 py-2" />
+                </tr>
+              </thead>
+              <tbody
+                className={blockRowsFromReplay ? REPLAY_BLOCK_CLASS : undefined}
+              >
+                {paddingTop > 0 && (
+                  <tr aria-hidden style={{ height: paddingTop }}>
+                    <td colSpan={COLUMN_COUNT} />
+                  </tr>
+                )}
+                {(virtualized ? virtualItems : filteredRows).map(
+                  (item, index) => {
+                    const virtualItem = virtualized ? item : undefined;
+                    const row = virtualized
+                      ? filteredRows[
+                          typeof virtualItem === 'object' &&
+                          virtualItem !== null &&
+                          'index' in virtualItem &&
+                          typeof virtualItem.index === 'number'
+                            ? virtualItem.index
+                            : -1
+                        ]
+                      : filteredRows[index];
+                    if (!row) return null;
+                    const virtualIndex =
+                      typeof virtualItem === 'object' &&
+                      virtualItem !== null &&
+                      'index' in virtualItem &&
+                      typeof virtualItem.index === 'number'
+                        ? virtualItem.index
+                        : undefined;
+                    return (
+                      <UnifiedTableRowView
+                        key={row.key}
+                        row={row}
+                        checked={selectedKeys.has(row.key)}
+                        expanded={expandedKeys.has(row.key)}
+                        onExpand={toggleExpanded}
+                        providerIconScope={providerIconScope}
+                        onToggle={stableToggle}
+                        onView={stableView}
+                        renderMcpLogo={renderMcpLogo}
+                        renderAppLogo={renderAppLogo}
+                        measureRef={virtualized ? measureRow : undefined}
+                        virtualIndex={virtualIndex}
+                        rowCheckboxTestId={rowCheckboxTestId}
+                      />
+                    );
+                  },
+                )}
+                {paddingBottom > 0 && (
+                  <tr aria-hidden style={{ height: paddingBottom }}>
+                    <td colSpan={COLUMN_COUNT} />
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

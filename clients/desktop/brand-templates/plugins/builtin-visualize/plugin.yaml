@@ -1,0 +1,17 @@
+name: builtin-visualize
+version: 1.0.0
+description: Guidance for showing charts, diagrams, tables, and other visuals in {{BRAND_DISPLAY_NAME}} chats with the ShowVisual and PreviewVisual tools.
+author:
+  name: '{{BRAND_DISPLAY_NAME}}'
+category: productivity
+targets:
+  codex:
+    category: Productivity
+    displayName: '{{BRAND_DISPLAY_NAME}} Visualize'
+    shortDescription: Charts, diagrams, and tables in chat replies.
+    longDescription: Choose the right display for the data, load charting libraries from the allowed CDNs, match the app theme, and check a visual before showing it.
+    developerName: '{{BRAND_DISPLAY_NAME}}'
+    capabilities:
+      - Chart and diagram guidance
+    defaultPrompt:
+      - Show this data as a chart.

@@ -1,0 +1,501 @@
+import type { BrowserWindow } from 'electron';
+import {
+  APP_ADVISOR_PROJECT_ID,
+  ClaudeTerminalLaunchError,
+  IPC_CHANNELS,
+  PLAN_EXPLORE_CHAT_PROJECT_ID,
+  STANDALONE_CHAT_PROJECT_ID,
+  type ClaudeTerminalLaunchRejectedResponse,
+  type LoadWorktreeTerminalStateRequest,
+  type LoadWorktreeTerminalStateResponse,
+  type SaveWorktreeTerminalStateRequest,
+  type TerminalAttachRequest,
+  type TerminalAttachResponse,
+  type TerminalKillRequest,
+  type TerminalRestoreRequest,
+  type TerminalResizeRequest,
+  type TerminalSession,
+  type TerminalShellProfile,
+  type TerminalSpawnRequest,
+  type TerminalWriteRequest,
+  type TerminalWriteDisposition,
+  type ClaudeTerminalCleanupRequest,
+  type ClaudeTerminalGetStateRequest,
+  type ClaudeTerminalInterruptRequest,
+  type ClaudeTerminalLaunchRequest,
+  type ClaudeTerminalLaunchResponse,
+  type ClaudeTerminalRuntimeState,
+  type ClaudeTerminalSyncTranscriptRequest,
+  type ClaudeTerminalSyncTranscriptResponse,
+} from '@canopy/desktop-shared/types';
+import type { WindowAccessors } from './index';
+import { sendToWindow } from '../lib/window-send';
+import { addRendererDeliveryBarrier } from '../lib/web-contents-send';
+import { validateId } from '../lib/validation';
+import {
+  closeTerminal,
+  listTerminalProfiles,
+  rememberTerminalInitialPrompt,
+  restoreTerminalForRenderer,
+  resizeTerminal,
+  spawnTerminalForRenderer,
+  writeTerminal,
+} from '../services/terminal-service';
+import { ptyManager, type TerminalEventPayload } from '../terminal/pty-manager';
+import { TerminalOutputDelivery } from '../terminal/output-delivery';
+import { assertNotSplitLocked } from '../services/split-lock-service';
+import { terminalPersistenceStore } from '../terminal/persistence';
+import { registerIpcHandler } from './register';
+import {
+  isTerminalReplyOnly,
+  noteChatDriver,
+} from '../remote-control/host/chat-drivers';
+import { resolveRemoteBridgeSender } from '../remote-control/host/bridge-window';
+import { getClaudeTerminalSessionService } from '../integration/claude-terminal-session-service';
+import { assertUntrustedChatInput } from '../agent-messaging/untrusted-input';
+import { isLiveClaudeTerminal } from '../integration/claude-terminal-liveness';
+import { resolveWorktreeCwd } from '../lib/resolve-worktree';
+import { isCoworkWorkspace } from '../lib/workspace-registry';
+import { buildStandaloneChatLinkTarget } from '../lib/standalone-link-target';
+
+function validateTerminalDimension(value: number, label: string): void {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`Invalid ${label}: must be a positive integer`);
+  }
+}
+
+function sendToMainAndAppAdvisor(
+  accessors: Pick<WindowAccessors, 'getMainWindow' | 'getAppAdvisorWindow'>,
+  channel: string,
+  payload: unknown,
+): void {
+  sendToWindow(accessors.getMainWindow(), channel, payload);
+  sendToWindow(accessors.getAppAdvisorWindow(), channel, payload);
+}
+
+function isAppAdvisorTarget(projectId: string, worktreeId: string): boolean {
+  // Every App Advisor Work Entry uses its entry id as `worktreeId`. Recognition
+  // must therefore be project-based; a foreign project's coincidental
+  // `worktreeId === 'global'` is not an App Advisor target.
+  void worktreeId;
+  return projectId === APP_ADVISOR_PROJECT_ID;
+}
+
+function readEventTarget(
+  payload: unknown,
+): { projectId: string; worktreeId: string } | null {
+  if (typeof payload !== 'object' || payload === null) {
+    return null;
+  }
+  const record = payload as Record<string, unknown>;
+  return typeof record.projectId === 'string' &&
+    typeof record.worktreeId === 'string'
+    ? { projectId: record.projectId, worktreeId: record.worktreeId }
+    : null;
+}
+
+function normalizeTerminalWindowAccessors(
+  accessors: WindowAccessors | (() => BrowserWindow | null),
+): Pick<WindowAccessors, 'getMainWindow' | 'getAppAdvisorWindow'> &
+  Partial<WindowAccessors> {
+  if (typeof accessors === 'function') {
+    return {
+      getMainWindow: accessors,
+      getAppAdvisorWindow: () => null,
+    };
+  }
+  return accessors;
+}
+
+let removeTerminalOutputDelivery: (() => void) | undefined;
+
+export function registerTerminalHandlers(
+  windowAccessors: WindowAccessors | (() => BrowserWindow | null),
+): void {
+  const accessors = normalizeTerminalWindowAccessors(windowAccessors);
+  const route = (channel: string, payload: TerminalEventPayload): void => {
+    if (isAppAdvisorTarget(payload.projectId, payload.worktreeId)) {
+      sendToMainAndAppAdvisor(accessors, channel, payload);
+      return;
+    }
+    sendToWindow(accessors.getMainWindow(), channel, payload);
+  };
+  // Renderer delivery only: PTY output is sent per frame, a lone echo at once.
+  removeTerminalOutputDelivery?.();
+  const output = new TerminalOutputDelivery({
+    deliver: (event): void => {
+      route(IPC_CHANNELS.terminalOutput, event);
+    },
+    now: (): number => performance.now(),
+    setTimer: (callback, delayMs): (() => void) => {
+      const timer = setTimeout(callback, delayMs);
+      return (): void => {
+        clearTimeout(timer);
+      };
+    },
+  });
+  // Any other message or invoke reply to a window first sends held output.
+  const removeBarrier = addRendererDeliveryBarrier((_target, channel): void => {
+    if (channel !== IPC_CHANNELS.terminalOutput) output.flushAll();
+  });
+  removeTerminalOutputDelivery = (): void => {
+    removeBarrier();
+    output.dispose();
+  };
+  ptyManager.setEventSender((channel, payload): void => {
+    if (channel === IPC_CHANNELS.terminalOutput && 'seq' in payload) {
+      output.push(payload);
+      return;
+    }
+    output.flushAll();
+    route(channel, payload);
+    if (channel === IPC_CHANNELS.terminalExit && 'terminalId' in payload) {
+      output.forget(payload.terminalId);
+    }
+  });
+  getClaudeTerminalSessionService().setEventSender((channel, payload): void => {
+    const target = readEventTarget(payload);
+    if (!target) {
+      sendToWindow(accessors.getMainWindow(), channel, payload);
+      return;
+    }
+    if (!isAppAdvisorTarget(target.projectId, target.worktreeId)) {
+      sendToWindow(accessors.getMainWindow(), channel, payload);
+      return;
+    }
+    sendToMainAndAppAdvisor(accessors, channel, payload);
+  });
+  // Terminal-mode turns bypass the Canopy-native send path, so the session
+  // service requests description generation after a transcript sync imports
+  // the chat's first user message.
+  getClaudeTerminalSessionService().setChatSummaryScheduler((request): void => {
+    if (
+      request.projectId === APP_ADVISOR_PROJECT_ID ||
+      request.projectId === PLAN_EXPLORE_CHAT_PROJECT_ID
+    ) {
+      return;
+    }
+    let cwd: string;
+    try {
+      cwd = resolveWorktreeCwd(request.projectId, request.worktreeId);
+    } catch {
+      return;
+    }
+    const isLegacyStandaloneSentinel =
+      request.projectId === STANDALONE_CHAT_PROJECT_ID;
+    const isCoworkChat = isCoworkWorkspace(request.projectId);
+    // Conceptual chat-project id for cowork history/meta persistence. The
+    // legacy sentinel keying carried it in `worktreeId`; real cowork
+    // workspace ids arrive directly in `projectId` (with `worktreeId` fixed
+    // to the cowork home worktree slot).
+    const standaloneChatProjectId = isLegacyStandaloneSentinel
+      ? request.worktreeId
+      : request.projectId;
+    // Lazy import: `worktree-chat-turn` transitively loads the Claude SDK,
+    // which must stay out of this module's static graph.
+    void import('../lib/worktree-chat-turn')
+      .then(({ scheduleChatSummary }) => {
+        scheduleChatSummary({
+          projectId: request.projectId,
+          worktreeId: request.worktreeId,
+          chatId: request.chatId,
+          cwd,
+          getWindow: () => accessors.getMainWindow(),
+          workOwner: request.workOwner,
+          ...(isCoworkChat
+            ? {
+                standaloneChatProjectId,
+                linkTarget: buildStandaloneChatLinkTarget(
+                  standaloneChatProjectId,
+                  request.chatId,
+                ),
+              }
+            : {}),
+        });
+      })
+      .catch(() => undefined);
+  });
+
+  registerIpcHandler<[TerminalSpawnRequest], TerminalSession>(
+    IPC_CHANNELS.terminalSpawn,
+    async (_event, request): Promise<TerminalSession> => {
+      return spawnTerminalForRenderer(request);
+    },
+  );
+
+  registerIpcHandler<[], Promise<TerminalShellProfile[]>>(
+    IPC_CHANNELS.terminalListProfiles,
+    async () => {
+      return listTerminalProfiles();
+    },
+  );
+
+  registerIpcHandler<[TerminalAttachRequest], TerminalAttachResponse>(
+    IPC_CHANNELS.terminalAttach,
+    (_event, request): TerminalAttachResponse => {
+      validateId(request.terminalId, 'terminalId');
+      const session = ptyManager
+        .list()
+        .find((entry) => entry.id === request.terminalId);
+      if (session) {
+        assertNotSplitLocked(
+          session.projectId,
+          session.worktreeId,
+          'attaching to a terminal',
+        );
+      }
+      return ptyManager.attach(request.terminalId);
+    },
+  );
+
+  registerIpcHandler<[TerminalRestoreRequest], TerminalSession>(
+    IPC_CHANNELS.terminalRestore,
+    async (_event, request): Promise<TerminalSession> => {
+      validateId(request.terminalId, 'terminalId');
+      validateTerminalDimension(request.cols, 'cols');
+      validateTerminalDimension(request.rows, 'rows');
+      const session =
+        ptyManager.list().find((entry) => entry.id === request.terminalId) ??
+        terminalPersistenceStore.getPersistedTerminalEntry(request.terminalId)
+          ?.session;
+      if (session) {
+        assertNotSplitLocked(
+          session.projectId,
+          session.worktreeId,
+          'restoring a terminal',
+        );
+      }
+      return restoreTerminalForRenderer(request, session);
+    },
+  );
+
+  registerIpcHandler<
+    [TerminalWriteRequest],
+    TerminalWriteDisposition | Promise<TerminalWriteDisposition>
+  >(
+    IPC_CHANNELS.terminalWrite,
+    (
+      event,
+      request,
+    ): TerminalWriteDisposition | Promise<TerminalWriteDisposition> => {
+      const write = (): TerminalWriteDisposition => {
+        const disposition = writeTerminal(request);
+        // Typing into a chat's terminal drives that chat from this window; the
+        // emulator answering a program's query does not.
+        const chatId = ptyManager.chatIdOf(request.terminalId);
+        if (chatId !== undefined && !isTerminalReplyOnly(request.data)) {
+          noteChatDriver(
+            chatId,
+            event ? resolveRemoteBridgeSender(event.sender) : null,
+          );
+        }
+        return disposition;
+      };
+      const authorization =
+        getClaudeTerminalSessionService().authorizeAgentInputTerminalWrite(
+          request.terminalId,
+          request.idempotencyKey,
+        );
+      return authorization ? authorization.then(write) : write();
+    },
+  );
+
+  registerIpcHandler<[TerminalResizeRequest], void>(
+    IPC_CHANNELS.terminalResize,
+    (_event, request): void => {
+      resizeTerminal(request);
+    },
+  );
+
+  registerIpcHandler<[TerminalKillRequest], void>(
+    IPC_CHANNELS.terminalKill,
+    (_event, request): void => {
+      closeTerminal(request);
+    },
+  );
+
+  registerIpcHandler<
+    [LoadWorktreeTerminalStateRequest],
+    LoadWorktreeTerminalStateResponse
+  >(
+    IPC_CHANNELS.terminalLoadWorktreeState,
+    (_event, request): LoadWorktreeTerminalStateResponse => {
+      validateId(request.projectId, 'projectId');
+      validateId(request.worktreeId, 'worktreeId');
+      return terminalPersistenceStore.loadWorktreeState(
+        request.projectId,
+        request.worktreeId,
+      );
+    },
+  );
+
+  registerIpcHandler<[SaveWorktreeTerminalStateRequest], void>(
+    IPC_CHANNELS.terminalSaveWorktreeState,
+    (_event, request): void => {
+      validateId(request.projectId, 'projectId');
+      validateId(request.worktreeId, 'worktreeId');
+      terminalPersistenceStore.saveWorktreeState(request);
+    },
+  );
+
+  registerIpcHandler<[], TerminalSession[]>(
+    IPC_CHANNELS.terminalList,
+    (): TerminalSession[] => {
+      return ptyManager.list();
+    },
+  );
+
+  registerIpcHandler<
+    [ClaudeTerminalLaunchRequest],
+    Promise<ClaudeTerminalLaunchResponse | ClaudeTerminalLaunchRejectedResponse>
+  >(IPC_CHANNELS.claudeTerminalLaunch, async (event, request) => {
+    // A renderer snapshot may contain legitimate attribution from the
+    // canonical transcript. The session service resolves the main-owned tab
+    // first and checks this snapshot only if it must use it as a new seed.
+    const requestFields = { ...request };
+    delete requestFields.tabSnapshot;
+    assertUntrustedChatInput(requestFields);
+    validateId(request.projectId, 'projectId');
+    validateId(request.worktreeId, 'worktreeId');
+    validateId(request.chatId, 'chatId');
+    // A terminal chat's tools run where the user launched it from. Opening a
+    // chat whose terminal is already live only shows it, so the computer
+    // that last gave it input stays its driver.
+    const launchedFrom = event ? resolveRemoteBridgeSender(event.sender) : null;
+    const reusesLiveTerminal = isLiveClaudeTerminal(
+      getClaudeTerminalSessionService().getState(
+        request.projectId,
+        request.worktreeId,
+        request.chatId,
+      ),
+    );
+    if (!reusesLiveTerminal) noteChatDriver(request.chatId, launchedFrom);
+    if (
+      request.initialPrompt !== undefined &&
+      typeof request.initialPrompt !== 'string'
+    ) {
+      throw new Error('Invalid initialPrompt: must be a string');
+    }
+    if (request.initialPromptIdempotencyKey !== undefined) {
+      validateId(
+        request.initialPromptIdempotencyKey,
+        'initialPromptIdempotencyKey',
+      );
+    }
+    if (request.tabSnapshot !== undefined) {
+      if (
+        typeof request.tabSnapshot !== 'object' ||
+        request.tabSnapshot === null ||
+        request.tabSnapshot.id !== request.chatId ||
+        !Array.isArray(request.tabSnapshot.messages)
+      ) {
+        throw new Error('Invalid tabSnapshot: must match chatId');
+      }
+    }
+    if (
+      request.assistantMode === 'app-advisor' &&
+      !isAppAdvisorTarget(request.projectId, request.worktreeId)
+    ) {
+      throw new Error(
+        'Claude Code App Advisor terminal mode requires App Advisor sentinel ids.',
+      );
+    }
+    // App Advisor mode is keyed off the sentinel ids, not just an explicit
+    // `assistantMode` flag: the auto-mode send path launches via
+    // `ensureClaudeTerminal` without setting `assistantMode`, yet the route
+    // still becomes app-advisor (the sentinel ids force it). The runtime must
+    // be created on the same condition or `GetCurrentUiState` and the other
+    // advisor tools fail with "App Advisor runtime unavailable".
+    const isAppAdvisorLaunch =
+      request.assistantMode === 'app-advisor' ||
+      isAppAdvisorTarget(request.projectId, request.worktreeId);
+    const appAdvisorRuntime =
+      isAppAdvisorLaunch && typeof windowAccessors !== 'function'
+        ? (await import('../app-advisor/runtime')).createAppAdvisorToolRuntime(
+            windowAccessors,
+            {
+              projectId: APP_ADVISOR_PROJECT_ID,
+              worktreeId: request.worktreeId,
+              chatId: request.chatId,
+            },
+            { canFork: false },
+          )
+        : undefined;
+    try {
+      const response = await getClaudeTerminalSessionService().launch(request, {
+        ...(appAdvisorRuntime ? { appAdvisorRuntime } : {}),
+        getWindow: isAppAdvisorLaunch
+          ? accessors.getAppAdvisorWindow
+          : accessors.getMainWindow,
+      });
+      if (response.initialPromptSubmitted === true) {
+        noteChatDriver(request.chatId, launchedFrom);
+      }
+      if (
+        response.initialPromptSubmitted === true &&
+        request.initialPromptIdempotencyKey
+      ) {
+        rememberTerminalInitialPrompt(
+          response.terminalId,
+          request.initialPromptIdempotencyKey,
+        );
+      }
+      return response;
+    } catch (error) {
+      if (error instanceof ClaudeTerminalLaunchError) {
+        return {
+          ok: false,
+          error: {
+            code: error.code,
+            message: error.message,
+          },
+        };
+      }
+      throw error;
+    }
+  });
+
+  registerIpcHandler<[ClaudeTerminalCleanupRequest], Promise<void>>(
+    IPC_CHANNELS.claudeTerminalCleanup,
+    async (_event, request) => {
+      validateId(request.projectId, 'projectId');
+      validateId(request.worktreeId, 'worktreeId');
+      validateId(request.chatId, 'chatId');
+      await getClaudeTerminalSessionService().cleanup(request);
+    },
+  );
+
+  registerIpcHandler<
+    [ClaudeTerminalGetStateRequest],
+    ClaudeTerminalRuntimeState | undefined
+  >(IPC_CHANNELS.claudeTerminalGetState, (_event, request) => {
+    validateId(request.projectId, 'projectId');
+    validateId(request.worktreeId, 'worktreeId');
+    validateId(request.chatId, 'chatId');
+    return getClaudeTerminalSessionService().getState(
+      request.projectId,
+      request.worktreeId,
+      request.chatId,
+    );
+  });
+
+  registerIpcHandler<[ClaudeTerminalInterruptRequest], Promise<void>>(
+    IPC_CHANNELS.claudeTerminalInterrupt,
+    async (_event, request) => {
+      validateId(request.projectId, 'projectId');
+      validateId(request.worktreeId, 'worktreeId');
+      validateId(request.chatId, 'chatId');
+      await getClaudeTerminalSessionService().interrupt(request);
+    },
+  );
+
+  registerIpcHandler<
+    [ClaudeTerminalSyncTranscriptRequest],
+    Promise<ClaudeTerminalSyncTranscriptResponse>
+  >(IPC_CHANNELS.claudeTerminalSyncTranscript, async (_event, request) => {
+    validateId(request.projectId, 'projectId');
+    validateId(request.worktreeId, 'worktreeId');
+    validateId(request.chatId, 'chatId');
+    return getClaudeTerminalSessionService().syncTranscriptForChat(request);
+  });
+}

@@ -1,0 +1,34 @@
+name: Requirements From Task
+description: Derive requirements from the task description.
+log_format_hint: agent
+inputs:
+  model:
+    description: Optional Claude model override.
+    required: false
+  permission_preset:
+    description: Optional permission preset override.
+    required: false
+    default: read_only
+outputs:
+  text_response:
+    description: Derived requirements summary.
+    value: ${{ steps.requirements.outputs.text_response }}
+  transcript_file:
+    description: Requirements transcript file.
+    value: ${{ steps.requirements.outputs.transcript_file }}
+runs:
+  using: composite
+  steps:
+    - id: requirements
+      uses: builtin/agent-prompt
+      with:
+        model: ${{ inputs.model }}
+        permission_preset: ${{ inputs.permission_preset }}
+        prompt: |
+          Derive a clear set of implementation requirements from the current task context.
+
+          Include:
+          1. functional requirements
+          2. constraints and assumptions
+          3. verification expectations
+          4. any ambiguous areas that should be clarified before coding

@@ -1,0 +1,23 @@
+name: Run Pipeline
+description: Execute a child pipeline dynamically. Use the step-level target property, not an input, to choose inherit, directory, global, or an existing worktree; create worktrees first with builtin/create-worktree.
+inputs:
+  pipeline:
+    description: Stored pipeline ID, bundled filename, or path to a pipeline YAML file
+    required: false
+  pipeline_yaml:
+    description: Inline pipeline YAML string; ignored when pipeline is provided
+    required: false
+  inputs:
+    description: JSON object of child pipeline inputs
+    required: false
+    default: '{}'
+  cwd:
+    description: Optional child working directory relative to the parent step working directory
+    required: false
+outputs:
+  status:
+    description: Child pipeline terminal status
+  outputs:
+    description: JSON object of child job outputs
+runs:
+  using: pipeline

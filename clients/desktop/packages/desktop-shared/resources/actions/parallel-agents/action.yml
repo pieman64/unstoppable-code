@@ -1,0 +1,36 @@
+name: Parallel Agents
+description: Run multiple Claude prompts concurrently and aggregate the results.
+log_format_hint: agent
+inputs:
+  prompts:
+    description: JSON array of prompt descriptors.
+    required: false
+    default: '[]'
+  prompts_file:
+    description: Path to a JSON file containing prompt descriptors.
+    required: false
+  model:
+    description: Optional Claude model override for all prompts.
+    required: false
+  permission_preset:
+    description: Optional permission preset applied to all prompts.
+    required: false
+    default: none
+  structured_output_schema:
+    description: Optional shared JSON schema applied to all prompts.
+    required: false
+  max_turns:
+    description: Maximum conversation turns per prompt.
+    required: false
+outputs:
+  results:
+    description: Minified JSON array of per-agent results.
+  results_file:
+    description: File path containing the formatted aggregate JSON.
+  success_count:
+    description: Number of successful agent runs.
+  failure_count:
+    description: Number of failed agent runs.
+runs:
+  using: node
+  main: index.js

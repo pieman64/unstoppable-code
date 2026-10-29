@@ -1,0 +1,37 @@
+name: Move to Group
+description: Move a task (a worktree, a cowork Work Entry or an App Advisor Work Entry) into a sidebar group, creating the group when it doesn't exist. Runs in the desktop app; group problems never fail the step.
+scope: [global, directory, worktree]
+inputs:
+  project_id:
+    description: Project that owns the task. Exactly one of project_id or bot_id.
+    required: false
+  bot_id:
+    description: Bot that owns the task (app_advisor). Exactly one of project_id or bot_id.
+    required: false
+  task_id:
+    description: The worktree or Work Entry to move. Required; when missing, the step fails with failure_reason validation_failed.
+    required: false
+  group:
+    description: Group name to join, created when missing; "none" removes the task from its group. Exactly one of group or group_id.
+    required: false
+  group_id:
+    description: Existing group id (grp-...). Exactly one of group or group_id.
+    required: false
+  color:
+    description: Color for a group this step creates; an existing group keeps its color. Only valid when group names a group, not with group_id or "none".
+    required: false
+outputs:
+  group_id:
+    description: Id of the group the task is in, or empty.
+  group_name:
+    description: Name of that group, or empty.
+  group_created:
+    description: 'true when this step created the group.'
+  grouped:
+    description: 'true when the task is in the requested group after this step.'
+  not_grouped_reason:
+    description: 'Why grouped is false: removed, group_limit_reached, item_not_groupable or group_not_found. Empty when grouped.'
+  failure_reason:
+    description: Typed reason when the step failed (not_found, validation_failed, needs_desktop, unsupported_action). Empty on success, and also when the step timed out, was cancelled or hit an unexpected error; check the step outcome for those.
+runs:
+  using: host

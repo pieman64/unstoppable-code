@@ -1,0 +1,25 @@
+name: Spec Researcher
+description: Gather external and internal research for the spec.
+log_format_hint: agent
+inputs:
+  model:
+    description: Optional Claude model override.
+    required: false
+outputs:
+  text_response:
+    description: Research summary for the specification.
+    value: ${{ steps.research.outputs.text_response }}
+  transcript_file:
+    description: Research transcript file.
+    value: ${{ steps.research.outputs.transcript_file }}
+runs:
+  using: composite
+  steps:
+    - id: research
+      uses: builtin/agent-prompt
+      with:
+        model: ${{ inputs.model }}
+        permission_preset: read_only
+        prompt: |
+          Research the current repository context and any obvious internal references needed
+          to write a strong specification. Focus on constraints, conventions, and precedent.

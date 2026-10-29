@@ -1,0 +1,30 @@
+name: Quick Spec
+description: Produce a lightweight specification for simple work.
+log_format_hint: agent
+inputs:
+  model:
+    description: Optional Claude model override.
+    required: false
+outputs:
+  text_response:
+    description: Lightweight specification.
+    value: ${{ steps.spec.outputs.text_response }}
+  transcript_file:
+    description: Quick spec transcript file.
+    value: ${{ steps.spec.outputs.transcript_file }}
+runs:
+  using: composite
+  steps:
+    - id: spec
+      uses: builtin/agent-prompt
+      with:
+        model: ${{ inputs.model }}
+        permission_preset: read_only
+        prompt: |
+          Write a lightweight implementation spec for a small task.
+
+          Include:
+          1. goal
+          2. files or systems likely affected
+          3. implementation approach
+          4. verification checklist

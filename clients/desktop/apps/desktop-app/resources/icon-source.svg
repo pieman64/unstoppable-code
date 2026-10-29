@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <!-- Green gradient matching existing app icon: light mint top → darker sage bottom -->
+    <linearGradient id="treeGradient" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#a8d4a0"/>
+      <stop offset="100%" stop-color="#5a8a54"/>
+    </linearGradient>
+    <!-- macOS-style squircle clip path (continuous curvature ~22% radius) -->
+    <clipPath id="squircleClip">
+      <rect x="100" y="100" width="824" height="824" rx="184" ry="184"/>
+    </clipPath>
+  </defs>
+
+  <!-- Dark rounded-square background, inset 100px for standard macOS icon margin -->
+  <rect x="100" y="100" width="824" height="824" rx="184" ry="184" fill="#0B0B0F"/>
+
+  <!-- Tree shape from CanopyTreeIcon, scaled and centered -->
+  <!-- Original path bounds: x:1.15-22.85 (w=21.7), y:4.7-21.5 (h=16.8) in 24x24 viewBox -->
+  <!-- Scale 30: tree=651x504, centered in 824x824 icon area -->
+  <g transform="translate(152, 119) scale(30)">
+    <path
+      d="
+        M 11.5 21.5
+        C 11.45 20, 11.3 17.5, 11.0 15.0
+        C 10.4 12.5, 9.5 11.5, 8.5 11.0
+        C 5.5 9.5, 2.0 8.8, 1.3 10.3
+        C 1.15 9.4, 1.55 8.5, 2.3 7.6
+        C 3.5 6.3, 5.6 5.5, 8 5
+        C 9.1 4.8, 10.7 4.7, 12 4.7
+        C 12.9 4.7, 14.5 4.7, 16.4 5.1
+        C 18.8 5.6, 20.7 6.4, 21.8 7.6
+        C 22.5 8.4, 22.85 9.4, 22.7 10.3
+        C 22.0 8.8, 18.5 9.5, 15.5 11.0
+        C 14.5 11.5, 13.6 12.5, 13.0 15.0
+        C 12.7 17.5, 12.55 20, 12.5 21.5
+        Z"
+      fill="url(#treeGradient)"
+      stroke="none"
+    />
+  </g>
+</svg>

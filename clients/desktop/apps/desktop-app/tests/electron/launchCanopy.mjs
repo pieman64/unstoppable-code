@@ -1,0 +1,2453 @@
+import assert from 'node:assert/strict';
+import {
+  appendFileSync,
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import { createRequire } from 'node:module';
+import { randomUUID } from 'node:crypto';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import electronPath from 'electron';
+import {
+  _electron as electron,
+  test as playwrightTest,
+} from '@playwright/test';
+import { measureE2eHarnessOperation } from '../../../../scripts/lib/e2e-harness-measurement.mjs';
+import {
+  killProcessTree,
+  listPosixProcesses,
+  posixProcessGroupIsOwned,
+  processGroupExists,
+} from '../performance/process-tree-supervisor.mjs';
+import headlessBootstrap from '../performance/browser-profiles-production-headless-bootstrap.cjs';
+import { assertProductionHeadlessTerminal } from '../performance/browser-profiles-evidence.mjs';
+import { CanopyAppDriver } from './canopyApp.mjs';
+import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
+
+const currentFilePath = fileURLToPath(import.meta.url);
+const currentDirPath = path.dirname(currentFilePath);
+const repoRoot = path.resolve(currentDirPath, '../../../..');
+const REMOVE_OPTIONS = {
+  recursive: true,
+  force: true,
+  // Electron shutdown can overlap briefly with background persistence or git
+  // setup. Node retries transient ENOTEMPTY/EBUSY/EPERM failures only when
+  // maxRetries is explicitly non-zero.
+  maxRetries: 20,
+  retryDelay: 100,
+};
+const DEFAULT_GRACEFUL_CLOSE_TIMEOUT_MS = 5_000;
+const CLOSE_TRACE_PATH_ENV = 'CANOPY_E2E_CLOSE_TRACE_PATH';
+
+function traceCloseCanopy(event, detail = {}) {
+  const tracePath = process.env[CLOSE_TRACE_PATH_ENV];
+  if (!tracePath) return;
+  try {
+    appendFileSync(
+      tracePath,
+      `${JSON.stringify({ at: new Date().toISOString(), event, ...detail })}\n`,
+      'utf8',
+    );
+  } catch {
+    // Diagnostic tracing must never change teardown behavior.
+  }
+}
+
+function isTransientRemovalError(error) {
+  return (
+    error &&
+    typeof error === 'object' &&
+    ['ENOTEMPTY', 'EBUSY', 'EPERM'].includes(error.code)
+  );
+}
+
+export function makeTestTreeOwnerWritable(dirPath) {
+  if (!existsSync(dirPath)) return;
+  const stats = lstatSync(dirPath);
+  if (stats.isSymbolicLink()) return;
+  if (!stats.isDirectory()) {
+    chmodSync(dirPath, 0o600);
+    return;
+  }
+  chmodSync(dirPath, 0o700);
+  for (const entry of readdirSync(dirPath)) {
+    makeTestTreeOwnerWritable(path.join(dirPath, entry));
+  }
+}
+
+export async function removeTestDataDir(
+  dirPath,
+  { remove = rmSync, makeWritable = makeTestTreeOwnerWritable } = {},
+) {
+  try {
+    remove(dirPath, REMOVE_OPTIONS);
+    return;
+  } catch (error) {
+    if (!isTransientRemovalError(error)) {
+      throw error;
+    }
+  }
+
+  // Capability roots are deliberately published with read/execute-only
+  // directory modes. Restore owner write permission only inside this exact
+  // OS-temporary test tree before removing it; never follow links.
+  makeWritable(dirPath);
+  remove(dirPath, REMOVE_OPTIONS);
+}
+// E2E builds land in the private `out-e2e/` root (see scripts/build-e2e.mjs)
+// so a developer's `npm run dev` watch build rewriting `out/` cannot swap the
+// bundle under a running suite.
+const supervisorEntryPath = path.join(
+  currentDirPath,
+  '..',
+  'performance',
+  process.platform === 'win32'
+    ? 'process-tree-supervisor.cmd'
+    : 'process-tree-supervisor.mjs',
+);
+const defaultViewportSize = { width: 1400, height: 900 };
+
+// Suite-wide client feature flag defaults. Because setting
+// CANOPY_E2E_CLIENT_FEATURE_FLAGS routes the flag service through the E2E
+// override snapshot (seeded from the LaunchDarkly enabled-but-unavailable
+// defaults) instead of the not-configured defaults, every flag whose two
+// default modes disagree must be pinned here to preserve the pre-override E2E
+// baseline. Otherwise specs would silently observe the enabled-unavailable
+// value.
+//
+// - `canopy-cloud-sign-in-required`: the blocking Cloud sign-in gate defaults
+//   to open (`false`) in the not-configured mode the E2E build runs in, but the
+//   E2E override snapshot is seeded from enabled-unavailable defaults where the
+//   gate is enforced. Disable it for the whole suite; the gate spec re-enables
+//   it explicitly via `options.env`.
+// - `canopy-portal-enabled`: not-configured default is `true` but the
+//   enabled-unavailable default is `false`. Pin it `true` so the Portal
+//   sidebar entry stays present by default (matching the pre-override
+//   baseline); the portal spec drives it off explicitly.
+// - `canopy-desktop-pr-split`: not-configured default is `true` but the
+//   enabled-unavailable default is `false`. Pin it `true` so Split PR entry
+//   points stay present by default; specs can drive it off explicitly.
+// - `canopy-desktop-claude-tui-workers`: not-configured default is `true` but
+//   the enabled-unavailable default is `false`. Pin it `true` so Claude Workers
+//   settings/page automation keeps the pre-flag baseline by default.
+// - `canopy-desktop-claude-tui-chats`: not-configured default is `true` but
+//   the enabled-unavailable default is `false`. Pin it `true` so Claude Code
+//   chat mode automation keeps the pre-flag baseline by default.
+// - `canopy-shared-custom-agents`: not-configured default is `true` but the
+//   enabled-unavailable default is `false`. Pin it `true` so the Agents page
+//   and command-palette entry stay present by default.
+// - `canopy-desktop-workspace-code-graph`: not-configured default is `true` but
+//   the enabled-unavailable default is `false`. Pin it `true` so code-graph
+//   tools remain available to E2E live turns that exercise the default product
+//   surface.
+// - `canopy-shared-auto-model-routing`: not-configured default is `true` but
+//   the enabled-unavailable default is `false`. Pin it `true` so Auto-routing
+//   specs exercise the ordinary no-LaunchDarkly desktop baseline.
+// - `canopy-desktop-account-proxy`: off in both defaults (launched dark).
+//   Pin it `true` so the account proxy specs can reach the Experiments opt-in;
+//   the per-user preference still hides every surface until a spec opts in.
+// - `canopy-shared-space-notification-settings`: not-configured default is
+//   `true` but the enabled-unavailable default is `false`. Pin it `true` so
+//   the per-space notification choices appear as they do without
+//   LaunchDarkly.
+// - `canopy-desktop-chat-visuals`: not-configured default is `true` but the
+//   enabled-unavailable default is `false`. Pin it `true` so live turns offer
+//   ShowVisual and PreviewVisual as they do without LaunchDarkly.
+// - `canopy-device-remote-control`: not-configured default is `true` but the
+//   enabled-unavailable default is `false`. Pin it `true` so the Remote access
+//   picker and settings keep the no-LaunchDarkly baseline by default.
+// - `canopy-desktop-skill-suggestions`: not-configured default is `true` but
+//   the enabled-unavailable default is `false`. Pin it `true` so the
+//   suggestion banner and Settings section keep the no-LaunchDarkly baseline.
+// - `canopy-desktop-hosted-settings`: not-configured default is `true` but the
+//   enabled-unavailable default is `false`. Pin it `true` so the hosted
+//   Account and Organizations settings appear as they do without
+//   LaunchDarkly.
+// - `canopy-desktop-external-agents-menu`: not-configured default is `true`
+//   but the enabled-unavailable default is `false`. Pin it `true` so signed-in
+//   account menus show the External agents row as they do without
+//   LaunchDarkly; its spec drives it off explicitly.
+const DEFAULT_E2E_CLIENT_FEATURE_FLAGS = {
+  'canopy-desktop-labs-early-access': 'offered',
+  // The Labs page experiments are `offered` (off until switched on) in
+  // production (CAN-3678). Pin them `on` so specs that drive these pages keep
+  // them without per-spec seeding; labs-pages.spec.mjs sets them back to
+  // `offered` to cover the production default.
+  'canopy-desktop-labs-overview-page': 'on',
+  'canopy-desktop-labs-kanban-page': 'on',
+  'canopy-desktop-labs-statistics-page': 'on',
+  'canopy-desktop-labs-audit-trail-page': 'on',
+  // Match the unconfigured defaults; bundled E2E readiness still forces
+  // PostHog off unless the hermetic loopback collector is explicitly enabled.
+  'canopy-desktop-posthog-capture-enabled': true,
+  'canopy-desktop-posthog-session-replay-sample-rate': 100,
+  'canopy-desktop-posthog-autocapture-enabled': true,
+  'canopy-cloud-sign-in-required': false,
+  'canopy-portal-enabled': true,
+  'canopy-desktop-pr-split': true,
+  'canopy-desktop-cursor-harness': true,
+  'canopy-desktop-opencode-harness': true,
+  'canopy-desktop-claude-tui-workers': true,
+  'canopy-desktop-claude-tui-chats': true,
+  'canopy-shared-custom-agents': true,
+  'canopy-desktop-workspace-code-graph': true,
+  'canopy-shared-auto-model-routing': true,
+  'canopy-shared-space-notification-settings': true,
+  'canopy-desktop-chat-visuals': true,
+  'canopy-desktop-account-proxy': true,
+  'canopy-device-remote-control': true,
+  'canopy-desktop-skill-suggestions': true,
+  'canopy-desktop-hosted-settings': true,
+  'canopy-desktop-external-agents-menu': true,
+  // MUST stay pinned: this flag's LaunchDarkly-enabled-unavailable default is
+  // `false` (deployed environments fail closed until a revision producer
+  // exists), and this launcher always seeds from THAT map. Without the pin the
+  // shared-container entry points silently vanish from every spec.
+  'canopy-desktop-shared-containers': true,
+};
+
+const E2E_CLIENT_FEATURE_FLAGS_ENV = 'CANOPY_E2E_CLIENT_FEATURE_FLAGS';
+const SUPERVISED_PID_FILE_ENV = 'CANOPY_E2E_SUPERVISED_PID_FILE';
+const SUPERVISED_GROUPS_FILE_ENV = 'CANOPY_E2E_SUPERVISED_GROUPS_FILE';
+const SUPERVISED_RUN_NONCE_ENV = 'CANOPY_E2E_SUPERVISED_RUN_NONCE';
+
+function currentPlaywrightTestInfo() {
+  try {
+    return playwrightTest.info();
+  } catch {
+    return undefined;
+  }
+}
+
+function launchMeasurementDetails(options) {
+  return {
+    configuration: {
+      buildKind: options.buildKind ?? 'e2e',
+      rootPath: options.rootPath,
+      viewportSize: options.viewportSize ?? defaultViewportSize,
+      reusesUserDataDir: options.userDataDir !== undefined,
+      freshOnboarding: options.freshOnboarding === true,
+      freshOnboardingChecklist: options.freshOnboardingChecklist === true,
+      freshApprovalsUpgradeNotice: options.freshApprovalsUpgradeNotice === true,
+      preserveProviderState: options.preserveProviderState === true,
+      seedDemoWorkspaces: options.seedDemoWorkspaces === true,
+      demoWorkspaceSet: options.demoWorkspaceSet,
+      demoWorkspaceApps: options.demoWorkspaceApps,
+      recordVideo: Boolean(options.recordVideoDir),
+      electronArgs: options.electronArgs,
+      env: options.env,
+    },
+    identity: {
+      testInfo: options.testInfo ?? currentPlaywrightTestInfo(),
+      ...options.measurementIdentity,
+    },
+  };
+}
+
+export function parseSupervisedTreePid(rawPid) {
+  const pid = Number(String(rawPid).trim());
+  if (!Number.isInteger(pid) || pid <= 0) {
+    throw new Error('E2E supervisor did not record a valid process-tree PID.');
+  }
+  return pid;
+}
+
+export function createAbruptTreeKiller(
+  supervisedTreePid,
+  killTree = killProcessTree,
+) {
+  return () => killTree(supervisedTreePid, 'SIGKILL');
+}
+
+// Maps each Playwright ElectronApplication back to its supervised process-tree
+// identity so closeCanopy can reap stragglers without changing its call
+// signature across every spec.
+const supervisedProcessTrees = new WeakMap();
+const productionSidecars = new WeakMap();
+const electronTerminalObservations = new WeakMap();
+
+function boundedTerminalError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return {
+    name: error instanceof Error ? error.name : typeof error,
+    message: message.length <= 512 ? message : `${message.slice(0, 511)}…`,
+  };
+}
+
+/**
+ * Passively retain the terminal events emitted by Playwright's real Electron
+ * launch child. This is a per-launch, in-memory observation only: it neither
+ * waits for, signals, nor reaps the process.
+ */
+export function observeElectronTerminalResult(electronApp) {
+  const result = {
+    pid: undefined,
+    exit: undefined,
+    close: undefined,
+    error: undefined,
+  };
+  try {
+    const child = electronApp.process();
+    result.pid = child?.pid;
+    if (!child || typeof child.once !== 'function') {
+      result.error = boundedTerminalError(
+        new Error(
+          'Electron launch did not expose an observable child process.',
+        ),
+      );
+      return result;
+    }
+    child.once('exit', (code, signal) => {
+      result.exit = { code, signal };
+    });
+    child.once('close', (code, signal) => {
+      result.close = { code, signal };
+    });
+    child.once('error', (error) => {
+      result.error = boundedTerminalError(error);
+    });
+  } catch (error) {
+    result.error = boundedTerminalError(error);
+  }
+  return result;
+}
+
+/**
+ * Retain the first passive terminal observation for one launched application.
+ * The WeakMap owns it for the application's lifetime so a failed or repeated
+ * close cannot fall back to an unobserved terminal result.
+ */
+export function registerElectronTerminalObservation(electronApp, observation) {
+  if (electronTerminalObservations.has(electronApp))
+    return electronTerminalObservations.get(electronApp);
+  electronTerminalObservations.set(
+    electronApp,
+    observation ?? observeElectronTerminalResult(electronApp),
+  );
+  return electronTerminalObservations.get(electronApp);
+}
+
+function terminalTupleSnapshot(tuple) {
+  if (!tuple || typeof tuple !== 'object') return undefined;
+  return {
+    code: tuple.code,
+    signal: tuple.signal,
+  };
+}
+
+function terminalObservationSnapshot(observation) {
+  return {
+    pid: observation?.pid,
+    exit: terminalTupleSnapshot(observation?.exit),
+    close: terminalTupleSnapshot(observation?.close),
+    error: observation?.error
+      ? boundedTerminalError(
+          observation.error instanceof Error
+            ? observation.error
+            : new Error(
+                String(observation.error?.message ?? observation.error),
+              ),
+        )
+      : undefined,
+  };
+}
+
+const TERMINAL_REPORT_SUFFIX_LIMIT = 2048;
+const TERMINAL_REPORT_TRUNCATION_MARKER = '…[truncated]';
+
+function terminalReportPrimitive(value) {
+  if (value === undefined) return 'missing';
+  if (value === null) return 'null';
+  if (typeof value === 'string') return value;
+  if (
+    typeof value === 'number' ||
+    typeof value === 'boolean' ||
+    typeof value === 'bigint'
+  )
+    return String(value);
+  return `invalid-${typeof value}`;
+}
+
+function terminalReportSuffix(result) {
+  const suffix =
+    ` [terminal.pid=${terminalReportPrimitive(result.pid)}` +
+    ` terminal.exit.code=${terminalReportPrimitive(result.exit?.code)}` +
+    ` terminal.exit.signal=${terminalReportPrimitive(result.exit?.signal)}` +
+    ` terminal.close.code=${terminalReportPrimitive(result.close?.code)}` +
+    ` terminal.close.signal=${terminalReportPrimitive(result.close?.signal)}` +
+    ` terminal.child-error.name=${terminalReportPrimitive(result.error?.name)}` +
+    ` terminal.child-error.message=${terminalReportPrimitive(result.error?.message)}]`;
+  if (suffix.length <= TERMINAL_REPORT_SUFFIX_LIMIT) return suffix;
+  return `${suffix.slice(0, TERMINAL_REPORT_SUFFIX_LIMIT - TERMINAL_REPORT_TRUNCATION_MARKER.length)}${TERMINAL_REPORT_TRUNCATION_MARKER}`;
+}
+
+export class ElectronTerminalResultError extends Error {
+  constructor(observation) {
+    const result = terminalObservationSnapshot(observation);
+    super(
+      'Electron launch did not complete with matching exit(0, null) and close(0, null).' +
+        terminalReportSuffix(result),
+    );
+    this.name = 'ElectronTerminalResultError';
+    this.result = result;
+  }
+}
+
+function assertSuccessfulElectronTerminalResult(observation) {
+  const result = terminalObservationSnapshot(observation);
+  const hasZeroExit = result.exit?.code === 0 && result.exit.signal === null;
+  const hasZeroClose = result.close?.code === 0 && result.close.signal === null;
+  const matchingTuples =
+    result.exit?.code === result.close?.code &&
+    result.exit?.signal === result.close?.signal;
+  if (
+    !Number.isInteger(result.pid) ||
+    result.pid <= 0 ||
+    result.error ||
+    !hasZeroExit ||
+    !hasZeroClose ||
+    !matchingTuples
+  )
+    throw new ElectronTerminalResultError(observation);
+}
+
+let playwrightTargetClosedClassifier;
+
+export function isPlaywrightTargetClosedError(error) {
+  if (!playwrightTargetClosedClassifier) {
+    const require = createRequire(import.meta.url);
+    const packagePath = require.resolve('playwright-core/package.json');
+    ({ isTargetClosedError: playwrightTargetClosedClassifier } = require(
+      path.join(path.dirname(packagePath), 'lib/client/errors.js'),
+    ));
+  }
+  return playwrightTargetClosedClassifier(error);
+}
+
+export function registerSupervisedProcessTree(
+  electronApp,
+  supervisedTreePid,
+  tracking = {},
+) {
+  supervisedProcessTrees.set(electronApp, {
+    pid: supervisedTreePid,
+    trackedGroupsFile: tracking.trackedGroupsFile,
+    runNonce: tracking.runNonce,
+  });
+}
+
+function readSupervisedPosixGroups(
+  supervisedTreePid,
+  trackedGroupsFile,
+  runNonce,
+  readFile,
+) {
+  if (!trackedGroupsFile || !runNonce) return null;
+  try {
+    const parseMembers = (value) => {
+      if (!Array.isArray(value)) return null;
+      const members = new Map();
+      for (const member of value) {
+        if (
+          !Array.isArray(member) ||
+          member.length !== 2 ||
+          !Number.isInteger(member[0]) ||
+          member[0] <= 0 ||
+          typeof member[1] !== 'string' ||
+          !member[1]
+        ) {
+          return null;
+        }
+        members.set(member[0], member[1]);
+      }
+      return members;
+    };
+    const lines = String(readFile(trackedGroupsFile, 'utf8')).split(/\r?\n/);
+    const header = JSON.parse(lines.shift() ?? '');
+    if (
+      !header ||
+      header.v !== 1 ||
+      header.nonce !== runNonce ||
+      header.rootPid !== supervisedTreePid ||
+      typeof header.rootStart !== 'string' ||
+      !header.rootStart
+    ) {
+      return null;
+    }
+    const rootMembers =
+      header.rootMembers === undefined
+        ? new Map([[supervisedTreePid, header.rootStart]])
+        : parseMembers(header.rootMembers);
+    if (rootMembers?.get(supervisedTreePid) !== header.rootStart) return null;
+    const groups = lines.flatMap((line) => {
+      if (!line.trim()) return [];
+      try {
+        const record = JSON.parse(line);
+        if (
+          !record ||
+          !Number.isInteger(record.pgid) ||
+          record.pgid <= 1 ||
+          record.pgid === supervisedTreePid ||
+          typeof record.leaderStart !== 'string' ||
+          !record.leaderStart ||
+          !Array.isArray(record.members)
+        ) {
+          return [];
+        }
+        const members = parseMembers(record.members);
+        if (!members) return [];
+        return [
+          { pgid: record.pgid, leaderStart: record.leaderStart, members },
+        ];
+      } catch {
+        return [];
+      }
+    });
+    return {
+      root: {
+        pgid: supervisedTreePid,
+        leaderStart: header.rootStart,
+        members: rootMembers,
+      },
+      groups,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Hard-kill whatever is left of a supervised Electron process tree and wait
+ * (bounded) for the group to actually die. Graceful shutdown has already run
+ * by the time this is called, so anything still alive in the tree is a
+ * straggler; mirroring claude-process-host's discipline, the whole group gets
+ * SIGKILL so no test leaves orphans accumulating process/IPC state on the
+ * host. On POSIX, the supervisor periodically persists detached descendant
+ * groups with creation identities; this reader accepts only records from the
+ * current launch and revalidates each group against a fresh process snapshot
+ * before signaling it. The supervisor's own grace-period cleanup remains the
+ * async backstop.
+ */
+export async function reapSupervisedProcessTree(
+  supervisedTreePid,
+  {
+    killTree = killProcessTree,
+    treeExists = processGroupExists,
+    delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    now = () => Date.now(),
+    pollIntervalMs = 50,
+    deadlineMs = 2_000,
+    trackedGroupsFile,
+    runNonce,
+    listProcesses = listPosixProcesses,
+    readFile = readFileSync,
+  } = {},
+) {
+  const tracking =
+    process.platform === 'win32'
+      ? null
+      : readSupervisedPosixGroups(
+          supervisedTreePid,
+          trackedGroupsFile,
+          runNonce,
+          readFile,
+        );
+  const trackedGroups = tracking?.groups ?? [];
+  if (!treeExists(supervisedTreePid) && trackedGroups.length === 0) return;
+
+  const signaledGroups = [];
+  for (const group of trackedGroups) {
+    try {
+      const rows = await listProcesses();
+      if (!posixProcessGroupIsOwned(group, rows)) continue;
+      await killTree(group.pgid, 'SIGKILL');
+      signaledGroups.push(group.pgid);
+    } catch {
+      // A stale or temporarily unreadable sidecar must not fail a passing test.
+    }
+  }
+  if (treeExists(supervisedTreePid)) {
+    let rootIsOwned = !tracking;
+    if (tracking) {
+      try {
+        const rows = await listProcesses();
+        rootIsOwned = posixProcessGroupIsOwned(tracking.root, rows);
+      } catch {
+        rootIsOwned = false;
+      }
+    }
+    if (rootIsOwned) {
+      await killTree(supervisedTreePid, 'SIGKILL');
+      signaledGroups.push(supervisedTreePid);
+    }
+  }
+  if (signaledGroups.length === 0) return;
+  const deadline = now() + deadlineMs;
+  while (signaledGroups.some((pgid) => treeExists(pgid)) && now() < deadline) {
+    await delay(Math.min(pollIntervalMs, deadline - now()));
+  }
+}
+
+async function waitForSupervisedProcessExit(
+  supervisedTreePid,
+  {
+    treeExists = processGroupExists,
+    wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    now = () => Date.now(),
+    timeoutMs,
+    pollIntervalMs = 50,
+  },
+) {
+  const deadline = now() + timeoutMs;
+  while (treeExists(supervisedTreePid) && now() < deadline) {
+    await wait(Math.min(pollIntervalMs, deadline - now()));
+  }
+  return !treeExists(supervisedTreePid);
+}
+
+async function closeElectronAppWithDeadline(
+  electronApp,
+  { timeoutMs, scheduleTimeout, cancelTimeout },
+) {
+  const closePromise = Promise.resolve().then(() => electronApp.close());
+  let timeoutHandle;
+  const closeOutcome = await Promise.race([
+    closePromise.then(
+      () => ({ status: 'closed' }),
+      (error) => ({ status: 'failed', error }),
+    ),
+    new Promise((resolve) => {
+      timeoutHandle = scheduleTimeout(
+        () => resolve({ status: 'timed-out' }),
+        timeoutMs,
+      );
+    }),
+  ]).finally(() => {
+    if (timeoutHandle !== undefined) {
+      cancelTimeout(timeoutHandle);
+    }
+  });
+  if (closeOutcome.status === 'failed') {
+    throw closeOutcome.error;
+  }
+  return closeOutcome.status;
+}
+
+function mergeE2eClientFeatureFlags(extraEnv) {
+  const raw = extraEnv?.[E2E_CLIENT_FEATURE_FLAGS_ENV];
+  if (typeof raw === 'string' && raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return JSON.stringify({
+          ...DEFAULT_E2E_CLIENT_FEATURE_FLAGS,
+          ...parsed,
+        });
+      }
+    } catch {
+      // The caller passed a non-JSON value; leave it untouched so the service's
+      // own invalid-JSON warning path is preserved.
+      return raw;
+    }
+  }
+  return JSON.stringify(DEFAULT_E2E_CLIENT_FEATURE_FLAGS);
+}
+
+function isPositiveInteger(value) {
+  return Number.isInteger(value) && value > 0;
+}
+
+function resolveViewportSizeOption(value) {
+  if (value === undefined) {
+    return defaultViewportSize;
+  }
+  if (value === null) {
+    return null;
+  }
+  if (
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    isPositiveInteger(value.width) &&
+    isPositiveInteger(value.height)
+  ) {
+    return value;
+  }
+  throw new Error(
+    'launchCanopy viewportSize must be null or an object with positive integer width and height.',
+  );
+}
+
+const mainWindowSelections = new WeakMap();
+const mainWindowRendererUrls = new WeakMap();
+const LAUNCH_OBSERVATION_RECORD_LIMIT = 64;
+const LAUNCH_OBSERVATION_BYTE_LIMIT = 30_000;
+
+function emitLaunchObservation(observer, stage, details) {
+  if (!observer) return;
+  try {
+    const result = observer(stage, details);
+    if (result !== undefined) void Promise.resolve(result).catch(() => {});
+  } catch {
+    /* Passive observer. */
+  }
+}
+
+function createLaunchObserver(record) {
+  if (typeof record !== 'function') return undefined;
+  let records = 0,
+    bytes = 0,
+    stopped = false;
+  const markerReserve = Buffer.byteLength(
+    JSON.stringify({
+      stage: 'launch-observation-truncated',
+      sequence: LAUNCH_OBSERVATION_RECORD_LIMIT,
+      records: LAUNCH_OBSERVATION_RECORD_LIMIT - 1,
+    }),
+  );
+  return (stage, details = {}) => {
+    if (stopped) return;
+    const nextDetails = { ...details, sequence: records + 1 };
+    const eventBytes = Buffer.byteLength(
+      JSON.stringify({ stage, ...nextDetails }),
+    );
+    if (
+      records >= LAUNCH_OBSERVATION_RECORD_LIMIT - 1 ||
+      bytes + eventBytes + markerReserve > LAUNCH_OBSERVATION_BYTE_LIMIT
+    ) {
+      const markerDetails = { sequence: records + 1, records };
+      const markerBytes = Buffer.byteLength(
+        JSON.stringify({
+          stage: 'launch-observation-truncated',
+          ...markerDetails,
+        }),
+      );
+      stopped = true;
+      if (
+        records < LAUNCH_OBSERVATION_RECORD_LIMIT &&
+        bytes + markerBytes <= LAUNCH_OBSERVATION_BYTE_LIMIT
+      ) {
+        records++;
+        bytes += markerBytes;
+        emitLaunchObservation(
+          record,
+          'launch-observation-truncated',
+          markerDetails,
+        );
+      }
+      return;
+    }
+    records++;
+    bytes += eventBytes;
+    emitLaunchObservation(record, stage, nextDetails);
+  };
+}
+
+function rendererEntryIdentity(value) {
+  const url = new URL(value);
+  url.hash = '';
+  return url.href;
+}
+
+/** Select the native app window at its configured renderer entry, without
+ * waiting for DOM readiness or temporary maintenance pages to finish.
+ */
+export function getMainWindow(
+  electronApp,
+  {
+    timeout = 30_000,
+    rendererUrl = mainWindowRendererUrls.get(electronApp),
+    launchObserver,
+  } = {},
+) {
+  const cached = mainWindowSelections.get(electronApp);
+  if (cached) return cached;
+  if (!rendererUrl)
+    return Promise.reject(
+      new Error('The application renderer entry is not configured.'),
+    );
+  const expectedUrl = rendererEntryIdentity(rendererUrl);
+  // Capture the owning test now; a later failure must not attach to another
+  // test. Public array push reports a Buffer body synchronously in Playwright.
+  let diagnosticAttachments;
+  try {
+    diagnosticAttachments = playwrightTest.info().attachments;
+  } catch {
+    /* Non-Playwright callers have no reporting context. */
+  }
+  const selection = new Promise((resolve, reject) => {
+    let settled = false;
+    const observeLaunch = launchObserver
+      ? (stage, outcome) => {
+          if (!settled)
+            emitLaunchObservation(launchObserver, stage, { outcome });
+        }
+      : undefined;
+    observeLaunch?.('main-window-selection', 'entered');
+    const observed = new Map();
+    // Retain only values obtained by the existing inspection/events. These are
+    // historical observations, never a fresh timeout-time liveness claim.
+    const evidence = { expectedUrl: undefined, events: [], truncated: false };
+    const diagnosticPages = new WeakMap();
+    let windowCount = 0,
+      eventBytes = 0;
+    const safeUrl = (value) => {
+      try {
+        const url = new URL(value);
+        const scheme = url.protocol === 'app-renderer:';
+        const local =
+          url.protocol === 'file:' ||
+          scheme ||
+          ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+        const surface = url.searchParams.get('surface');
+        return `${local ? `${url.protocol === 'file:' ? 'file://' : scheme ? `app-renderer://${url.host}` : url.origin}${url.pathname}` : url.protocol === 'about:' ? 'about:blank' : url.origin}${local && surface && /^[a-z-]{1,64}$/.test(surface) ? `?surface=${surface}` : ''}`.slice(
+          0,
+          512,
+        );
+      } catch {
+        return 'unavailable';
+      }
+    };
+    evidence.expectedUrl = safeUrl(expectedUrl);
+    const note = (stage, page, details = {}) => {
+      if (settled) return;
+      let windowId = page && diagnosticPages.get(page);
+      if (page && windowId === undefined) {
+        if (windowCount >= 16) {
+          evidence.truncated = true;
+          return;
+        }
+        windowId = ++windowCount;
+        diagnosticPages.set(page, windowId);
+      }
+      const event = {
+        stage,
+        windowId,
+        order: evidence.events.length + 1,
+        monotonicNs: process.hrtime.bigint().toString(),
+        ...details,
+      };
+      const bytes = Buffer.byteLength(JSON.stringify(event));
+      if (evidence.events.length >= 64 || eventBytes + bytes > 30000) {
+        evidence.truncated = true;
+        return;
+      }
+      eventBytes += bytes;
+      evidence.events.push(event);
+    };
+    const forget = (page) => {
+      const listeners = observed.get(page);
+      if (!listeners) return;
+      page.off('framenavigated', listeners.navigated);
+      page.off('load', listeners.loaded);
+      page.off('close', listeners.closed);
+      observed.delete(page);
+    };
+    const finish = (error, page) => {
+      if (settled) return;
+      note(error ? 'selection-rejected' : 'selected', page);
+      observeLaunch?.(
+        'main-window-selection',
+        error ? 'rejected' : 'fulfilled',
+      );
+      if (error) {
+        try {
+          Object.defineProperty(error, 'mainWindowSelection', {
+            value: evidence,
+            enumerable: true,
+            configurable: true,
+          });
+        } catch {
+          /* Keep frozen or non-object rejection identity. */
+        }
+      }
+      settled = true;
+      clearTimeout(timer);
+      electronApp.off('window', observe);
+      electronApp.off('close', closed);
+      for (const candidate of observed.keys()) forget(candidate);
+      if (error) {
+        try {
+          diagnosticAttachments?.push({
+            name: 'main-window-selection.json',
+            contentType: 'application/json',
+            body: Buffer.from(JSON.stringify(evidence)),
+          });
+        } catch {
+          /* Reporting cannot replace the original rejection. */
+        }
+        reject(error);
+      } else resolve(page);
+    };
+    const closed = () =>
+      finish(
+        new Error('Electron closed before its application window opened.'),
+      );
+    const inspect = async (page) => {
+      if (settled || page.isClosed()) return;
+      try {
+        note('inspection-entered', page);
+        observeLaunch?.('main-window-native-association', 'entered');
+        let handle;
+        try {
+          handle = await electronApp.browserWindow(page);
+          observeLaunch?.('main-window-native-association', 'fulfilled');
+        } catch (error) {
+          observeLaunch?.('main-window-native-association', 'rejected');
+          throw error;
+        }
+        let nativeUrl, native;
+        try {
+          observeLaunch?.('main-window-native-evaluate', 'entered');
+          try {
+            native = await handle.evaluate((window) => {
+              if (!window)
+                return {
+                  nativeOwner: false,
+                  destroyed: null,
+                  parent: null,
+                  url: null,
+                };
+              if (window.isDestroyed())
+                return {
+                  nativeOwner: true,
+                  destroyed: true,
+                  parent: null,
+                  url: null,
+                };
+              if (window.getParentWindow())
+                return {
+                  nativeOwner: true,
+                  destroyed: false,
+                  parent: true,
+                  url: null,
+                };
+              return {
+                nativeOwner: true,
+                destroyed: false,
+                parent: false,
+                url: window.webContents.getURL(),
+              };
+            });
+            observeLaunch?.('main-window-native-evaluate', 'fulfilled');
+          } catch (error) {
+            observeLaunch?.('main-window-native-evaluate', 'rejected');
+            throw error;
+          }
+          nativeUrl = native.url;
+          let observedPageUrl = 'unavailable';
+          try {
+            observedPageUrl = safeUrl(page.url());
+          } catch {
+            /* Cached diagnostic value only. */
+          }
+          note('inspection', page, {
+            nativeOwner: native.nativeOwner,
+            destroyed: native.destroyed,
+            parent: native.parent,
+            nativeUrl: nativeUrl === null ? null : safeUrl(nativeUrl),
+            pageUrl: observedPageUrl,
+          });
+        } finally {
+          observeLaunch?.('main-window-native-dispose', 'entered');
+          try {
+            await handle.dispose();
+            observeLaunch?.('main-window-native-dispose', 'fulfilled');
+          } catch (error) {
+            observeLaunch?.('main-window-native-dispose', 'rejected');
+            // Preserve the existing finally precedence: disposal rejection
+            // replaces an earlier inspection rejection with the same object.
+            // eslint-disable-next-line no-unsafe-finally
+            throw error;
+          }
+        }
+        if (
+          nativeUrl &&
+          rendererEntryIdentity(nativeUrl) === expectedUrl &&
+          !page.isClosed() &&
+          rendererEntryIdentity(page.url()) === expectedUrl
+        )
+          finish(undefined, page);
+      } catch (error) {
+        note('inspection-rejected', page, { pageClosed: page.isClosed() });
+        if (!page.isClosed()) finish(error);
+      }
+    };
+    const observe = (page) => {
+      if (settled || page.isClosed() || observed.has(page)) return;
+      const navigated = (frame) => {
+        if (frame === page.mainFrame()) {
+          note('main-frame-navigation', page);
+          void inspect(page);
+        }
+      };
+      const pageClosed = () => {
+        note('window-close', page);
+        forget(page);
+      };
+      // Navigation can be observed before the native owner's URL is ready.
+      // A normal load event gives both identities another check, without
+      // accepting the page URL alone or polling while the window starts.
+      const loaded = () => {
+        note('main-frame-load', page);
+        void inspect(page);
+      };
+      note('window-observed', page);
+      observed.set(page, { navigated, loaded, closed: pageClosed });
+      page.on('framenavigated', navigated);
+      page.on('load', loaded);
+      page.once('close', pageClosed);
+      void inspect(page);
+    };
+    const timer = setTimeout(
+      () => finish(new Error('Timed out identifying the application window.')),
+      timeout,
+    );
+    electronApp.on('window', observe);
+    electronApp.once('close', closed);
+    for (const page of electronApp.windows()) observe(page);
+  });
+  mainWindowSelections.set(electronApp, selection);
+  void selection.then(
+    (page) => {
+      const invalidate = () => {
+        if (mainWindowSelections.get(electronApp) === selection)
+          mainWindowSelections.delete(electronApp);
+      };
+      if (page.isClosed()) invalidate();
+      else page.once('close', invalidate);
+    },
+    () => {
+      if (mainWindowSelections.get(electronApp) === selection)
+        mainWindowSelections.delete(electronApp);
+    },
+  );
+  return selection;
+}
+
+export function resolveE2eMainEntryPath(
+  rootPath = repoRoot,
+  pathExists = existsSync,
+  outDirName = process.env.CANOPY_E2E_OUT_DIR ?? 'out-e2e',
+) {
+  const mainEntryPath = path.join(rootPath, outDirName, 'main', 'index.js');
+  if (!pathExists(mainEntryPath)) {
+    throw new Error(
+      'Missing the E2E main bundle. Run `npm run build:e2e` before launching Electron tests.',
+    );
+  }
+  return mainEntryPath;
+}
+
+export function buildE2eLaunchMarkerEnv(buildKind, showWindow = false) {
+  return {
+    ...(buildKind === 'production' ? { CANOPY_E2E_ISOLATED_LOGGING: '1' } : {}),
+    CANOPY_E2E_SHOW_WINDOW: showWindow ? '1' : '0',
+  };
+}
+
+export function resolveProductionMainEntryPath(
+  rootPath = repoRoot,
+  pathExists = existsSync,
+) {
+  const mainEntryPath = path.join(rootPath, 'out', 'main', 'index.js');
+  if (!pathExists(mainEntryPath)) {
+    throw new Error(
+      'Missing the production main bundle. Run `npm run build` before launching Electron tests.',
+    );
+  }
+  return mainEntryPath;
+}
+
+function isolatedProviderStatePaths(userDataDir) {
+  return {
+    claude: path.join(userDataDir, 'provider-state', 'claude'),
+    codex: path.join(userDataDir, 'provider-state', 'codex'),
+    // The `.cursor`, `.agents`, and `.grok` roots a Cursor chat inherits
+    // skills from; relocated so a suite never reads the developer's own.
+    home: path.join(userDataDir, 'provider-state', 'home'),
+  };
+}
+
+export function prepareIsolatedProviderState(userDataDir) {
+  const providerState = isolatedProviderStatePaths(userDataDir);
+  mkdirSync(providerState.claude, { recursive: true });
+  mkdirSync(providerState.codex, { recursive: true });
+  mkdirSync(providerState.home, { recursive: true });
+}
+
+function resolveCanonicalDataPath(candidate) {
+  const missingSegments = [];
+  let existingAncestor = path.resolve(candidate);
+  while (!existsSync(existingAncestor)) {
+    const parent = path.dirname(existingAncestor);
+    if (parent === existingAncestor) break;
+    missingSegments.unshift(path.basename(existingAncestor));
+    existingAncestor = parent;
+  }
+  const canonicalAncestor = existsSync(existingAncestor)
+    ? realpathSync(existingAncestor)
+    : existingAncestor;
+  return path.resolve(canonicalAncestor, ...missingSegments);
+}
+
+/**
+ * Refuse to launch the app against a real Canopy data namespace.
+ *
+ * The app resolves its data root from `CANOPY_DATA_DIR` and writes the whole
+ * workspace index from its own in-memory view, so a launch pointed at a live
+ * namespace does not merely add test rows — it replaces the developer's
+ * workspace list wholesale. That happened: a suite resolving to `~/.canopy`
+ * rewrote `workspaces/index.json` down to its own fixtures, and nothing on the
+ * machine (no snapshots, no Time Machine) could restore the sidebar order and
+ * colours that went with it.
+ *
+ * The rule is the *shape*, not a brand list, so `.canopy-dev`, `.canopy-rc`,
+ * a future brand, and neighbouring tool namespaces like `.claude`/`.codex` are
+ * all covered without anyone remembering to extend an allowlist. A deep path
+ * inside such a namespace is fine — Canopy keeps its own git worktrees under
+ * `~/.canopy/workspaces/...`, so repo-relative directories legitimately live
+ * there; only the namespace root is the data root that must stay untouched.
+ *
+ * `homeDir` is injectable so the unit test never depends on the real home.
+ */
+export function assertIsolatedCanopyDataDir(
+  variableName,
+  value,
+  homeDir = os.homedir(),
+  { allowEmpty = false } = {},
+) {
+  const reject = (reason) => {
+    throw new Error(
+      `${variableName} must point at an isolated test directory, but it ${reason}: ${String(value)}\n` +
+        'E2E launches build one with ' +
+        "mkdtempSync(path.join(os.tmpdir(), 'canopy-electron-')). " +
+        "Pointing a launch at a real namespace lets the suite overwrite the developer's live Canopy data.",
+    );
+  };
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    if (allowEmpty && typeof value === 'string') return;
+    reject(
+      'is empty, so the app would fall back to the real brand data directory',
+    );
+  }
+  const raw = value.trim();
+  if (raw === '~' || raw.startsWith('~/') || raw.startsWith(`~${path.sep}`)) {
+    reject('uses an unexpanded `~`, which Node resolves against the cwd');
+  }
+
+  const candidatePaths = new Set([
+    path.resolve(raw),
+    resolveCanonicalDataPath(raw),
+  ]);
+  const homePaths = new Set([
+    path.resolve(homeDir),
+    resolveCanonicalDataPath(homeDir),
+  ]);
+  const pathsMatch = (left, right) => {
+    if (left === right) return true;
+    try {
+      const leftStats = statSync(left);
+      const rightStats = statSync(right);
+      return (
+        leftStats.dev === rightStats.dev && leftStats.ino === rightStats.ino
+      );
+    } catch {
+      return false;
+    }
+  };
+  const containsHome = (candidatePath, homePath) => {
+    const relativeHome = path.relative(candidatePath, homePath);
+    if (
+      relativeHome.length > 0 &&
+      !relativeHome.startsWith('..') &&
+      !path.isAbsolute(relativeHome)
+    ) {
+      return true;
+    }
+    let homeAncestor = path.dirname(homePath);
+    while (homeAncestor !== path.dirname(homeAncestor)) {
+      if (pathsMatch(candidatePath, homeAncestor)) return true;
+      homeAncestor = path.dirname(homeAncestor);
+    }
+    return pathsMatch(candidatePath, homeAncestor);
+  };
+  const protectedNamespaceTargets = new Set();
+  for (const homePath of homePaths) {
+    try {
+      for (const entry of readdirSync(homePath, { withFileTypes: true })) {
+        if (!entry.name.startsWith('.')) continue;
+        const namespacePath = path.join(homePath, entry.name);
+        try {
+          protectedNamespaceTargets.add(realpathSync(namespacePath));
+        } catch {
+          // Broken or concurrently removed entries cannot be a writable target.
+        }
+      }
+    } catch {
+      // The normal host home is readable. Preserve the path-only checks when
+      // an injected home fixture is removed concurrently.
+    }
+  }
+  // Check both lexical and canonical forms. The lexical form catches a live
+  // `~/.canopy` namespace that is itself a symlink to an external directory;
+  // the canonical form catches an innocent-looking external path that enters
+  // a live namespace through a symlinked ancestor.
+  for (const candidatePath of candidatePaths) {
+    for (const namespaceTarget of protectedNamespaceTargets) {
+      if (pathsMatch(candidatePath, namespaceTarget)) {
+        reject('is the canonical target of a home dot-namespace');
+      }
+    }
+    for (const homePath of homePaths) {
+      if (pathsMatch(candidatePath, homePath)) {
+        reject('is the home directory itself');
+      }
+      // `/`, `/Users`, … — a data root above home is worse than the namespace case.
+      if (containsHome(candidatePath, homePath)) {
+        reject('contains the home directory');
+      }
+      if (
+        pathsMatch(path.dirname(candidatePath), homePath) &&
+        path.basename(candidatePath).startsWith('.')
+      ) {
+        reject('is a dot-namespace directly under the home directory');
+      }
+    }
+  }
+}
+
+function resolveDataDirValidationPolicy(extraEnv, effectiveHome) {
+  const hostHome = os.userInfo().homedir;
+  const hasExplicitHome = Object.prototype.hasOwnProperty.call(
+    extraEnv,
+    'HOME',
+  );
+  let explicitHomeIsIsolated = false;
+  if (hasExplicitHome && typeof effectiveHome === 'string') {
+    try {
+      assertIsolatedCanopyDataDir('HOME', effectiveHome, hostHome);
+      explicitHomeIsIsolated = true;
+    } catch {
+      explicitHomeIsIsolated = false;
+    }
+  }
+  return {
+    allowEmpty: explicitHomeIsIsolated,
+    primaryHome:
+      explicitHomeIsIsolated || typeof effectiveHome !== 'string'
+        ? hostHome
+        : effectiveHome,
+    hostHome,
+  };
+}
+
+function assertDataRootWithPolicy(variableName, value, policy) {
+  assertIsolatedCanopyDataDir(variableName, value, policy.primaryHome, {
+    allowEmpty: policy.allowEmpty,
+  });
+  if (
+    typeof value === 'string' &&
+    value.trim().length > 0 &&
+    path.resolve(policy.primaryHome) !== path.resolve(policy.hostHome)
+  ) {
+    assertIsolatedCanopyDataDir(variableName, value, policy.hostHome);
+  }
+}
+
+function assertUsableE2eUserDataFallback(primaryDataDir, fallbackDataDir) {
+  if (typeof primaryDataDir === 'string' && primaryDataDir.trim().length > 0) {
+    return;
+  }
+  if (
+    typeof fallbackDataDir !== 'string' ||
+    fallbackDataDir.trim().length === 0
+  ) {
+    throw new Error(
+      'CANOPY_E2E_USER_DATA_DIR must be a non-empty existing directory when CANOPY_DATA_DIR is blank',
+    );
+  }
+  try {
+    if (statSync(path.resolve(fallbackDataDir.trim())).isDirectory()) return;
+  } catch {
+    // Fall through to the actionable error below.
+  }
+  throw new Error(
+    'CANOPY_E2E_USER_DATA_DIR must be a non-empty existing directory when CANOPY_DATA_DIR is blank',
+  );
+}
+
+function normalizedLaunchHome(extraEnv) {
+  const candidate = extraEnv.HOME ?? process.env.HOME ?? os.homedir();
+  if (
+    typeof candidate === 'string' &&
+    (candidate.includes('__codex-homes__') ||
+      candidate.includes(`${path.sep}codex-home${path.sep}`))
+  ) {
+    return os.userInfo().homedir;
+  }
+  return candidate;
+}
+
+function assertLaunchDataRootsBeforeMutation(userDataDir, extraEnv = {}) {
+  const effectiveHome = normalizedLaunchHome(extraEnv);
+  const policy = resolveDataDirValidationPolicy(extraEnv, effectiveHome);
+  assertDataRootWithPolicy('CANOPY_DATA_DIR', userDataDir, policy);
+  assertDataRootWithPolicy(
+    'CANOPY_SECURE_DATA_DIR',
+    `${userDataDir}-secure`,
+    policy,
+  );
+  if (Object.prototype.hasOwnProperty.call(extraEnv, 'CANOPY_DATA_DIR')) {
+    assertDataRootWithPolicy(
+      'CANOPY_DATA_DIR',
+      extraEnv.CANOPY_DATA_DIR,
+      policy,
+    );
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(extraEnv, 'CANOPY_SECURE_DATA_DIR')
+  ) {
+    assertDataRootWithPolicy(
+      'CANOPY_SECURE_DATA_DIR',
+      extraEnv.CANOPY_SECURE_DATA_DIR,
+      policy,
+    );
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(extraEnv, 'CANOPY_E2E_USER_DATA_DIR')
+  ) {
+    assertDataRootWithPolicy(
+      'CANOPY_E2E_USER_DATA_DIR',
+      extraEnv.CANOPY_E2E_USER_DATA_DIR,
+      policy,
+    );
+  }
+  const primaryDataDir = Object.prototype.hasOwnProperty.call(
+    extraEnv,
+    'CANOPY_DATA_DIR',
+  )
+    ? extraEnv.CANOPY_DATA_DIR
+    : userDataDir;
+  const fallbackDataDir = Object.prototype.hasOwnProperty.call(
+    extraEnv,
+    'CANOPY_E2E_USER_DATA_DIR',
+  )
+    ? extraEnv.CANOPY_E2E_USER_DATA_DIR
+    : process.env.CANOPY_E2E_USER_DATA_DIR;
+  assertUsableE2eUserDataFallback(primaryDataDir, fallbackDataDir);
+}
+
+export function buildElectronEnv(
+  userDataDir,
+  extraEnv = {},
+  { preserveProviderState = false } = {},
+) {
+  const mockBaseUrl = (
+    process.env.CANOPY_E2E_MOCK_BASE_URL ?? 'http://127.0.0.1:4011'
+  ).replace(/\/+$/, '');
+  const providerState = isolatedProviderStatePaths(userDataDir);
+  // Keep the real login HOME so macOS Electron `safeStorage` can resolve the
+  // login Keychain. Some development shells (including selected-capability
+  // Codex chats) themselves run under a legacy synthetic Codex home, though.
+  // Never propagate that compatibility environment into the app under test:
+  // E2E must exercise the same canonical-state boundary as production.
+  const env = {
+    ...process.env,
+    CANOPY_ENV: 'development',
+    CANOPY_DATA_DIR: userDataDir,
+    CANOPY_SECURE_DATA_DIR: `${userDataDir}-secure`,
+    // Deterministic time/locale for date- and locale-formatted UI.
+    TZ: 'UTC',
+    LANG: 'en_US.UTF-8',
+    LC_ALL: 'en_US.UTF-8',
+    SHELL: '/bin/bash',
+    // A committed git identity so any in-app commit during setup never fails.
+    GIT_AUTHOR_NAME: 'Canopy E2E',
+    GIT_AUTHOR_EMAIL: 'e2e@canopy.test',
+    GIT_COMMITTER_NAME: 'Canopy E2E',
+    GIT_COMMITTER_EMAIL: 'e2e@canopy.test',
+    // Point the build-gated provider redirect seams at the shared mock server
+    // (started suite-wide by playwright.config.mjs at 127.0.0.1:4011). These are
+    // only honored in an E2E build (`if (__CANOPY_E2E__)`), so they're inert in
+    // production. The mock returns benign defaults for unregistered keys, so
+    // they're safe for every spec; live-turn specs register a scenario + embed a
+    // `[Canopy-C<id>]` marker to drive a scripted conversation.
+    CANOPY_MOCK_LLM_BASE_URL: mockBaseUrl,
+    CANOPY_MOCK_API_KEY: 'mock',
+    CANOPY_E2E_CLAUDE_USAGE_FRESHNESS_MS: '0',
+    CANOPY_GITHUB_API_BASE_URL: mockBaseUrl,
+    CANOPY_LINEAR_API_BASE_URL: `${mockBaseUrl}/graphql`,
+    ...extraEnv,
+    // Provider CLIs persist global config, project trust, marketplace clones,
+    // and atomic-write staging files outside Electron's userData directory by
+    // default. Keep normal E2E launches self-contained so parallel and aborted
+    // tests cannot mutate or bloat the developer's real provider state. The
+    // manually run real-model benchmark opts out because host auth is its
+    // explicit prerequisite.
+    ...(preserveProviderState
+      ? {}
+      : {
+          CLAUDE_CONFIG_DIR: providerState.claude,
+          CODEX_HOME: providerState.codex,
+          CANOPY_CURSOR_USER_HOME: providerState.home,
+          // Claude Desktop keeps session records outside CLAUDE_CONFIG_DIR;
+          // the bulk project import (CAN-2439) reads them, so isolate that
+          // root as well or a developer's real desktop sessions leak into
+          // every discovery scan the suite runs. A spec may name its own
+          // isolated root instead (CAN-3076 seeds Cowork scratch folders
+          // there, which must sit outside the app data dir to be importable).
+          CANOPY_CLAUDE_DESKTOP_DATA_DIR:
+            extraEnv.CANOPY_CLAUDE_DESKTOP_DATA_DIR ??
+            path.join(providerState.claude, 'desktop'),
+        }),
+  };
+  // A headed request must belong to this launch. Never inherit a stale shell
+  // setting into ordinary UI automation or performance runs.
+  env.CANOPY_E2E_SHOW_WINDOW =
+    extraEnv.CANOPY_E2E_SHOW_WINDOW === '1' ? '1' : '0';
+  const inheritedHome = env.HOME;
+  if (
+    typeof inheritedHome === 'string' &&
+    (inheritedHome.includes('__codex-homes__') ||
+      inheritedHome.includes(`${path.sep}codex-home${path.sep}`))
+  ) {
+    env.HOME = os.userInfo().homedir;
+  }
+  // Always fold in the suite-wide client feature flag defaults (notably the
+  // disabled Cloud sign-in gate), merging any caller-provided override on top.
+  env[E2E_CLIENT_FEATURE_FLAGS_ENV] = mergeE2eClientFeatureFlags(extraEnv);
+  delete env.ELECTRON_RUN_AS_NODE;
+  // Agent shells launched by a running desktop inherit its Crashpad pipe.
+  // A disposable test renderer must never report into that desktop's database.
+  delete env.CHROME_CRASHPAD_PIPE_NAME;
+  // Never honor an inherited LaunchDarkly client-side ID in tests: an unpackaged
+  // build would otherwise open a live streaming connection. Unset, the flag
+  // service stays in its deterministic not-configured defaults.
+  delete env.LAUNCHDARKLY_DESKTOP_CLIENT_SIDE_ID;
+  // An API key outranks the claude.ai login, so Claude reports zero account
+  // connectors and every connector row renders "unavailable". A developer or
+  // runner exporting one would fail provider-connector specs for a reason that
+  // says nothing about the code — the same host-dependence that made the MCP
+  // settings spec fail whenever the app was running.
+  delete env.ANTHROPIC_API_KEY;
+  delete env.ANTHROPIC_AUTH_TOKEN;
+  // Scrub any `CANOPY_<TOOL>_BINARY_PATH` overrides inherited from the developer's
+  // login shell (the installed packaged Canopy.app exports these). They would
+  // repoint the entire bundled bin dir at the packaged install instead of the
+  // dev `.cache/bin`, breaking live SDK turns and bundled `rg`/`gh` resolution.
+  for (const key of Object.keys(env)) {
+    if (/^CANOPY_[A-Z0-9]+_BINARY_PATH$/.test(key)) {
+      delete env[key];
+    }
+  }
+  // Defense in depth — keep Datadog/RUM off regardless of the build shell.
+  for (const key of Object.keys(env)) {
+    if (key.startsWith('CANOPY_DATADOG_')) {
+      delete env[key];
+    }
+  }
+  // Keep GitHub auth tests deterministic and avoid leaking the developer/CI
+  // token source into tests that are asserting the no-env-override state.
+  // Individual specs can still opt into the env-token path via `options.env`.
+  for (const key of [
+    'GH_TOKEN',
+    'GITHUB_TOKEN',
+    'GH_ENTERPRISE_TOKEN',
+    'GITHUB_ENTERPRISE_TOKEN',
+  ]) {
+    if (!Object.prototype.hasOwnProperty.call(extraEnv, key)) {
+      delete env[key];
+    }
+  }
+  // Last thing before the env is handed to Electron, and deliberately on the
+  // FINAL values: `extraEnv` is spread after the defaults above, so a spec can
+  // repoint either data root. Checking the resolved values is the only way to
+  // catch that as well as a bad `userDataDir`.
+  const validationPolicy = resolveDataDirValidationPolicy(extraEnv, env.HOME);
+  assertDataRootWithPolicy(
+    'CANOPY_DATA_DIR',
+    env.CANOPY_DATA_DIR,
+    validationPolicy,
+  );
+  assertDataRootWithPolicy(
+    'CANOPY_SECURE_DATA_DIR',
+    env.CANOPY_SECURE_DATA_DIR,
+    validationPolicy,
+  );
+  if (Object.prototype.hasOwnProperty.call(env, 'CANOPY_E2E_USER_DATA_DIR')) {
+    assertDataRootWithPolicy(
+      'CANOPY_E2E_USER_DATA_DIR',
+      env.CANOPY_E2E_USER_DATA_DIR,
+      validationPolicy,
+    );
+  }
+  assertUsableE2eUserDataFallback(
+    env.CANOPY_DATA_DIR,
+    env.CANOPY_E2E_USER_DATA_DIR,
+  );
+  return env;
+}
+
+/**
+ * A per-launch MCP proxy port in a high range far from the app default
+ * (37645) and the shared mock server (4011). The default port collides with
+ * any OTHER Canopy instance running on the machine (e.g. the developer's own
+ * app) — the proxy's availability probe then fails EVERY interactive chat
+ * session with "MCP proxy port … is already in use by another Canopy MCP
+ * proxy", breaking all live-turn specs. Randomizing also keeps two
+ * concurrently-running E2E apps (--workers=2) from colliding with each other.
+ */
+function pickEphemeralMcpProxyPort() {
+  return 20000 + Math.floor(Math.random() * 15000);
+}
+
+/**
+ * Whether the user data dir already carries Home onboarding suggestions
+ * module state — a spec that seeded it (`seedWelcomeChecklist`) or a relaunch
+ * of a dir the module started in wants the module live.
+ */
+function hasSeededOnboardingSuggestions(userDataDir) {
+  const preferencesPath = path.join(userDataDir, 'preferences.json');
+  if (!existsSync(preferencesPath)) return false;
+  try {
+    const persisted = JSON.parse(readFileSync(preferencesPath, 'utf8'));
+    return Boolean(persisted?.preferences?.homeOnboardingSuggestions);
+  } catch {
+    return false;
+  }
+}
+
+function seedOnboardingCompleted(userDataDir) {
+  const preferencesPath = path.join(userDataDir, 'preferences.json');
+  if (existsSync(preferencesPath)) {
+    let persisted;
+    try {
+      persisted = JSON.parse(readFileSync(preferencesPath, 'utf8'));
+    } catch {
+      // Some recovery specs intentionally launch with invalid preferences.
+      // Leave those fixtures untouched so the app exercises its recovery path;
+      // CanopyAppDriver.waitForShell() handles the post-recovery legal gate.
+      return;
+    }
+    if (!persisted || typeof persisted !== 'object') {
+      return;
+    }
+    const preferences =
+      persisted.preferences && typeof persisted.preferences === 'object'
+        ? persisted.preferences
+        : {};
+    writeFileSync(
+      preferencesPath,
+      JSON.stringify(
+        {
+          ...persisted,
+          version: persisted.version ?? 1,
+          preferences: {
+            ...preferences,
+            onboardingCompleted: preferences.onboardingCompleted ?? ['v1'],
+            legalConsentAcceptedAt:
+              preferences.legalConsentAcceptedAt ?? '2026-07-06T00:00:00.000Z',
+            legalConsentTosVersion:
+              preferences.legalConsentTosVersion ?? '2026-07-06',
+            mcpProxyPort:
+              preferences.mcpProxyPort ?? pickEphemeralMcpProxyPort(),
+          },
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    );
+    return;
+  }
+  mkdirSync(userDataDir, { recursive: true });
+  writeFileSync(
+    preferencesPath,
+    JSON.stringify(
+      {
+        version: 1,
+        preferences: {
+          onboardingCompleted: ['v1'],
+          initializedCuratedPluginDefaults: [],
+          // Seed the blocking first-run legal acceptance so default launches
+          // land on the shell. Fresh-onboarding specs (`freshOnboarding: true`)
+          // skip this seed and clear the gate via `acceptLegalConsent()`.
+          legalConsentAcceptedAt: '2026-07-06T00:00:00.000Z',
+          legalConsentTosVersion: '2026-07-06',
+          mcpProxyPort: pickEphemeralMcpProxyPort(),
+        },
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  );
+  // The default harness launch represents a brand-new user, but it must
+  // pre-create preferences to bypass onboarding. Seed the production
+  // migration's not-applicable marker at the same time so this test-only file
+  // creation does not make a fresh user look like an upgrade.
+  const migrationsPath = path.join(userDataDir, 'migrations.json');
+  let migrations = {};
+  if (existsSync(migrationsPath)) {
+    try {
+      migrations = JSON.parse(readFileSync(migrationsPath, 'utf8'));
+    } catch {
+      migrations = {};
+    }
+  }
+  writeFileSync(
+    migrationsPath,
+    `${JSON.stringify(
+      {
+        ...migrations,
+        version: 1,
+        approval_defaults_full_access: true,
+      },
+      null,
+      2,
+    )}\n`,
+    'utf8',
+  );
+}
+
+/**
+ * Seed a dismissed sidebar onboarding checklist (CAN-788) so the footer card
+ * never mounts mid-test. The checklist hydrates asynchronously several
+ * seconds after launch; mounting its card re-triggers the sidebar nav's
+ * collapse-into-"More" measurement pass, which shifts every workspace row
+ * after a spec has already measured one (CAN-2583: the shifted geometry put
+ * a held pointer inside dnd-kit's auto-scroll activation band and drove the
+ * sidebar to max scroll). Specs that assert the checklist itself opt out
+ * with `freshOnboardingChecklist: true`.
+ */
+function seedDismissedOnboardingChecklist(userDataDir) {
+  const checklistPath = path.join(userDataDir, 'onboarding-checklist.json');
+  // Never clobber a reused user data dir's real checklist state.
+  if (existsSync(checklistPath)) return;
+  const dismissedAt = '2026-08-27T00:00:00.000Z';
+  mkdirSync(userDataDir, { recursive: true });
+  writeFileSync(
+    checklistPath,
+    `${JSON.stringify(
+      {
+        version: 1,
+        updatedAt: dismissedAt,
+        completedItems: {},
+        dismissedAt,
+        snoozedUntil: null,
+        providersNotUsed: [],
+      },
+      null,
+      2,
+    )}\n`,
+    'utf8',
+  );
+}
+
+/**
+ * Seed the one-time "Agents can act without asking" approvals notice as
+ * already dismissed. Full Access is the product default (CAN-3055), so a fresh
+ * profile shows that notice in every composer's banner stack; left in place it
+ * pads the notice column in specs that assert the stack's contents. Only fills
+ * a missing field, so a value the app wrote (a dismissal, or the upgrade
+ * migration re-arming the notice) survives a relaunch. Specs that assert the
+ * notice itself opt out with `freshApprovalsUpgradeNotice: true`. Only patches
+ * an existing preferences file, so `freshOnboarding: true` launches (which
+ * write none) still show the notice, as a brand-new install would.
+ */
+function seedDismissedApprovalsUpgradeNotice(userDataDir) {
+  const preferencesPath = path.join(userDataDir, 'preferences.json');
+  if (!existsSync(preferencesPath)) return;
+  let persisted;
+  try {
+    persisted = JSON.parse(readFileSync(preferencesPath, 'utf8'));
+  } catch {
+    // Recovery specs intentionally launch with invalid preferences.
+    return;
+  }
+  if (!persisted || typeof persisted !== 'object') return;
+  const preferences =
+    persisted.preferences && typeof persisted.preferences === 'object'
+      ? persisted.preferences
+      : {};
+  if (preferences.approvalsUpgradeNoticeDismissed !== undefined) return;
+  writeFileSync(
+    preferencesPath,
+    JSON.stringify(
+      {
+        ...persisted,
+        preferences: { ...preferences, approvalsUpgradeNoticeDismissed: true },
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  );
+}
+
+/**
+ * Local-only switch for running existing specs with Settings → Experiments →
+ * "Open windows faster" on: `CANOPY_E2E_RENDERER_CODE_CACHE_SCHEME=1` seeds
+ * `rendererCodeCacheSchemeEnabled: true` before launch, so the app loads both
+ * windows from the `app-renderer://bundle/` scheme through the same code path
+ * a user's setting takes. CI never sets it; anything but `1` changes nothing.
+ */
+export const RENDERER_CODE_CACHE_SCHEME_ENV =
+  'CANOPY_E2E_RENDERER_CODE_CACHE_SCHEME';
+
+/** The renderer scheme's main window page (`@canopy/desktop-shared/lib/renderer-scheme`). */
+const RENDERER_SCHEME_MAIN_PAGE_URL = 'app-renderer://bundle/index.html';
+
+function rendererCodeCacheSchemeRequested(env) {
+  return env[RENDERER_CODE_CACHE_SCHEME_ENV] === '1';
+}
+
+export function seedRendererCodeCacheScheme(userDataDir, env = process.env) {
+  if (!rendererCodeCacheSchemeRequested(env)) return;
+  const preferencesPath = path.join(userDataDir, 'preferences.json');
+  let persisted = {};
+  if (existsSync(preferencesPath)) {
+    try {
+      persisted = JSON.parse(readFileSync(preferencesPath, 'utf8'));
+    } catch {
+      return;
+    }
+  }
+  if (!persisted || typeof persisted !== 'object') return;
+  const preferences =
+    persisted.preferences && typeof persisted.preferences === 'object'
+      ? persisted.preferences
+      : {};
+  mkdirSync(userDataDir, { recursive: true });
+  writeFileSync(
+    preferencesPath,
+    JSON.stringify(
+      {
+        ...persisted,
+        version: persisted.version ?? 1,
+        preferences: { ...preferences, rendererCodeCacheSchemeEnabled: true },
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  );
+}
+
+/**
+ * With the switch on, Electron gets `--user-data-dir` inside the run's
+ * profile. Chromium's origin-keyed storage, its code cache and the renderer
+ * origin record live in `sessionData`, which E2E's later `userData` redirect
+ * does not move; without this, an on run would migrate the host-wide default
+ * profile that every off run (and every concurrent run) shares. Off, the args
+ * are today's. A caller's own `--user-data-dir` wins.
+ */
+function assertLinuxUiIdentity(options) {
+  const uid = (options.uid ?? (() => process.getuid?.()))();
+  const euid = (options.euid ?? (() => process.geteuid?.()))();
+  if (
+    !Number.isInteger(uid) ||
+    uid <= 0 ||
+    !Number.isInteger(euid) ||
+    euid <= 0
+  )
+    throw new Error(
+      'Linux UI automation requires a non-root user and effective user.',
+    );
+}
+
+export function platformElectronArgs(
+  userDataDir,
+  electronArgs = [],
+  options = {},
+) {
+  if ((options.platform ?? process.platform) !== 'linux')
+    return ['--use-mock-keychain', ...electronArgs];
+  assertLinuxUiIdentity(options);
+  const values = new Map();
+  const rest = [];
+  for (const arg of electronArgs) {
+    const [name, ...parts] = arg.split('=');
+    if (
+      [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-gpu-sandbox',
+        '--disable-seccomp-filter-sandbox',
+        '--disable-namespace-sandbox',
+        '--no-zygote',
+        '--single-process',
+        '--use-mock-keychain',
+        '--display',
+        '--ozone-platform-hint',
+      ].includes(name)
+    )
+      throw new Error(
+        `Linux UI automation rejects unsafe sandbox/display argument ${name}.`,
+      );
+    if (
+      !['--user-data-dir', '--ozone-platform', '--password-store'].includes(
+        name,
+      )
+    ) {
+      rest.push(arg);
+      continue;
+    }
+    if (values.has(name))
+      throw new Error(`Linux UI automation rejects duplicate ${name}.`);
+    const value = parts.join('=');
+    if (!value) throw new Error(`Linux UI automation requires ${name}=value.`);
+    values.set(name, value);
+  }
+  const profile =
+    values.get('--user-data-dir') ?? path.join(userDataDir, 'electron-profile');
+  const relativeProfile = path.relative(
+    resolveCanonicalDataPath(userDataDir),
+    resolveCanonicalDataPath(profile),
+  );
+  if (
+    !path.isAbsolute(profile) ||
+    !relativeProfile ||
+    relativeProfile === '..' ||
+    relativeProfile.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relativeProfile)
+  )
+    throw new Error(
+      'Linux Chromium profile must be an isolated child of userDataDir.',
+    );
+  assertIsolatedCanopyDataDir(
+    'Linux Chromium profile',
+    profile,
+    normalizedLaunchHome(options.env ?? {}),
+  );
+  if (
+    values.has('--ozone-platform') &&
+    values.get('--ozone-platform') !== 'x11'
+  )
+    throw new Error('Linux UI automation requires X11.');
+  if (
+    values.has('--password-store') &&
+    values.get('--password-store') !== 'gnome-libsecret'
+  )
+    throw new Error('Linux UI automation requires gnome-libsecret.');
+  return [
+    `--user-data-dir=${profile}`,
+    '--ozone-platform=x11',
+    '--password-store=gnome-libsecret',
+    ...rest,
+  ];
+}
+
+export function rendererCodeCacheSchemeElectronArgs(
+  userDataDir,
+  electronArgs = [],
+  env = process.env,
+) {
+  if (
+    !rendererCodeCacheSchemeRequested(env) ||
+    electronArgs.some((arg) => arg.startsWith('--user-data-dir='))
+  ) {
+    return electronArgs;
+  }
+  return [
+    `--user-data-dir=${path.join(userDataDir, 'electron-profile')}`,
+    ...electronArgs,
+  ];
+}
+
+/**
+ * The main window's packaged page: `file://` as today, or the renderer
+ * scheme when the launch seeded the experiment. A launch that falls back to
+ * `file://` then fails to find its window, which is the point.
+ */
+export function packagedMainWindowRendererUrl(
+  mainEntryPath,
+  env = process.env,
+) {
+  return rendererCodeCacheSchemeRequested(env)
+    ? RENDERER_SCHEME_MAIN_PAGE_URL
+    : pathToFileURL(
+        path.resolve(path.dirname(mainEntryPath), '../renderer/index.html'),
+      ).href;
+}
+
+export function seedCaptureColorMode(userDataDir, env = process.env) {
+  const colorMode = env.CANOPY_E2E_CAPTURE_COLOR_MODE;
+  if (colorMode !== 'light' && colorMode !== 'dark') return;
+  const preferencesPath = path.join(userDataDir, 'preferences.json');
+  let persisted = {};
+  if (existsSync(preferencesPath)) {
+    try {
+      persisted = JSON.parse(readFileSync(preferencesPath, 'utf8'));
+    } catch {
+      return;
+    }
+  }
+  if (!persisted || typeof persisted !== 'object') return;
+  const preferences =
+    persisted.preferences && typeof persisted.preferences === 'object'
+      ? persisted.preferences
+      : {};
+  mkdirSync(userDataDir, { recursive: true });
+  writeFileSync(
+    preferencesPath,
+    JSON.stringify(
+      {
+        ...persisted,
+        version: persisted.version ?? 1,
+        preferences: { ...preferences, colorMode },
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  );
+}
+
+/**
+ * Launch the unpackaged Electron app for a spec.
+ *
+ * `options.rootPath` overrides the repository root used for both the main
+ * bundle and the Electron process working directory (defaults to `repoRoot`).
+ * A harness running against another checkout can therefore keep entrypoint and
+ * process-relative resource resolution isolated to the same root. Production
+ * launches resolve that root's existing `out/` bundle.
+ * `options.showWindow: true` is reserved for a user-requested headed run;
+ * ordinary launches force the BrowserWindow to remain hidden.
+ */
+export function launchCanopy(options = {}) {
+  return measureE2eHarnessOperation(
+    'launch-canopy',
+    launchMeasurementDetails(options),
+    () => launchCanopyUnmeasured(options),
+  );
+}
+
+export function resolveLaunchRuntimeRoot(rootPath) {
+  return path.resolve(rootPath ?? repoRoot);
+}
+
+/**
+ * Launch Canopy and wait for its first window to reach the interactive shell.
+ * Lower-level startup, onboarding, and crash tests should keep using
+ * `launchCanopy`; ordinary UI flows can use this helper without duplicating
+ * first-window and driver readiness setup.
+ *
+ * A caller-provided `userDataDir` remains caller-owned if readiness fails.
+ * Helper-created data roots are removed by `closeCanopy` after the supervised
+ * process tree is reaped.
+ */
+export async function launchCanopyApp(
+  options = {},
+  {
+    launch = launchCanopy,
+    AppDriver = CanopyAppDriver,
+    close = closeCanopy,
+  } = {},
+) {
+  const { waitForShellOptions, ...launchOptions } = options;
+  const launched = await launch(launchOptions);
+  try {
+    const window = await launched.electronApp.firstWindow();
+    const app = new AppDriver(window);
+    await app.waitForShell(waitForShellOptions);
+    return { ...launched, window, app };
+  } catch (error) {
+    await close(launched.electronApp, launched.userDataDir, {
+      keepUserData: options.userDataDir !== undefined,
+    }).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function launchCanopyUnmeasured(options) {
+  if ((options.platform ?? process.platform) === 'linux') {
+    assertLinuxUiIdentity(options);
+    if (options.userDataDir !== undefined)
+      platformElectronArgs(
+        options.userDataDir,
+        options.electronArgs ?? [],
+        options,
+      );
+  }
+  // Caller-owned paths must be rejected even when another launch prerequisite
+  // (such as a built E2E bundle) is absent. Besides keeping this safety guard
+  // independent from local build residue, it guarantees no validation path
+  // can inspect or prepare the live namespace first.
+  if (options.userDataDir !== undefined) {
+    assertLaunchDataRootsBeforeMutation(options.userDataDir, options.env);
+  }
+  if (
+    options.productionWindowMode !== undefined &&
+    (options.productionWindowMode !== 'headless' ||
+      options.buildKind !== 'production')
+  )
+    throw new Error('productionWindowMode requires production headless');
+  const runtimeRoot = resolveLaunchRuntimeRoot(options.rootPath);
+  const mainEntryPath =
+    options.buildKind === 'production'
+      ? resolveProductionMainEntryPath(runtimeRoot)
+      : resolveE2eMainEntryPath(runtimeRoot);
+
+  const viewportSize = resolveViewportSizeOption(options.viewportSize);
+  const launchObserver = createLaunchObserver(options.boundaryRecord);
+  const showWindow =
+    options.showWindow === true ||
+    (options.showWindow === undefined &&
+      process.env.CANOPY_E2E_RUN_HEADED === '1');
+  const reuseDir = options.userDataDir !== undefined;
+  const userDataDir =
+    options.userDataDir ??
+    mkdtempSync(path.join(os.tmpdir(), 'canopy-electron-'));
+  // Reject unsafe caller-owned and override roots before any onboarding,
+  // provider-state, demo-workspace, or ordering seed can touch them.
+  if (options.userDataDir === undefined) {
+    assertLaunchDataRootsBeforeMutation(userDataDir, options.env);
+  }
+
+  let demoSeed = null;
+  let electronApp;
+  let supervisedTreePid;
+  let sidecar;
+  const supervisedRunNonce = randomUUID();
+  const supervisedPidFile = path.join(
+    userDataDir,
+    '.e2e-supervised-electron.pid',
+  );
+  const supervisedGroupsFile = path.join(
+    userDataDir,
+    '.e2e-supervised-groups.ndjson',
+  );
+  try {
+    const electronArgs = platformElectronArgs(
+      userDataDir,
+      rendererCodeCacheSchemeElectronArgs(
+        userDataDir,
+        options.electronArgs ?? [],
+        { ...process.env, ...options.env },
+      ),
+      options,
+    );
+    // By default, suppress the onboarding wizard so existing UI tests don't
+    // have to dismiss it. Tests that want to exercise the onboarding flow
+    // itself can opt out with `freshOnboarding: true`. When the caller is
+    // reusing an existing user data dir (e.g. for a relaunch assertion) we
+    // never overwrite their state.
+    if (!options.freshOnboarding) {
+      seedOnboardingCompleted(userDataDir);
+    }
+    if (!options.freshApprovalsUpgradeNotice) {
+      seedDismissedApprovalsUpgradeNotice(userDataDir);
+    }
+    // Independent of `freshOnboarding`: the checklist is a sidebar footer
+    // surface, not part of the first-run wizard, and no onboarding spec
+    // asserts it — so wizard specs want the settled sidebar too.
+    // `freshOnboardingChecklist: true` is the single opt-out, and it also
+    // lets the Home/sidebar suggestions module start (see the launch env).
+    if (!options.freshOnboardingChecklist) {
+      seedDismissedOnboardingChecklist(userDataDir);
+    }
+    seedCaptureColorMode(userDataDir, { ...process.env, ...options.env });
+    seedRendererCodeCacheScheme(userDataDir, {
+      ...process.env,
+      ...options.env,
+    });
+    if (!options.preserveProviderState) {
+      prepareIsolatedProviderState(userDataDir);
+    }
+
+    demoSeed = options.seedDemoWorkspaces
+      ? await measureE2eHarnessOperation(
+          'seed-demo-workspaces',
+          launchMeasurementDetails(options),
+          () =>
+            seedDemoWorkspaces({
+              userDataDir,
+              set: options.demoWorkspaceSet,
+              apps: options.demoWorkspaceApps,
+              checkRuntimes: options.demoWorkspaceCheckRuntimes ?? false,
+              createWorktrees: options.demoWorkspaceCreateWorktrees ?? true,
+            }),
+        )
+      : null;
+
+    const electronEnv = buildElectronEnv(
+      userDataDir,
+      {
+        CANOPY_E2E_ONBOARDING_SUGGESTIONS:
+          options.freshOnboarding ||
+          options.freshOnboardingChecklist ||
+          hasSeededOnboardingSuggestions(userDataDir)
+            ? ''
+            : 'hidden',
+        ...options.env,
+        ...buildE2eLaunchMarkerEnv(options.buildKind, showWindow),
+        CANOPY_E2E_OWNER_PID: String(process.pid),
+        CANOPY_E2E_SUPERVISED_EXECUTABLE: electronPath,
+        [SUPERVISED_PID_FILE_ENV]: supervisedPidFile,
+        [SUPERVISED_GROUPS_FILE_ENV]: supervisedGroupsFile,
+        [SUPERVISED_RUN_NONCE_ENV]: supervisedRunNonce,
+      },
+      { preserveProviderState: options.preserveProviderState === true },
+    );
+    if (options.productionWindowMode === 'headless') {
+      const require = createRequire(import.meta.url);
+      const packagePath = require.resolve('playwright-core/package.json');
+      const launcher = headlessBootstrap.buildExpectedArgv({
+        productMainEntryPath: mainEntryPath,
+        executablePath: electronPath,
+        electronArgs,
+        launcherSourcePath: path.join(
+          path.dirname(packagePath),
+          'lib/server/electron/electron.js',
+        ),
+        launcherVersion: JSON.parse(readFileSync(packagePath, 'utf8')).version,
+      });
+      sidecar = headlessBootstrap.stageBootstrap(mainEntryPath, {
+        archivePath: options.productionAdapterArchivePath,
+        ...launcher,
+      });
+    }
+    launchObserver?.('electron-launch', { outcome: 'entered' });
+    try {
+      electronApp = await measureE2eHarnessOperation(
+        'electron-process-start',
+        launchMeasurementDetails(options),
+        () =>
+          electron.launch({
+            executablePath: supervisorEntryPath,
+            cwd: runtimeRoot,
+            // Mock the macOS keychain so ad-hoc-signed test builds don't trigger
+            // the system "Keychain Not Found" dialog on every launch.
+            args: [
+              ...electronArgs,
+              ...(sidecar?.contractArgs ?? []),
+              sidecar?.launchEntryPath ?? mainEntryPath,
+              ...(options.applicationArgs ?? []),
+            ],
+            env: electronEnv,
+            ...(options.recordVideoDir
+              ? { recordVideo: { dir: options.recordVideoDir } }
+              : {}),
+          }),
+      );
+      if (process.platform === 'win32' && !sidecar)
+        registerElectronTerminalObservation(electronApp);
+      launchObserver?.('electron-launch', { outcome: 'fulfilled' });
+    } catch (error) {
+      launchObserver?.('electron-launch', { outcome: 'rejected' });
+      throw error;
+    }
+    if (sidecar) productionSidecars.set(electronApp, sidecar);
+    mainWindowRendererUrls.set(
+      electronApp,
+      electronEnv.ELECTRON_RENDERER_URL ||
+        packagedMainWindowRendererUrl(mainEntryPath, electronEnv),
+    );
+    supervisedTreePid = parseSupervisedTreePid(
+      readFileSync(supervisedPidFile, 'utf8'),
+    );
+    registerSupervisedProcessTree(electronApp, supervisedTreePid, {
+      trackedGroupsFile: supervisedGroupsFile,
+      runNonce: supervisedRunNonce,
+    });
+    if (sidecar)
+      sidecar.evidence = { ...sidecar.identity, pid: supervisedTreePid };
+
+    if (viewportSize !== null) {
+      const mainWindow = await getMainWindow(electronApp, { launchObserver });
+      launchObserver?.('viewport-set', { outcome: 'entered' });
+      try {
+        await mainWindow.setViewportSize(viewportSize);
+        launchObserver?.('viewport-set', { outcome: 'fulfilled' });
+      } catch (error) {
+        launchObserver?.('viewport-set', { outcome: 'rejected' });
+        throw error;
+      }
+      launchObserver?.('resize-dispatch', { outcome: 'entered' });
+      try {
+        await mainWindow.evaluate(() => {
+          window.dispatchEvent(new Event('resize'));
+        });
+        launchObserver?.('resize-dispatch', { outcome: 'fulfilled' });
+      } catch (error) {
+        launchObserver?.('resize-dispatch', { outcome: 'rejected' });
+        throw error;
+      }
+    }
+  } catch (error) {
+    if (sidecar) {
+      await closeWithRetainedFailures(
+        async () => {
+          throw error;
+        },
+        () =>
+          closeWithRetainedFailures(
+            async () => {
+              if (electronApp) await electronApp.close();
+            },
+            async () => {
+              assert(
+                supervisedTreePid !== undefined,
+                'Headless launch failed before process identity; owned sidecar retained',
+              );
+              await reapSupervisedProcessTree(supervisedTreePid);
+              assert(
+                !processGroupExists(supervisedTreePid),
+                'Headless process group remains; owned sidecar retained',
+              );
+              try {
+                await finalizeProductionSidecar(sidecar, supervisedTreePid);
+              } finally {
+                if (sidecar.archiveCompleted)
+                  productionSidecars.delete(electronApp);
+              }
+              if (!reuseDir) {
+                await removeTestDataDir(userDataDir);
+                await removeTestDataDir(`${userDataDir}-secure`);
+              }
+            },
+          ),
+      );
+    }
+    if (electronApp) await electronApp.close().catch(() => undefined);
+    if (!reuseDir) {
+      await removeTestDataDir(userDataDir);
+      await removeTestDataDir(`${userDataDir}-secure`);
+    }
+    throw error;
+  }
+
+  return {
+    electronApp,
+    userDataDir,
+    demoSeed,
+    productMainEntryPath: mainEntryPath,
+    launchEntryPath: sidecar?.launchEntryPath ?? mainEntryPath,
+    headlessAdapter: sidecar?.evidence,
+    supervisedTreePid,
+    killAbruptly: createAbruptTreeKiller(supervisedTreePid),
+  };
+}
+
+async function finalizeProductionSidecar(sidecar, pid) {
+  const failures = [];
+  sidecar.evidence ??= { ...sidecar.identity, pid };
+  try {
+    sidecar.evidence.terminalEvidence = headlessBootstrap.readTerminalLifecycle(
+      sidecar.identity,
+      pid,
+    );
+    sidecar.evidence.terminalEvidence.processGroupGone = true;
+    assertProductionHeadlessTerminal(
+      sidecar.evidence.terminalEvidence,
+      sidecar.evidence,
+    );
+  } catch (error) {
+    sidecar.evidence.terminalFailure = error.stack ?? String(error);
+    failures.push(error);
+  }
+  try {
+    sidecar.cleanup();
+    sidecar.archiveCompleted = true;
+  } catch (error) {
+    failures.push(error);
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1)
+    throw new AggregateError(
+      failures,
+      `Terminal lifecycle and sidecar archive failed: ${failures.map(String).join('; ')}`,
+    );
+}
+
+/** Preserve both failures for the production adapter's mandatory teardown. */
+export async function closeWithRetainedFailures(close, cleanup, validate) {
+  const failures = [];
+  try {
+    await close();
+  } catch (error) {
+    failures.push(error);
+  }
+  try {
+    await cleanup();
+  } catch (error) {
+    failures.push(error);
+  }
+  if (validate) {
+    try {
+      await validate();
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1)
+    throw new AggregateError(
+      failures,
+      `Electron close and headless cleanup failed: ${failures.map((error) => error.message ?? String(error)).join('; ')}`,
+    );
+}
+
+export async function closeCanopy(electronApp, userDataDir, options = {}) {
+  const {
+    keepUserData = false,
+    reapTree = reapSupervisedProcessTree,
+    removeDataDir = removeTestDataDir,
+    gracefulCloseTimeoutMs = DEFAULT_GRACEFUL_CLOSE_TIMEOUT_MS,
+    forcedCloseTimeoutMs = 2_000,
+    scheduleTimeout = setTimeout,
+    cancelTimeout = clearTimeout,
+    platform = process.platform,
+    treeExists = processGroupExists,
+    wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    now = () => Date.now(),
+  } = options;
+  return measureE2eHarnessOperation(
+    'close-canopy',
+    {
+      configuration: { keepUserData, gracefulCloseTimeoutMs },
+      identity: { testInfo: currentPlaywrightTestInfo() },
+    },
+    async () => {
+      const sidecar = productionSidecars.get(electronApp);
+      const record = options.boundaryRecord;
+      // The selected fixture supplies its observer; the common launch harness
+      // stays independent of profile-test helpers and their filesystem imports.
+      const observed = (stage, action) =>
+        record?.observe ? record.observe(stage, action) : action();
+      const supervisedTree = supervisedProcessTrees.get(electronApp);
+      const supervisedTreePid = supervisedTree?.pid;
+      traceCloseCanopy('start', {
+        platform,
+        supervisedTreePid,
+        controllerPid: process.pid,
+      });
+      let playwrightCloseStatus;
+      const close = async () => {
+        if (platform === 'win32' && supervisedTreePid !== undefined) {
+          // Playwright closes Electron by calling app.quit() and then waiting
+          // for the process it launched. In this harness that process is the
+          // Windows supervisor wrapper, so a blocked app quit leaves
+          // Playwright waiting on the wrapper indefinitely. Forcing that
+          // wrapper with taskkill can deliver a console-control termination to
+          // the surrounding Windows test task. Ask the actual Electron process
+          // to quit first, then use Electron's direct exit only if shutdown
+          // hooks remain blocked. The supervisor observes the target exit and
+          // reaps its owned descendants without signaling the test controller.
+          await electronApp
+            .evaluate(({ app }) => app.quit())
+            .catch(() => undefined);
+          traceCloseCanopy('quit-requested');
+          const gracefullyExited = await waitForSupervisedProcessExit(
+            supervisedTreePid,
+            {
+              treeExists,
+              wait,
+              now,
+              timeoutMs: gracefulCloseTimeoutMs,
+            },
+          );
+          traceCloseCanopy('quit-wait-complete', { gracefullyExited });
+          if (!gracefullyExited) {
+            await electronApp
+              .evaluate(({ app }) => app.exit(0))
+              .catch(() => undefined);
+            traceCloseCanopy('exit-requested');
+            const forciblyExited = await waitForSupervisedProcessExit(
+              supervisedTreePid,
+              {
+                treeExists,
+                wait,
+                now,
+                timeoutMs: forcedCloseTimeoutMs,
+              },
+            );
+            traceCloseCanopy('exit-wait-complete', { forciblyExited });
+          }
+        }
+        traceCloseCanopy('playwright-close-start');
+        playwrightCloseStatus = await observed('electronApp.close', () =>
+          closeElectronAppWithDeadline(electronApp, {
+            timeoutMs: gracefulCloseTimeoutMs,
+            scheduleTimeout,
+            cancelTimeout,
+          }),
+        );
+        traceCloseCanopy('playwright-close-complete', {
+          status: playwrightCloseStatus,
+        });
+      };
+      const cleanup = async () => {
+        const shouldReap =
+          supervisedTreePid !== undefined &&
+          !(platform === 'win32' && playwrightCloseStatus === 'closed');
+        if (shouldReap) {
+          traceCloseCanopy('reap-start');
+          await observed('owned-tree-reap', () =>
+            reapTree(supervisedTreePid, {
+              trackedGroupsFile: supervisedTree.trackedGroupsFile,
+              runNonce: supervisedTree.runNonce,
+            }),
+          );
+          traceCloseCanopy('reap-complete');
+        } else if (supervisedTreePid !== undefined) {
+          // A successful Playwright close means its Windows supervisor has
+          // retired and its watchdog owns any remaining descendants. Do not
+          // act on the old numeric PID: Windows can immediately reuse it for
+          // an unrelated process in this test task.
+          traceCloseCanopy('reap-skipped-retired-windows-pid');
+        }
+        if (sidecar) {
+          assert(
+            supervisedTreePid !== undefined &&
+              !processGroupExists(supervisedTreePid),
+            'Headless process cleanup unverified; owned sidecar retained',
+          );
+          try {
+            await finalizeProductionSidecar(sidecar, supervisedTreePid);
+          } finally {
+            if (sidecar.archiveCompleted)
+              productionSidecars.delete(electronApp);
+          }
+        }
+        if (!keepUserData) {
+          await observed('user-data-remove', () => removeDataDir(userDataDir));
+          await observed('secure-user-data-remove', () =>
+            removeDataDir(`${userDataDir}-secure`),
+          );
+        }
+        traceCloseCanopy('complete');
+      };
+      if (sidecar) {
+        await closeWithRetainedFailures(close, cleanup);
+        return;
+      }
+      const terminalObservation = electronTerminalObservations.get(electronApp);
+      if (terminalObservation) {
+        await closeWithRetainedFailures(close, cleanup, () =>
+          assertSuccessfulElectronTerminalResult(terminalObservation),
+        );
+        return;
+      }
+      // Preserve ordinary E2E teardown behavior; the retained-failure branch is
+      // specific to the mandatory production sidecar ownership protocol.
+      try {
+        await close();
+      } finally {
+        await cleanup();
+      }
+    },
+  );
+}

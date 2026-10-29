@@ -1,0 +1,1732 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See https://github.com/microsoft/vscode/blob/main/LICENSE.txt
+ *  for license information.
+ *
+ *  Canopy panels stylesheet, adapted from VS Code OSS (commit c4632cac, 2026-06-30):
+ *  - src/vs/base/browser/ui/sash/sash.css (`.monaco-sash` -> `.canopy-sash`,
+ *    `--vscode-sash-*` -> `--canopy-sash-*`, `--vscode-sash-hoverBorder` ->
+ *    Canopy `--line-focus` token, `.monaco-enable-motion` gate ->
+ *    `prefers-reduced-motion`).
+ *  - src/vs/base/browser/ui/splitview/splitview.css (`.monaco-split-view2` ->
+ *    `.canopy-split-view`; the `.monaco-scrollable-element` layer was dropped
+ *    by the Canopy port, so `.split-view-container` handles native overflow
+ *    along the split axis instead).
+ *  - src/vs/base/browser/ui/grid/gridview.css (`.monaco-grid-view` ->
+ *    `.canopy-grid-view`, `.monaco-grid-branch-node` ->
+ *    `.canopy-grid-branch-node`).
+ *
+ *  Colors come from Canopy design tokens (see canopy-tokens.css): --line-base
+ *  for separators, --line-focus for hover/active/focus sash indication. The engine sets
+ *  the `--separator-border` custom property inline when a separator color is
+ *  configured via ISplitViewStyles.
+ *
+ *  Not imported anywhere yet: the ui-shared export-map task wires
+ *  `./styles/panels.css` into the app globals.
+ *--------------------------------------------------------------------------------------------*/
+
+:root {
+  --canopy-sash-size: 4px;
+  /* The highlight is a hairline (the 4px `--canopy-sash-size` remains the hit
+     target): hovering/dragging recolors the separator exactly like the
+     sidebar's resize divider, rather than painting a wide band over it. */
+  --canopy-sash-hover-size: 0.5px;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Sash                                                                      */
+/* ------------------------------------------------------------------------- */
+
+.canopy-sash {
+  position: absolute;
+  z-index: 35; /* z-exception: resize sash stacks only within its split view */
+  touch-action: none;
+}
+
+.canopy-sash.mac.vertical {
+  cursor: col-resize;
+}
+
+.canopy-sash.vertical.minimum {
+  cursor: e-resize;
+}
+
+.canopy-sash.vertical.maximum {
+  cursor: w-resize;
+}
+
+.canopy-sash.mac.horizontal {
+  cursor: row-resize;
+}
+
+.canopy-sash.horizontal.minimum {
+  cursor: s-resize;
+}
+
+.canopy-sash.horizontal.maximum {
+  cursor: n-resize;
+}
+
+.canopy-sash.disabled {
+  cursor: default !important;
+  pointer-events: none !important;
+}
+
+.canopy-sash.vertical {
+  cursor: ew-resize;
+  top: 0;
+  width: var(--canopy-sash-size);
+  height: 100%;
+}
+
+.canopy-sash.horizontal {
+  cursor: ns-resize;
+  left: 0;
+  width: 100%;
+  height: var(--canopy-sash-size);
+}
+
+.canopy-sash:not(.disabled) > .orthogonal-drag-handle {
+  content: ' ';
+  height: calc(var(--canopy-sash-size) * 2);
+  width: calc(var(--canopy-sash-size) * 2);
+  z-index: 100; /* z-exception: drag handle stacks only within its resize sash */
+  display: block;
+  cursor: all-scroll;
+  position: absolute;
+}
+
+.canopy-sash.horizontal.orthogonal-edge-north:not(.disabled)
+  > .orthogonal-drag-handle.start,
+.canopy-sash.horizontal.orthogonal-edge-south:not(.disabled)
+  > .orthogonal-drag-handle.end {
+  cursor: nwse-resize;
+}
+
+.canopy-sash.horizontal.orthogonal-edge-north:not(.disabled)
+  > .orthogonal-drag-handle.end,
+.canopy-sash.horizontal.orthogonal-edge-south:not(.disabled)
+  > .orthogonal-drag-handle.start {
+  cursor: nesw-resize;
+}
+
+.canopy-sash.vertical > .orthogonal-drag-handle.start {
+  left: calc(var(--canopy-sash-size) * -0.5);
+  top: calc(var(--canopy-sash-size) * -1);
+}
+
+.canopy-sash.vertical > .orthogonal-drag-handle.end {
+  left: calc(var(--canopy-sash-size) * -0.5);
+  bottom: calc(var(--canopy-sash-size) * -1);
+}
+
+.canopy-sash.horizontal > .orthogonal-drag-handle.start {
+  top: calc(var(--canopy-sash-size) * -0.5);
+  left: calc(var(--canopy-sash-size) * -1);
+}
+
+.canopy-sash.horizontal > .orthogonal-drag-handle.end {
+  top: calc(var(--canopy-sash-size) * -0.5);
+  right: calc(var(--canopy-sash-size) * -1);
+}
+
+/* The sash element is the (comfortably wide) hit target; the ::before
+   pseudo-element paints the visible hover/active highlight, centered. */
+.canopy-sash::before {
+  content: '';
+  pointer-events: none;
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .canopy-sash::before {
+    transition: background-color 0.1s ease-out;
+  }
+}
+
+.canopy-sash.hover::before,
+.canopy-sash.active::before {
+  /* Same token the sidebar divider uses while hovered/resizing. */
+  background: var(--line-selected);
+}
+
+/* Keyboard focus indication for the tabbable sashes decorated by the React
+   wrappers (Canopy addition; upstream sashes are not focusable). */
+.canopy-sash:focus-visible {
+  outline: none;
+}
+
+.canopy-sash:focus-visible::before {
+  background: var(--line-focus);
+}
+
+.canopy-sash.vertical::before {
+  width: var(--canopy-sash-hover-size);
+  left: calc(50% - (var(--canopy-sash-hover-size) / 2));
+}
+
+.canopy-sash.horizontal::before {
+  height: var(--canopy-sash-hover-size);
+  top: calc(50% - (var(--canopy-sash-hover-size) / 2));
+}
+
+/* While a sash drag is in flight the engine disables pointer events on every
+   iframe so the drag does not lose events to embedded documents. */
+.pointer-events-disabled {
+  pointer-events: none !important;
+}
+
+/** Debug (mirrors the engine's DEBUG flag) **/
+
+.canopy-sash.debug {
+  background: cyan;
+}
+
+.canopy-sash.debug.disabled {
+  background: rgba(0, 255, 255, 0.2);
+}
+
+.canopy-sash.debug:not(.disabled) > .orthogonal-drag-handle {
+  background: red;
+}
+
+/* ------------------------------------------------------------------------- */
+/* SplitView                                                                 */
+/* ------------------------------------------------------------------------- */
+
+.canopy-split-view {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.canopy-split-view > .sash-container {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.canopy-split-view > .sash-container > .canopy-sash {
+  pointer-events: initial;
+}
+
+.canopy-split-view > .split-view-container {
+  width: 100%;
+  height: 100%;
+  white-space: nowrap;
+  position: relative;
+}
+
+/* The Canopy port dropped upstream's custom SmoothScrollableElement; the view
+   container scrolls natively along the split axis when the views' minimum
+   sizes exceed the split view size.
+
+   Its native scrollbar is hidden, exactly as upstream's custom scrollable
+   element hid one. This is an overflow escape hatch, not a user-facing
+   scroller: the views are absolutely positioned, so sub-pixel rounding (panel
+   rows are fractional 46.5px) is enough to make it "overflow". With the OS set
+   to always show scrollbars, that painted a permanent 6px track down the panel
+   column that scrolled nothing and sat right beside the transcript's real
+   scrollbar, reading as a dead duplicate. */
+.canopy-split-view.vertical > .split-view-container {
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.canopy-split-view > .split-view-container {
+  scrollbar-width: none;
+}
+
+.canopy-split-view > .split-view-container::-webkit-scrollbar {
+  display: none;
+}
+
+.canopy-split-view.horizontal > .split-view-container {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.canopy-split-view > .split-view-container > .split-view-view {
+  white-space: initial;
+  position: absolute;
+}
+
+.canopy-split-view
+  > .split-view-container
+  > .split-view-view:not(.split-view-view-visible) {
+  display: none;
+}
+
+.canopy-split-view.vertical > .split-view-container > .split-view-view {
+  width: 100%;
+}
+
+.canopy-split-view.horizontal > .split-view-container > .split-view-view {
+  height: 100%;
+}
+
+/* `--separator-border` is set inline by the engine (SplitView.style()); fall
+   back to the Canopy border token if only the class is present. */
+.canopy-split-view.separator-border
+  > .split-view-container
+  > .split-view-view:not(:first-child)::before {
+  content: ' ';
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 5; /* z-exception: separator stacks only within its split view */
+  pointer-events: none;
+  background-color: var(--separator-border, var(--line-base));
+}
+
+.canopy-split-view.separator-border.horizontal
+  > .split-view-container
+  > .split-view-view:not(:first-child)::before {
+  height: 100%;
+  /* Matches the header/tab-row hairline (`--default-border-width`). */
+  width: 0.5px;
+}
+
+.canopy-split-view.separator-border.vertical
+  > .split-view-container
+  > .split-view-view:not(:first-child)::before {
+  height: 0.5px;
+  width: 100%;
+}
+
+/* ------------------------------------------------------------------------- */
+/* React wrapper hosts (Canopy additions)                                    */
+/* ------------------------------------------------------------------------- */
+
+/* Host element rendered by the <SplitView> React component; the engine
+   appends its `.canopy-split-view` root inside it. */
+.canopy-split-view-host {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* Stable per-pane portal target adopted into the engine-owned
+   `.split-view-view` wrapper; fills whatever size the engine assigns. */
+.canopy-split-view .split-view-view > .canopy-split-view-pane {
+  width: 100%;
+  height: 100%;
+}
+
+/* Host element rendered by the standalone <Sash> React component. */
+.canopy-sash-host {
+  position: relative;
+}
+
+/* ------------------------------------------------------------------------- */
+/* GridView                                                                  */
+/* ------------------------------------------------------------------------- */
+
+.canopy-grid-view {
+  position: relative;
+  overflow: hidden;
+  width: 100%;
+  height: 100%;
+}
+
+.canopy-grid-branch-node {
+  width: 100%;
+  height: 100%;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Panel groups (Canopy additions: PanelGridHost / PanelGroup /              */
+/* PanelTabBar / PanelChrome)                                                */
+/* ------------------------------------------------------------------------- */
+
+/* Host element rendered by the <PanelGridHost> React component; the grid
+   engine's `.canopy-grid-view` root is appended inside it. */
+.canopy-panel-grid-host {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  /* Contain every context-local layer below (sashes, drop zones, previews)
+     so none of them pierce a sibling overlay such as the archived viewer. */
+  isolation: isolate;
+  overflow: hidden;
+}
+
+/* One tabbed group, portaled into a grid leaf container. */
+.canopy-panel-group {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg-base);
+  color: var(--fg-primary);
+}
+
+/* Title strip: tab bar on the left, chrome actions on the right. */
+.canopy-panel-group-title {
+  display: flex;
+  align-items: stretch;
+  flex: none;
+  min-width: 0;
+  /* Pin the row to the header's height so EVERY group's title bar lines up,
+     including groups with no tabs (whose height would otherwise come from the
+     chrome buttons alone). Border-box sizing means the 0.5px bottom hairline
+     counts toward this, so it is added on top of the 46px content row a
+     tabbed group produces. */
+  min-height: calc(46px + 0.5px);
+  border-bottom: 0.5px solid var(--line-base);
+  /* Matches the worktree/cowork top bar sections (bg-secondary) so the tab
+     row reads as part of the same header stack; the active group keeps no
+     separate tint. */
+  background: var(--bg-secondary);
+}
+
+/* Fill tabs (early access): while the content is at its top, the strip
+   drops its divider and fill and reads as part of the surface below. Both
+   return as soon as content scrolls under it. The hairline keeps its width,
+   so the strip's height never changes. */
+.canopy-panel-group[data-title-edge] > .canopy-panel-group-title {
+  transition:
+    border-color 150ms ease-out,
+    background-color 150ms ease-out;
+}
+
+.canopy-panel-group[data-title-edge='top'] > .canopy-panel-group-title {
+  border-bottom-color: transparent;
+  background-color: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .canopy-panel-group[data-title-edge] > .canopy-panel-group-title {
+    transition: none;
+  }
+}
+
+.canopy-panel-group-body {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Every tab's content stays mounted; non-active tabs are hidden, never
+   unmounted, so switching tabs preserves DOM/state. A flex column so the
+   app's panel content frame (flex-1, e.g. the desktop registry's
+   `panel-content-<kind>` wrapper) actually fills the group body instead of
+   collapsing to its intrinsic height (which left the panel-hosted terminal
+   xterm pane at 0px). */
+.canopy-panel-content {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.canopy-panel-content[hidden] {
+  display: none;
+}
+
+/* Tab bar: a scrollable tab strip plus the (non-scrolling) add-tab anchor.
+   The add-tab button lives OUTSIDE the strip so it never scrolls away and
+   its anchored menu is not clipped by the strip's overflow.
+
+   Two tab styles (`PanelTabStyle`). The rules up to "Fill tabs" below are the
+   classic style's; a bar with `data-tab-style='fill'` uses the Chrome-style
+   tiles instead. Rules the styles do not share are scoped with
+   `:not(:where([data-tab-style='fill'] *))` (classic) or
+   `:where([data-tab-style='fill'] *)` (fill), which add no specificity, so
+   either set weighs exactly what it would alone. */
+.canopy-panel-tab-bar {
+  display: flex;
+  align-items: stretch;
+  flex: 1;
+  min-width: 0;
+}
+
+/* Ramp length for the scroll-edge masks (see `.canopy-scroll-fade`). */
+:root {
+  --canopy-scroll-fade-width: 20px;
+}
+
+/* Positioned wrapper so the edge fade/shadow overlays can pin to the strip's
+   left/right edges. Flex sizing is left to each consumer (the default flex
+   item `0 1 auto` suits PanelTabBar, where the add-tab button hugs the last
+   tab; the terminal/browser lists set `flex-1` so their right-pinned controls
+   stay at the far edge even with few tabs). */
+.canopy-panel-tab-strip-wrap {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+
+/* Pinned tabs render in a left-anchored, bounded strip (own scroll area); the
+   unpinned strip flex-grows to own the remaining space. Mirrors ChatTabBar's
+   pinned/unpinned split. `flex-shrink: 0` makes the pinned strip RESERVE its
+   content width so unpinned tabs can't squeeze it into an immediate scrollbar;
+   it only clamps and scrolls internally once its content exceeds the 30% cap. */
+.canopy-panel-tab-strip-wrap-pinned {
+  flex: 0 0 auto;
+  max-width: 30%;
+}
+
+.canopy-panel-tab-strip-wrap-unpinned {
+  /* Shrink-to-content so the add-tab button sits directly after the last
+     tab; it still shrinks (and the strip scrolls) once tabs overflow. */
+  flex: 0 1 auto;
+}
+
+/* Divider between the pinned strip and the unpinned strip, only present when
+   both sections have tabs. Full-height and drawn from the theme foreground (not
+   the fainter --line-base) so the pinned/unpinned boundary reads as a defined line
+   in both light and dark. */
+.canopy-panel-tab-pinned-divider:not(:where([data-tab-style='fill'] *)) {
+  flex: none;
+  width: 1px;
+  align-self: stretch;
+  margin: 0;
+  background: color-mix(in srgb, var(--fg-primary) 18%, transparent);
+}
+
+/* Horizontally scrollable strip (no overflow menu yet). */
+.canopy-panel-tab-strip:not(:where([data-tab-style='fill'] *)) {
+  display: flex;
+  align-items: stretch;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.canopy-panel-tab-strip::-webkit-scrollbar {
+  display: none;
+}
+
+/* Edge overflow shadow overlays — a darkening gradient pinned to the start
+   (left) / end (right) edge of any horizontally scrollable strip, indicating
+   clipped content in that direction. Toggle visibility via `data-visible`;
+   pointer-transparent so they never intercept tab clicks. Reused by the
+   terminal/browser session-tab strips (desktop imports this sheet). */
+.canopy-scroll-fade {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: var(--canopy-scroll-fade-width);
+  pointer-events: none;
+  opacity: 0;
+  z-index: 6; /* z-exception: scroll fade stacks only within its tab strip */
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .canopy-scroll-fade {
+    transition: opacity 0.12s ease;
+  }
+}
+
+.canopy-scroll-fade[data-visible='true'] {
+  opacity: 1;
+}
+
+/*
+ * The fade elements paint nothing: a colored gradient would have to guess the
+ * surface beneath it (and looked like a dark smudge in light themes). They are
+ * state carriers only — `data-visible` on them drives a MASK on the strip
+ * below, so the clipped content itself fades to transparent and whatever the
+ * theme paints behind shows through, in any appearance mode.
+ */
+.canopy-scroll-fade-start {
+  left: 0;
+}
+
+.canopy-scroll-fade-end {
+  right: 0;
+}
+
+/*
+ * Edge masks. Composed per side so a strip clipped at both ends fades at both
+ * ends; `mask-composite: intersect` keeps the two ramps from cancelling out.
+ */
+.canopy-panel-tab-strip-wrap:has(
+    > .canopy-scroll-fade-start[data-visible='true']
+  )
+  > .canopy-panel-tab-strip {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    #000 var(--canopy-scroll-fade-width)
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    #000 var(--canopy-scroll-fade-width)
+  );
+}
+
+.canopy-panel-tab-strip-wrap:has(> .canopy-scroll-fade-end[data-visible='true'])
+  > .canopy-panel-tab-strip {
+  -webkit-mask-image: linear-gradient(
+    to left,
+    transparent 0,
+    #000 var(--canopy-scroll-fade-width)
+  );
+  mask-image: linear-gradient(
+    to left,
+    transparent 0,
+    #000 var(--canopy-scroll-fade-width)
+  );
+}
+
+.canopy-panel-tab-strip-wrap:has(
+    > .canopy-scroll-fade-start[data-visible='true']
+  ):has(> .canopy-scroll-fade-end[data-visible='true'])
+  > .canopy-panel-tab-strip {
+  -webkit-mask-image:
+    linear-gradient(
+      to right,
+      transparent 0,
+      #000 var(--canopy-scroll-fade-width)
+    ),
+    linear-gradient(
+      to left,
+      transparent 0,
+      #000 var(--canopy-scroll-fade-width)
+    );
+  mask-image:
+    linear-gradient(
+      to right,
+      transparent 0,
+      #000 var(--canopy-scroll-fade-width)
+    ),
+    linear-gradient(
+      to left,
+      transparent 0,
+      #000 var(--canopy-scroll-fade-width)
+    );
+  -webkit-mask-composite: source-in;
+  mask-composite: intersect;
+}
+
+/* VS-Code-style overlay scrollbar thumb — a thin bar pinned to the strip's
+   bottom border whose width/offset (set imperatively by
+   useHorizontalOverflowScroll) reflect the visible fraction and scroll
+   position. It overlays without reserving layout height, so it never shifts
+   the tabs. Shown only when the strip overflows (`data-overflow`) AND the
+   strip wrapper is hovered — it fades in/out and disappears when the pointer
+   leaves the tabs/bar. Pointer-transparent (drag-to-scrub is not needed). */
+.canopy-scroll-thumb {
+  /* Same overlay scrollbar the sidebar uses (see `OverlayScrollArea`): a
+     rounded thumb inset 2px from the edge, painted with the quaternary
+     foreground, revealed by direct scroll input and pinned while hovered or
+     dragged. Geometry comes from the shared mode-switched variables so the
+     thumb matches the vertical scrollbars in both scroller styles. */
+  position: absolute;
+  left: var(--canopy-scrollbar-thumb-inset, 2px);
+  bottom: var(--canopy-scrollbar-thumb-inset, 2px);
+  height: var(--canopy-scrollbar-thumb-size, 6px);
+  border-radius: 9999px;
+  background: var(--fg-quaternary);
+  touch-action: none;
+  pointer-events: none;
+  opacity: 0;
+  z-index: 6; /* z-exception: scroll thumb stacks only within its tab strip */
+}
+
+/* Sidebar parity: the visible bar is 6px, but the pointer target is the
+   taller rail around it, so hovering near the bar pins it open. */
+.canopy-scroll-thumb::before {
+  content: '';
+  position: absolute;
+  inset: -4px 0;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .canopy-scroll-thumb {
+    transition: opacity 0.12s ease;
+  }
+}
+
+.canopy-scroll-thumb[data-overflow='true'][data-revealed='true'] {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* With the OS set to always show scrollbars the overlay convention no longer
+   applies: an overflowing strip keeps its thumb up without waiting for scroll
+   input, exactly like the vertical scroll areas. */
+:root[data-scrollbars='always'] .canopy-scroll-thumb[data-overflow='true'] {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+:root[data-scrollbar-behavior='never'] .canopy-scroll-thumb {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Anchored wrapper for the add-tab button + app-supplied menu. */
+.canopy-panel-group-title > .canopy-panel-add-tab-root,
+.canopy-panel-collapsed-bar > .canopy-panel-add-tab-root {
+  /* Trailing-cluster instance (add-panel): the strip's 2px side padding is
+     replaced by the cluster's uniform 4px rhythm. Without this the collapsed
+     bar's add button kept the 2px padding and sat 6px from the chrome while
+     the chrome's own controls stayed 4px apart. */
+  margin-left: 4px;
+  padding: 0;
+}
+
+.canopy-panel-add-tab-root {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  /* Leading 2px only. Once the tabs fill the strip, this `+` butts against
+     the trailing cluster, whose controls sit on a uniform 4px rhythm — a
+     trailing 2px here stacked with the cluster's 4px margin and made that one
+     gap 6px while every other gap stayed 4px. */
+  padding: 0 0 0 2px;
+}
+
+.canopy-panel-add-tab {
+  /* Geometry/colors come from the shared TitlebarIconButton; the strip only
+     pins its vertical alignment and cursor. */
+  align-self: center;
+  cursor: default;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .canopy-panel-add-tab {
+    transition:
+      background-color 0.1s ease-out,
+      color 0.1s ease-out;
+  }
+}
+
+.canopy-panel-add-tab:focus-visible {
+  outline: 2px solid var(--line-focus);
+  outline-offset: -2px;
+}
+
+/* Tab metrics track the classic chat tab pill (ui-shared ChatTab:
+   12px text with 12px vertical / 12px leading padding) so panel tabs read as
+   roomy rather than cramped; the 2px transparent border reserves the active
+   overline without shifting layout. */
+.canopy-panel-tab:not(:where([data-tab-style='fill'] *)) {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  /* Tabs shrink to share the strip before it scrolls, down to a floor that
+     still fits the leading icon (and the close button that replaces it on
+     hover) plus a readable slice of the label; past that the strip scrolls as
+     before. */
+  flex: 0 1 auto;
+  /* `min()` makes 100px a shrink FLOOR rather than a resting minimum: a tab
+     whose natural width is under 100px (a short title like "Work") keeps its
+     content width instead of being padded out to the floor, while a longer
+     one still refuses to shrink past 100px. */
+  min-width: min(100px, max-content);
+  /* 13px + 20px line + 11px + 2px accent border = the header's 46px row,
+     keeping the label centered on the header's control line. The 17px left
+     padding lines the tab icon up with the header's project icon. */
+  padding: 14px 8px 12px 17px;
+  font-size: 13px;
+  line-height: 18px;
+  white-space: nowrap;
+  color: var(--fg-secondary);
+  border-bottom: 2px solid transparent;
+  cursor: default;
+  user-select: none;
+}
+
+.canopy-panel-tab:hover {
+  color: var(--fg-primary);
+}
+
+.canopy-panel-tab[data-active='true'] {
+  color: var(--fg-primary);
+}
+
+/* Icon + label wrapper; the active underline spans exactly this pair. It
+   sits in the tab's (always-transparent) 2px bottom-border band: 11px
+   bottom padding + 2px border below the 20px line box. */
+.canopy-panel-tab-main:not(:where([data-tab-style='fill'] *)) {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.canopy-panel-tab[data-active='true']
+  .canopy-panel-tab-main:not(:where([data-tab-style='fill'] *))::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -13px;
+  height: 2px;
+  background: var(--fg-accent);
+}
+
+.canopy-panel-tab:focus-visible {
+  outline: 2px solid var(--line-focus);
+  outline-offset: -2px;
+}
+
+/* One fixed slot for every leading glyph, sized to the largest of them (the
+   14px file-type/favicon icons). Chat provider glyphs (12px) and the thinking
+   spinner center inside it, so a tab neither resizes nor nudges its label
+   when a turn starts or ends — the icons are not all the same width, and
+   letting the slot follow content made the whole strip shift by 2px. */
+.canopy-panel-tab-icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+}
+
+.canopy-panel-tab-title:not(:where([data-tab-style='fill'] *)) {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* `min-width: 0` lets the label truncate as its tab shrinks (a flex item's
+     default `min-width: auto` would pin the tab at its full label width). */
+  min-width: 0;
+  max-width: 208px;
+}
+
+/* Hover swaps the leading provider icon for the close button in the SAME
+   slot: the icon just goes invisible (keeping its box), so neither the label
+   nor the tab ever changes width. Scoped away from the pinned variant, whose
+   icon-only pill renders NO close button — the swap would hide the icon with
+   nothing to reveal, blanking the tab for as long as it is hovered.
+
+   Also scoped away from BUSY tabs (a chat streaming its turn). Their leading
+   glyph is a live spinner, i.e. the only place the tab reports that work is
+   running, and hovering must not trade that signal away for a close button.
+   The app marks the state on its own icon content
+   (`PANEL_TAB_BUSY_ATTRIBUTE`); the shared layer only reads it. */
+.canopy-panel-tab:not(.canopy-panel-tab-pinned):not(
+    :has(.canopy-panel-tab-icon [data-panel-tab-busy])
+  ):hover
+  .canopy-panel-tab-icon:not(:where([data-tab-style='fill'] *)),
+.canopy-panel-tab:has(.canopy-panel-tab-close:focus-visible)
+  .canopy-panel-tab-icon:not(:where([data-tab-style='fill'] *)) {
+  visibility: hidden;
+}
+
+/* The close button lives in the leading icon's slot, so a busy tab that keeps
+   its spinner has nowhere to put it: withhold it entirely rather than stack
+   the two glyphs. `display: none` (not `opacity: 0`) also drops it from the
+   focus order, so keyboard focus cannot reveal it and re-hide the spinner
+   through the `:focus-visible` rule above. Closing a running tab stays
+   available from its context menu. */
+.canopy-panel-tab:has(.canopy-panel-tab-icon [data-panel-tab-busy])
+  .canopy-panel-tab-close-slot:not(:where([data-tab-style='fill'] *)) {
+  display: none;
+}
+
+/* Pinned tabs use the compact "collapsed" treatment: icon only, centered, with
+   symmetric padding and no label or close button. The full title is surfaced in
+   a rich hover tooltip instead. */
+.canopy-panel-tab-pinned:not(:where([data-tab-style='fill'] *)) {
+  /* Icon-only pills are already minimal; never shrink them. */
+  flex: none;
+  min-width: 0;
+  gap: 0;
+  padding-left: 10px;
+  padding-right: 10px;
+  justify-content: center;
+}
+
+/* Rich pinned-tab hover tooltip content: the kind icon plus the full title. */
+.canopy-panel-tab-pinned-tooltip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Generic rich tab-tooltip layout for app-supplied `renderTabTooltip`
+   content. Browser tooltips use one compact, viewport-clamped row so the
+   tooltip does not cover the browser chrome beneath it. Layout only — the
+   shared UI never knows what content the app puts inside. */
+.canopy-panel-tab-rich-tooltip {
+  display: inline-flex;
+  align-items: center;
+  max-width: calc(100vw - 32px);
+  white-space: nowrap;
+}
+
+.canopy-panel-tab-rich-tooltip-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.canopy-panel-tab-rich-tooltip-subtitle {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  color: var(--fg-secondary);
+}
+
+.canopy-panel-tab-rich-tooltip-separator {
+  flex: none;
+  color: var(--fg-secondary);
+  white-space: pre;
+}
+
+/* The close button is wrapped by its rich tooltip's trigger span. That SLOT is
+   what sits in the leading icon's slot (the icon hides on hover), so revealing
+   it never reflows the tab, and the tooltip wrapper — not the button — owns
+   the geometry and the hover reveal: a hidden slot must not catch the pointer
+   and open a tooltip for a button that is not showing. Centered on the icon:
+   the tab pads 17px left before the 14px slot (center 24px), so a 24px button
+   starts at 12px. This rule is unlayered on purpose so it beats the wrapper's
+   layered `relative` utility. */
+.canopy-panel-tab-close-slot:not(:where([data-tab-style='fill'] *)) {
+  position: absolute;
+  left: 12px;
+  /* Centered on the LABEL's line box, not the tab's border box: the tab pads
+     13px top / 11px bottom above a 2px bottom border (the 24px button
+     overhangs the 20px line box by 2px on each side). */
+  top: 11px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.canopy-panel-tab-close {
+  /* Icon-button treatment: the glyph matches the slot it covers so the mark
+     does not change size on hover. */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg-secondary);
+  cursor: default;
+}
+
+.canopy-panel-tab:hover .canopy-panel-tab-close-slot,
+.canopy-panel-tab-close-slot:has(.canopy-panel-tab-close:focus-visible) {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.canopy-panel-tab-close:hover {
+  background: var(--bg-subtle);
+  color: var(--fg-primary);
+}
+
+/* Fill tabs (`data-tab-style='fill'`, early access): Chrome-style tiles.
+   Every tab has one default width while they all fit, whatever its title's
+   length. Once they do not, they all shrink equally to share the row: the
+   label truncates, then wraps away until only the icon shows, down to a
+   20px tile, and then every tile shrinks further, gaps first, until all of
+   them fit: the strip never scrolls and never hides a tab. Hosts also cap
+   how many tabs a user opens into a row (20). */
+
+/* The strip's own 4px padding is the first tab's whole inset, matching the
+   4px above and below it (see the title row's height below).
+   The default tab width holds a 28-character title: measured in Inter at
+   the tab's 13px, real titles that long run 163-181px. Around the title sit
+   the line's 7px side insets, the 14px icon slot and its 8px gap, and the
+   label's 5px end margin (41px), so 224px leaves 183px for the title. */
+.canopy-panel-tab-bar[data-tab-style='fill'] {
+  --canopy-panel-tab-width: 224px;
+}
+
+/* Fill tabs: the 28px tiles sit 4px from the card's top, the same 4px as
+   their left inset, so the title row is 4 + 28 + 4px plus its hairline. */
+.canopy-panel-group-title:has(.canopy-panel-tab-bar[data-tab-style='fill']) {
+  min-height: calc(36px + 0.5px);
+}
+
+/* The pinned strip drops the classic 30% cap: it never scrolls, and shrinks
+   no further than its tiles at their floor (square until the row is too
+   crowded, see the pinned tile), the gaps between them, and its end padding.
+   The tab bar sets the count and floor before the first paint; the fallbacks
+   only keep the expression valid. */
+.canopy-panel-tab-strip-wrap-pinned:where([data-tab-style='fill'] *) {
+  flex: 0 1 auto;
+  max-width: none;
+  min-width: calc(
+    var(--canopy-panel-pinned-count, 1) *
+      var(--canopy-panel-pinned-floor, 28px) +
+      (var(--canopy-panel-pinned-count, 1) - 1) *
+      var(--canopy-panel-tab-gap, 4px) + 8px
+  );
+}
+
+/* Divider between the pinned strip and the unpinned strip. Tab-height rather
+   than full-height so it sits between the tiles, drawn as the house hairline
+   in the subtle line token. */
+.canopy-panel-tab-pinned-divider:where([data-tab-style='fill'] *) {
+  flex: none;
+  width: var(--border-hairline);
+  height: 16px;
+  align-self: center;
+  /* With each strip's 4px end padding, 8px on both sides. */
+  margin: 0 4px;
+  background: var(--line-base);
+}
+
+/* The strip never scrolls: tabs shrink to fit however many are open, and
+   `overflow: clip` (not a scroll container) is only a guard. The gap is 4px,
+   narrower only when the tab bar needs it so every icon stays whole; the 4px
+   padding leaves room for the drop indicator beside an end tab. */
+.canopy-panel-tab-strip:where([data-tab-style='fill'] *) {
+  display: flex;
+  align-items: center;
+  gap: var(--canopy-panel-tab-gap, 4px);
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0 4px;
+  overflow: clip;
+}
+
+/* No padding: the strip's own 4px end padding is the gap before this `+`,
+   the same 4px as between tabs; the trailing cluster after it keeps its own
+   uniform 4px rhythm. */
+.canopy-panel-add-tab-root:where([data-tab-style='fill'] *) {
+  padding: 0;
+}
+
+/* With no chrome cluster after it (a narrow group hides its actions), the `+`
+   ends the title row and takes the chrome's 4px trailing inset itself. */
+.canopy-panel-group-title
+  > .canopy-panel-tab-bar:last-child
+  > .canopy-panel-add-tab-root:last-child:where([data-tab-style='fill'] *) {
+  padding-right: 4px;
+}
+
+/* Fill tabs: the trailing controls sit 4px from the card's right edge, the
+   same 4px as the first tab's left and every control's top inset. */
+.canopy-panel-group-title:has(.canopy-panel-tab-bar[data-tab-style='fill'])
+  > .canopy-panel-chrome {
+  padding-right: 4px;
+}
+
+/* Inactive tiles have no fill or outline (the list-row hover fill on hover);
+   the active tab takes the muted fill, a step above that hover fill in both
+   appearances. The label weight never changes, so selection does not shift
+   the strip. Every tab starts at the default width and shrinks only when
+   the row cannot hold them all at it. */
+.canopy-panel-tab:where([data-tab-style='fill'] *) {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 1 var(--canopy-panel-tab-width);
+  /* An explicit width too: the strip sizes itself from its tabs' widths, not
+     their flex basis, so without it the row would hug the titles. */
+  width: var(--canopy-panel-tab-width);
+  max-width: var(--canopy-panel-tab-width);
+  /* The floor: 20px, a tile still big enough to show its whole 14px icon,
+     while every tab fits at it; else the width at which they all just fit
+     (set by the tab bar), so no tab is ever clipped off the row. */
+  min-width: var(--canopy-panel-tab-floor, 20px);
+  height: 28px;
+  /* The 7px side insets are the line's own padding (see `-main`). On a tile
+     narrower than those insets the line overflows it evenly on both sides,
+     so the tile shows the middle of its icon rather than losing it. */
+  justify-content: center;
+  padding: 0;
+  overflow: clip;
+  border-radius: var(--radius-md);
+  background: transparent;
+  font-size: 13px;
+  line-height: 18px;
+  white-space: nowrap;
+  color: var(--fg-secondary);
+  cursor: default;
+  user-select: none;
+}
+
+/* The selected tab stops shrinking at its own, wider floor so a few
+   characters of its title stay visible in a crowded row (the tab bar sets
+   it from the room the other tabs can spare). */
+.canopy-panel-tab[data-active='true']:not(.canopy-panel-tab-pinned):where(
+    [data-tab-style='fill'] *
+  ) {
+  min-width: var(--canopy-panel-tab-active-floor, 96px);
+}
+
+.canopy-panel-tab:hover:where([data-tab-style='fill'] *) {
+  background: var(--bg-subtle);
+}
+
+.canopy-panel-tab[data-active='true']:where([data-tab-style='fill'] *) {
+  background: var(--bg-muted);
+}
+
+/* The tab's one line: icon, label, trailing content, close button. It wraps
+   and clips, so as the tab narrows the label wraps onto a hidden second line
+   once fewer than its 24px basis remain, taking the close button with it and
+   leaving the icon alone on the visible line, centered. While the label is
+   there it grows to fill the line, leaving nothing to center, so the icon and
+   label stay left-aligned and the close button sits at the right end.
+   An icon-only tab therefore offers no close button on hover; selecting it
+   widens it back (see the active rule).
+   The 24px line centers in the 28px tile. Its 7px side padding is the tile's
+   inset, matching the icon's 7px above and below, so an icon-only tab centers
+   its icon both ways. As the tile narrows further, the centered icon
+   overflows the content box into that padding and stays whole down to a 14px
+   tile, then shows its middle on a narrower one (the tab centers the line);
+   the clip is at the padding edge, which also lets the close button reach
+   into the right padding. The 8px row gap keeps wrapped items below the
+   clip. */
+.canopy-panel-tab-main:where([data-tab-style='fill'] *) {
+  position: relative;
+  display: inline-flex;
+  flex: 1 1 0;
+  flex-wrap: wrap;
+  align-items: center;
+  align-content: flex-start;
+  justify-content: center;
+  gap: 8px;
+  min-width: 0;
+  height: 24px;
+  padding: 0 7px;
+  overflow: clip;
+}
+
+/* As tall as the line, so an icon alone on it still centers vertically. */
+.canopy-panel-tab-icon:where([data-tab-style='fill'] *) {
+  height: 24px;
+}
+
+/* A running chat's spinner takes its tab number's place, centered on the
+   number: the digits (13px Inter on the 18px line) center 0.4px above the
+   slot's middle, where the spinner's box centers, so it lifts by the same. */
+.canopy-panel-tab-icon:where([data-tab-style='fill'] *)
+  > [data-panel-tab-busy] {
+  transform: translateY(-0.4px);
+}
+
+.canopy-panel-tab-label:where([data-tab-style='fill'] *) {
+  position: relative;
+  display: inline-flex;
+  /* With the line's 7px padding, the label ends 12px from the tile's right
+     edge: more room after the text than the icon's 7px before it. */
+  margin-right: 5px;
+  align-items: center;
+  gap: 8px;
+  /* The 24px basis is the narrowest label worth showing (see
+     `.canopy-panel-tab-main`): one letter and the ellipsis, so a label is
+     truncated, never cut mid-letter. It grows to fill the line above that.
+     The close button needs 14px more beside it (see the close probe).
+     `min-width: 0` lets it truncate as its tab shrinks (a flex item's default
+     `min-width: auto` would pin the tab at its full label width). */
+  flex: 1 1 24px;
+  min-width: 0;
+}
+
+/* Hovered (or with its close button focused), a tab whose close button shows
+   makes room for it: its state indicators step aside and the title gives up
+   the 14px the floating button needs (its box starts where the text ends; the
+   glyph's own inset is the gap), so it truncates a little more. The button
+   shows only on a label of 38px or more (see the close probe); the clamp() is
+   a step from 0 to 14px at that width, so a narrower label keeps its whole
+   width and its text. A percentage `max-width` rather than padding: it does
+   not count toward the tab's content width, so hovering never resizes the tab
+   or moves its neighbours. Busy tabs withhold the button. */
+.canopy-panel-tab:hover:has(.canopy-panel-tab-close-slot):not(
+    :has(.canopy-panel-tab-icon [data-panel-tab-busy])
+  )
+  .canopy-panel-tab-label:not(:has(> .canopy-panel-tab-trailing:not(:empty)))
+  .canopy-panel-tab-title:where([data-tab-style='fill'] *),
+.canopy-panel-tab:has(.canopy-panel-tab-close:focus-visible)
+  .canopy-panel-tab-label:not(:has(> .canopy-panel-tab-trailing:not(:empty)))
+  .canopy-panel-tab-title:where([data-tab-style='fill'] *) {
+  max-width: calc(100% - clamp(0px, (100% - 37px) * 14, 14px));
+}
+
+.canopy-panel-tab:hover:has(.canopy-panel-tab-close-slot):not(
+    :has(.canopy-panel-tab-icon [data-panel-tab-busy])
+  )
+  .canopy-panel-tab-label
+  .canopy-panel-tab-trailing:where([data-tab-style='fill'] *),
+.canopy-panel-tab:has(.canopy-panel-tab-close:focus-visible)
+  .canopy-panel-tab-label
+  .canopy-panel-tab-trailing:where([data-tab-style='fill'] *) {
+  display: none;
+}
+
+/* State indicators (unread, plan review, approval, unsaved, read-only) float
+   in exactly the close button's box (the same 24px square, placement, and
+   centering; see the fill close slot), so the two swap pixel for pixel on
+   hover. A label with indicators reserves that room at rest (the 14px the box
+   takes past the label's end, starting right where the title ends), which
+   also counts toward the tab's content width, so hovering never resizes it.
+   Its basis grows by the same 14px, so the indicators show only beside a
+   readable title and wrap away with the label otherwise. */
+.canopy-panel-tab-label:has(> .canopy-panel-tab-trailing:not(:empty)):where(
+    [data-tab-style='fill'] *
+  ) {
+  flex-basis: 38px;
+  padding-right: 14px;
+}
+
+.canopy-panel-tab-trailing:where([data-tab-style='fill'] *) {
+  position: absolute;
+  top: 50%;
+  right: -10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 24px;
+  height: 24px;
+  margin-top: -12px;
+}
+
+.canopy-panel-tab-trailing:empty:where([data-tab-style='fill'] *) {
+  display: none;
+}
+
+/* A pinned, icon-only tile shows its indicators on its top-right corner. */
+.canopy-panel-tab-pinned
+  .canopy-panel-tab-trailing:where([data-tab-style='fill'] *) {
+  top: 3px;
+  right: 3px;
+  width: auto;
+  height: auto;
+  margin: 0;
+}
+
+.canopy-panel-tab-title:where([data-tab-style='fill'] *) {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* Grows, so the indicators sit at the label's right end. */
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Pinned tiles: icon only and square, the icon 7px from every edge. They
+   stay square while the other tabs can give way; only a row too crowded for
+   that shrinks them to the shared floor (the tab bar sets their floor), rather
+   than make their strip scroll. The full title is surfaced in a rich hover
+   tooltip. */
+.canopy-panel-tab-pinned:where([data-tab-style='fill'] *) {
+  flex: 0 1 28px;
+  /* Not the unpinned tabs' default width: the strip sizes itself from it. */
+  width: 28px;
+  min-width: var(--canopy-panel-pinned-floor, 28px);
+  max-width: none;
+  gap: 0;
+  padding: 0;
+  justify-content: center;
+}
+
+/* A pinned tile's tooltip trigger is the strip's flex item, so it carries the
+   tile's sizing: square, shrinking only to the pinned tiles' floor. */
+.canopy-panel-tab-pinned-trigger:where([data-tab-style='fill'] *) {
+  flex: 0 1 28px;
+  min-width: var(--canopy-panel-pinned-floor, 28px);
+}
+
+/* The close button floats over the label's right end inside the close
+   probe, an absolutely positioned box over the label, so it adds nothing to
+   the tab's width: a tab hugs its label at rest, and the label makes room
+   only while the button shows (see the hover rule above). The probe runs
+   from the label's start to 10px past its end (over the label's 5px margin
+   and the line's 7px padding), so the button's right edge sits 2px from the
+   tile's edge; it is the 24px line, centered in the 28px tile, 2px from the
+   top and bottom.
+   The probe decides whether the button shows at all, as Chrome does for
+   narrow tabs: it wraps and clips like the tab's line, and the slot's 24px
+   leading margin makes it wrap off the visible line on a label under 38px
+   (the 24px of text the label needs plus the button's 14px). Inside the
+   label, it also wraps away with it on an icon-only tab. */
+.canopy-panel-tab-close-probe:where([data-tab-style='fill'] *) {
+  position: absolute;
+  top: 50%;
+  right: -10px;
+  left: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  justify-content: flex-end;
+  height: 24px;
+  margin-top: -12px;
+  overflow: clip;
+  pointer-events: none;
+}
+
+/* A zero-width first item: the slot is never alone on its line, so it can
+   wrap off it. */
+.canopy-panel-tab-close-probe:where([data-tab-style='fill'] *)::before {
+  content: '';
+  width: 0;
+  height: 24px;
+}
+
+.canopy-panel-tab-close-slot:where([data-tab-style='fill'] *) {
+  flex: none;
+  margin-left: 24px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* The radius nests inside the tile's 8px corners at the 2px inset. */
+.canopy-panel-tab-close:where([data-tab-style='fill'] *) {
+  border-radius: 6px;
+}
+
+/* A busy tab (a chat streaming its turn) withholds its close button so a
+   stray click does not close running work. `visibility` keeps the button's
+   space, so the tab does not resize when a turn starts or ends. Closing
+   stays available from the context menu. */
+.canopy-panel-tab:has(.canopy-panel-tab-icon [data-panel-tab-busy])
+  .canopy-panel-tab-close-slot:where([data-tab-style='fill'] *) {
+  visibility: hidden;
+}
+
+/* Drag feedback: the dragged tab dims; a background layer marks the boundary
+   where the drop would insert without shifting tab layout. */
+.canopy-panel-tab.canopy-panel-tab-dragging {
+  opacity: 0.4;
+}
+
+.canopy-panel-tab.canopy-panel-tab-drop-before {
+  background-image: linear-gradient(
+    to right,
+    var(--fg-accent) 0 2px,
+    transparent 2px
+  );
+}
+
+.canopy-panel-tab.canopy-panel-tab-drop-after {
+  background-image: linear-gradient(
+    to left,
+    var(--fg-accent) 0 2px,
+    transparent 2px
+  );
+}
+
+/* Fill tabs reorder live (panel-tab-live-reorder.ts): a tab dragged along
+   its row follows the pointer at full strength, above the neighbours it
+   passes, and those slide aside to open its slot. Once it leaves the row it
+   rests dimmed in its old place and a chip follows the pointer instead. */
+.canopy-panel-tab[data-live-drag='strip'],
+.canopy-panel-tab[data-live-drag='settle'] {
+  position: relative;
+  z-index: 1; /* z-exception: the dragged tab passes over its own strip */
+  opacity: 1;
+}
+
+/* A tab's fills are translucent, so a dragged tab passing over a neighbour
+   would add its tint to the neighbour's and let that tab's label show
+   through. While it moves, the tab paints the same tint over the surface
+   color instead: the same look, but nothing under it shows. */
+.canopy-panel-tab[data-live-drag='strip'],
+.canopy-panel-tab[data-live-drag='settle'] {
+  background:
+    linear-gradient(var(--bg-subtle), var(--bg-subtle)), var(--bg-base);
+}
+
+.canopy-panel-tab[data-active='true'][data-live-drag='strip'],
+.canopy-panel-tab[data-active='true'][data-live-drag='settle'] {
+  background: linear-gradient(var(--bg-muted), var(--bg-muted)), var(--bg-base);
+}
+
+/* Right after a drag the browser still resolves hover where the drag began
+   (see `holdHoverUntilPointerMoves`), so until the pointer really moves no
+   tab takes pointer hits and none reads as hovered. */
+.canopy-panel-tab-bar[data-live-hover-stale] .canopy-panel-tab {
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .canopy-panel-tab[data-live-shift],
+  .canopy-panel-tab[data-live-drag='detached'] {
+    transition: transform 180ms cubic-bezier(0.2, 0, 0, 1);
+  }
+}
+
+.canopy-panel-tab-drag-chip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: var(--z-index-tooltip);
+  max-width: 200px;
+  overflow: hidden;
+  padding: 4px 8px;
+  border-radius: var(--radius-md);
+  background: var(--bg-popover);
+  box-shadow: var(--shadow-lg);
+  color: var(--fg-primary);
+  font-size: var(--text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* Group chrome: split / maximize / pop-out / close actions. */
+.canopy-panel-chrome {
+  display: flex;
+  align-items: center;
+  /* Uniform 4px between every trailing control; the leading 4px continues
+     that rhythm from the add-panel button that precedes this cluster. */
+  gap: 4px;
+  flex: none;
+  /* Trailing inset matches the header's 9px edge padding. */
+  padding: 0 9px 0 4px;
+}
+
+.canopy-panel-chrome-menu-root {
+  position: relative;
+  display: inline-flex;
+}
+
+.canopy-panel-chrome-button {
+  /* Geometry, hover surface, and disabled treatment come from the shared
+     TitlebarIconButton (same control as the tab strip's `+`). */
+  cursor: default;
+}
+
+.canopy-panel-chrome-button[aria-pressed='true'] {
+  color: var(--fg-accent);
+}
+
+/* Non-interactive section header inside a chrome menu (e.g. the "Usage" group
+   of the add-tab menu). Purely a visual label; it is not a menu item. */
+.canopy-panel-chrome-menu-label {
+  padding: 4px 10px 2px;
+  font-size: 11px;
+  font-weight: var(--font-weight-medium);
+  color: var(--fg-secondary);
+}
+
+/* Collapsed group bar: icon-only strip rendered in place of a collapsed
+   group's title/body (PanelCollapsedBar). Vertical strip for left/right
+   collapse edges, horizontal bar for top/bottom.
+
+   The bar draws NO edge border of its own. Every boundary between adjacent
+   panel views already comes from the split view's separator (the 0.5px
+   `--line-base` `::before` on each `:not(:first-child)` view), which is the same
+   hairline the section headers use. A border here stacked a second hairline
+   against that separator, so a collapsed bottom/right dock read visibly
+   heavier than every other section edge. A collapsed bar docked at the
+   top/left is the first view and needs no line of its own — its neighbour
+   draws the shared separator. */
+.canopy-panel-collapsed-bar {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 100%;
+  /* No `overflow: hidden`: the add-tab and overflow ("…") menus are
+     absolutely positioned and must escape the ~36px bar. The tab-icon strip
+     handles its own overflow (`.canopy-panel-collapsed-tabs`). */
+  /* Match the expanded title bar's control metrics (2px gaps, 22px buttons)
+     so the add / layout menu / collapse toggle cluster lines up identically
+     whether the group is expanded or collapsed. */
+  /* Same 4px rhythm the chrome cluster uses, so spacing between the collapsed
+     bar's controls matches the expanded title bar's. */
+  gap: 4px;
+  box-sizing: border-box;
+  /* Same surface + hairline border treatment as the expanded title bar and
+     the top header. */
+  background: var(--bg-secondary);
+  color: var(--fg-secondary);
+}
+
+/* Vertical strip (left/right): controls stack; keep even padding so the 22px
+   buttons sit centered in the ~36px strip. */
+.canopy-panel-collapsed-bar-vertical {
+  flex-direction: column;
+  /* Leading inset matches the chrome's own 9px trailing inset (and the
+     header's edge padding), so the strip's controls sit the same distance
+     from both ends. */
+  padding: 9px 0;
+}
+
+/* Horizontal bar (top/bottom): mirror the expanded title bar. The chrome
+   ("…") carries its own 9px trailing inset, so the bar pads its leading edge
+   by the same 9px and the controls sit equidistant from both ends. No
+   inter-child gap: the add button abuts the chrome exactly as in the expanded
+   title bar (their own paddings provide the spacing); the tab-icon strip keeps
+   its own gap internally. */
+.canopy-panel-collapsed-bar-horizontal {
+  flex-direction: row;
+  gap: 0;
+  padding: 0 0 0 9px;
+}
+
+/* In the vertical strip the chrome stacks instead of sitting at the trailing
+   end of a row, so its horizontal 4px/9px insets no longer describe an edge
+   distance — they just knocked the "…" control off the column's centre line.
+   Spacing along the stack comes from the bar's own gap. */
+.canopy-panel-collapsed-bar-vertical .canopy-panel-chrome,
+.canopy-panel-collapsed-bar-vertical > .canopy-panel-add-tab-root {
+  padding: 0;
+  /* The 4px cluster margin separates controls along a ROW; in the stacked
+     strip it only pushed the control off the column's centre line. Spacing
+     down the stack comes from the bar's own gap. */
+  margin-left: 0;
+}
+
+/* Tab-icon strip within the collapsed bar. Takes the space left by the
+   controls (add/layout menu/toggle) and scrolls if the icons overrun it, so
+   the controls always stay reachable. */
+.canopy-panel-collapsed-tabs {
+  display: flex;
+  gap: 2px;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.canopy-panel-collapsed-bar-vertical .canopy-panel-collapsed-tabs {
+  flex-direction: column;
+  width: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.canopy-panel-collapsed-bar-horizontal .canopy-panel-collapsed-tabs {
+  flex-direction: row;
+  height: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+/* The expanded title bar dropped its active tint; collapsed bars match the
+   same flat header surface. */
+
+/* Same frame as the shared TitlebarIconButton (28x28, `rounded-md`, subtle
+   hover surface) that every other chrome-row icon uses — including the add
+   and overflow controls sitting beside these in the very same bar. These stay
+   plain buttons only because they host arbitrary caller-rendered tab icons
+   rather than TitlebarIconButton's Central glyph prop. */
+.canopy-panel-collapsed-expand,
+.canopy-panel-collapsed-tab {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--fg-secondary);
+  cursor: default;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .canopy-panel-collapsed-expand,
+  .canopy-panel-collapsed-tab {
+    transition:
+      background-color 0.1s ease-out,
+      color 0.1s ease-out;
+  }
+}
+
+.canopy-panel-collapsed-expand:hover,
+.canopy-panel-collapsed-tab:hover {
+  background: var(--bg-subtle);
+  color: var(--fg-primary);
+}
+
+.canopy-panel-collapsed-expand:focus-visible,
+.canopy-panel-collapsed-tab:focus-visible {
+  outline: 2px solid var(--line-focus);
+  outline-offset: -2px;
+}
+
+.canopy-panel-collapsed-tab[data-active-tab='true'] {
+  background: var(--bg-muted);
+  color: var(--fg-primary);
+}
+
+/* The group BODY and TITLE stay mounted while collapsed (no-remount
+   invariant for portal/adopted content) — hidden via CSS only. */
+.canopy-panel-group[data-collapsed] > .canopy-panel-group-title,
+.canopy-panel-group[data-collapsed] > .canopy-panel-group-body {
+  display: none;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Drop overlay (PanelDropOverlay: edge-split / center-merge feedback)       */
+/* ------------------------------------------------------------------------- */
+
+/* Fills the group body (`position: relative`); transparent to pointer
+   events — the DnD wiring computes directions from drag events itself. */
+.canopy-panel-drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 30; /* z-exception: drop overlay stacks only within its panel group */
+  pointer-events: none;
+}
+
+/* The moving highlight rectangle (VS Code's overlay indicator analogue). */
+.canopy-panel-drop-overlay-box {
+  position: absolute;
+  border: 0.5px solid var(--line-focus);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--fg-accent) 18%, transparent);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .canopy-panel-drop-overlay-box {
+    transition:
+      top 0.1s ease-out,
+      left 0.1s ease-out,
+      width 0.1s ease-out,
+      height 0.1s ease-out;
+  }
+}
+
+/* Static per-edge hit zones (rendered only in `showZones` mode). Geometry
+   mirrors computeDropTarget's defaults: 10% edge strips
+   (EDGE_THRESHOLD_FACTOR) around the center merge region, so the CENTER of
+   each zone classifies to that zone's direction. */
+.canopy-panel-drop-zone {
+  position: absolute;
+  pointer-events: none;
+}
+
+.canopy-panel-drop-zone-top {
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 10%;
+}
+
+.canopy-panel-drop-zone-bottom {
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  height: 10%;
+}
+
+.canopy-panel-drop-zone-left {
+  top: 0;
+  left: 0;
+  width: 10%;
+  height: 100%;
+}
+
+.canopy-panel-drop-zone-right {
+  top: 0;
+  right: 0;
+  width: 10%;
+  height: 100%;
+}
+
+.canopy-panel-drop-zone-center {
+  top: 10%;
+  left: 10%;
+  width: 80%;
+  height: 80%;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Root-edge drop zones (PanelGridHost: full-height/width window-edge drops) */
+/* ------------------------------------------------------------------------- */
+
+/* Thin hit strips inset over the grid host's outer edges, rendered ONLY
+   while an in-process panel-tab drag is armed (so they never intercept
+   pointer events outside a drag). They stack above the grid subtree, so
+   within their bounds they beat the per-group body zones by native
+   hit-testing. Left/right strips get the corners (a root-edge drop's
+   headline case is the full-HEIGHT column). */
+.canopy-panel-root-drop-zone {
+  position: absolute;
+  z-index: 120; /* z-exception: root drop zone stacks only within its panel grid */
+}
+
+.canopy-panel-root-drop-zone-left {
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 24px;
+}
+
+.canopy-panel-root-drop-zone-right {
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 24px;
+}
+
+.canopy-panel-root-drop-zone-top {
+  top: 0;
+  right: 24px;
+  left: 24px;
+  height: 24px;
+}
+
+.canopy-panel-root-drop-zone-bottom {
+  right: 24px;
+  bottom: 0;
+  left: 24px;
+  height: 24px;
+}
+
+/* Full-edge highlight while a root strip is hovered: previews the band the
+   new root-level group will occupy (full height for left/right, full width
+   for top/bottom). Pointer-transparent; sits just under the strips. */
+.canopy-panel-root-drop-overlay {
+  position: absolute;
+  z-index: 110; /* z-exception: root drop preview stacks only within its panel grid */
+  border: 0.5px solid var(--line-focus);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--fg-accent) 18%, transparent);
+  pointer-events: none;
+}
+
+.canopy-panel-root-drop-overlay-left {
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 20%;
+}
+
+.canopy-panel-root-drop-overlay-right {
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 20%;
+}
+
+.canopy-panel-root-drop-overlay-top {
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 20%;
+}
+
+.canopy-panel-root-drop-overlay-bottom {
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 20%;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .canopy-panel-root-drop-overlay {
+    transition: opacity 0.1s ease-out;
+  }
+}

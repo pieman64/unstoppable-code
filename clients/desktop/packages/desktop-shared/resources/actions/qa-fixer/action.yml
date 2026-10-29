@@ -1,0 +1,33 @@
+name: QA Fixer
+description: Apply targeted fixes for QA findings.
+log_format_hint: agent
+inputs:
+  model:
+    description: Optional Claude model override.
+    required: false
+  permission_preset:
+    description: Optional permission preset override.
+    required: false
+    default: dangerous_all
+outputs:
+  text_response:
+    description: QA fix summary.
+    value: ${{ steps.fix.outputs.text_response }}
+  transcript_file:
+    description: QA fix transcript file.
+    value: ${{ steps.fix.outputs.transcript_file }}
+runs:
+  using: composite
+  steps:
+    - id: fix
+      uses: builtin/agent-prompt
+      with:
+        model: ${{ inputs.model }}
+        permission_preset: ${{ inputs.permission_preset }}
+        prompt: |
+          Apply targeted fixes for the current QA findings in this repository.
+
+          Expectations:
+          1. address the most important review issues first
+          2. keep changes minimal and relevant
+          3. summarize the fixes that were applied

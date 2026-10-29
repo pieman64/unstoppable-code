@@ -1,0 +1,42 @@
+name: Condenser
+description: Compact prior text or transcripts into a smaller context payload.
+inputs:
+  text:
+    description: Inline text to condense.
+    required: false
+    default: ""
+  text_file:
+    description: Path to a file containing text to condense.
+    required: false
+  strategy:
+    description: key-outputs, recent-events, llm-summary, or structured-summary.
+    required: false
+    default: key-outputs
+  max_chars:
+    description: Maximum characters in the emitted summary.
+    required: false
+    default: 4000
+  model:
+    description: Optional Claude model override for LLM-backed strategies.
+    required: false
+  permission_preset:
+    description: Permission preset for LLM-backed strategies.
+    required: false
+    default: read_only
+  system_prompt:
+    description: Optional system prompt appendix for LLM-backed strategies.
+    required: false
+  structured_output_schema:
+    description: Optional schema for structured-summary.
+    required: false
+  max_turns:
+    description: Maximum Claude turns for LLM-backed strategies.
+    required: false
+outputs:
+  summary:
+    description: Single-line condensed summary.
+  summary_file:
+    description: File containing the condensed summary.
+runs:
+  using: node
+  main: index.js

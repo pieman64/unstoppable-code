@@ -1,0 +1,946 @@
+'use client';
+import { SettingsControlSelect } from '@canopy/ui-shared/components';
+
+import { useEffect, useRef, useState, type JSX } from 'react';
+import { Globe, Lock } from '@canopy/ui-shared/icons/AppIcons';
+import {
+  Button,
+  DelayedLoadingPlaceholder,
+  ErrorBanner,
+  SettingsFormSkeleton,
+  Tooltip,
+} from '@canopy/ui-shared/components';
+import { organizationBillingPath } from '@canopy/protocol/billing';
+import {
+  AI_GATEWAY_THINKING_LEVELS,
+  MODEL_GATEWAY_MAX_ID_LENGTH,
+  MODEL_GATEWAY_MAX_MODELS,
+  type AiGatewayThinkingLevel,
+  type ModelGatewayModel,
+} from '@canopy/protocol';
+import type {
+  OrganizationConfigDetail,
+  OrganizationDetail,
+} from '@canopy/protocol/settings/organization';
+import { MODEL_GATEWAY_CAPABILITY } from '@canopy/protocol/settings/organization';
+import { lowestPlanNameWithCapability } from '@canopy/protocol/settings/billing-plan-catalog';
+import { canEditOrgEnforcedSettings } from '@canopy/protocol/settings/organization-permissions';
+import {
+  SettingsConfirmDialog,
+  SettingsLink,
+  useSettingsClient,
+  useSettingsPrivacy,
+} from '../host';
+import { useSettingsErrorCopy, useSettingsLoadErrorCopy } from '../errors';
+import { ORGANIZATION_LAPSED_ERROR } from './organization-known-errors';
+import { joinClassNames } from './settings/join-class-names';
+import {
+  getOrganizationConfig,
+  getOrgBillingSummary,
+  updateModelGatewayConfig,
+} from './team-api';
+
+/** Levels an admin can tick for a model, in the canonical ascending order. */
+const SELECTABLE_THINKING_LEVELS: readonly AiGatewayThinkingLevel[] =
+  AI_GATEWAY_THINKING_LEVELS.filter((level) => level !== 'low');
+
+const DEFAULT_CONTEXT_WINDOW = 200_000;
+
+interface TeamModelGatewaySectionProps {
+  detail: OrganizationDetail;
+  /**
+   * Server-resolved free app access (CAN-3926). Every capability is granted
+   * then, so the card skips the plan read: a failed read must not paint an
+   * "Upgrade" door over a feature the organization already has.
+   */
+  freeAccess?: boolean;
+}
+
+/**
+ * Owner/admin home for Bring Your Own Gateway: the org points its members'
+ * agent traffic at a model gateway it runs, and declares which models that
+ * gateway serves.
+ *
+ * Three things make this card different from the model-policy card beside it:
+ *
+ * 1. It is a DATA PATH, not an availability list. Turning it on means prompts,
+ *    file contents, and tool output leave for an endpoint the org operates, so
+ *    the URL is the primary field and it is stated plainly to members on the
+ *    invite screen too.
+ * 2. There is no catalog to page through — the admin AUTHORS the rows. A model
+ *    this org's gateway does not serve is a broken row for every member, so
+ *    each one carries the exact slug the gateway expects.
+ * 3. Labels must be unique inside the org catalog. In additive mode the org's
+ *    rows sit beside Canopy's own in the same picker, and the collapsed picker
+ *    trigger renders only the bare label — two rows reading "Claude Opus" would
+ *    be indistinguishable once selected. The server enforces this; the helper
+ *    text below says so, because the admin is the one with the context to name
+ *    them well.
+ *
+ * Entitlement handling is deliberately identical to the model-policy card: a
+ * three-state `entitled`, and a `relaxOnly` mode for an org whose plan lapsed
+ * while a gateway is still in force, so it always has a way to turn the
+ * boundary off even when it can no longer tighten one.
+ */
+export function TeamModelGatewaySection({
+  detail,
+  freeAccess = false,
+}: TeamModelGatewaySectionProps): JSX.Element | null {
+  if (!canEditOrgEnforcedSettings(detail.viewerRole)) {
+    return null;
+  }
+  return <ModelGatewayCard detail={detail} freeAccess={freeAccess} />;
+}
+
+const MODEL_GATEWAY_ERROR_SCOPE = 'settings.organization.model-gateway';
+
+/** The gateway fields exactly as the server last confirmed them. */
+interface GatewayState {
+  enabled: boolean;
+  baseUrl: string;
+  models: ModelGatewayModel[];
+  enforced: boolean;
+  promptCachePassthrough: boolean;
+}
+
+const EMPTY_GATEWAY: GatewayState = {
+  enabled: false,
+  baseUrl: '',
+  models: [],
+  enforced: false,
+  promptCachePassthrough: true,
+};
+
+function readGateway(config: OrganizationConfigDetail): GatewayState {
+  return {
+    enabled: config.enforceMemberModelGateway,
+    baseUrl: config.modelGatewayBaseUrl ?? '',
+    models: [...config.modelGatewayModels],
+    enforced: config.modelGatewayEnforced,
+    promptCachePassthrough: config.modelGatewayPromptCachePassthrough,
+  };
+}
+
+function ModelGatewayCard({
+  detail,
+  freeAccess = false,
+}: TeamModelGatewaySectionProps): JSX.Element {
+  const client = useSettingsClient();
+  const errorCopy = useSettingsErrorCopy(MODEL_GATEWAY_ERROR_SCOPE);
+  const loadErrorCopy = useSettingsLoadErrorCopy(MODEL_GATEWAY_ERROR_SCOPE);
+  const { maskClassName } = useSettingsPrivacy();
+  const orgId = detail.id;
+
+  const [gateway, setGateway] = useState<GatewayState | null>(null);
+  const [baseUrlDraft, setBaseUrlDraft] = useState('');
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [confirmDisable, setConfirmDisable] = useState(false);
+  const [addOpen, setAddOpen] = useState(false);
+  // Bumped by Retry to run every load again.
+  const [loadAttempt, setLoadAttempt] = useState(0);
+
+  /**
+   * `null` until the billing read resolves, and permanently `null` if it fails.
+   * Unknown is never "entitled": painting live controls for an org without the
+   * capability means every save 403s.
+   */
+  const [planEntitled, setEntitled] = useState<boolean | null>(null);
+  const entitled = freeAccess ? true : planEntitled;
+  /** Held apart from `error` so a save does not erase an unresolved plan read. */
+  const [entitlementError, setEntitlementError] = useState<string | null>(null);
+
+  /**
+   * The gateway configuration the SERVER last confirmed. Every PATCH sends the
+   * whole gateway state, so building the next body from render-time state would
+   * let a second edit started mid-flight send the first one's pre-edit value
+   * back and silently revert it.
+   */
+  const latestRef = useRef<GatewayState>(EMPTY_GATEWAY);
+
+  const requiredPlanName = lowestPlanNameWithCapability(
+    MODEL_GATEWAY_CAPABILITY,
+  );
+  const entitlementResolved = entitled !== null || entitlementError !== null;
+  const canEnableGateway =
+    gateway !== null && gateway.baseUrl.length > 0 && gateway.models.length > 0;
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async (): Promise<void> => {
+      try {
+        const config = await getOrganizationConfig(client, orgId);
+        if (cancelled) return;
+        const next = readGateway(config);
+        latestRef.current = next;
+        setGateway(next);
+        setBaseUrlDraft(next.baseUrl);
+      } catch (err) {
+        if (!cancelled) setLoadError(loadErrorCopy(err));
+      }
+    })();
+    return (): void => {
+      cancelled = true;
+    };
+  }, [client, orgId, loadErrorCopy, loadAttempt]);
+
+  useEffect(() => {
+    if (freeAccess) {
+      return;
+    }
+    let cancelled = false;
+    void (async (): Promise<void> => {
+      try {
+        const summary = await getOrgBillingSummary(client, orgId);
+        if (!cancelled) {
+          setEntitled(summary.capabilities.includes(MODEL_GATEWAY_CAPABILITY));
+        }
+      } catch (err) {
+        if (!cancelled) setEntitlementError(errorCopy.loadCopy(err));
+      }
+    })();
+    return (): void => {
+      cancelled = true;
+    };
+  }, [client, orgId, freeAccess, errorCopy, loadAttempt]);
+
+  /**
+   * Retry runs every load again. Clearing the errors puts the card back on
+   * its placeholder until the reads settle.
+   */
+  const retryLoad = (): void => {
+    setLoadError(null);
+    setEntitlementError(null);
+    setLoadAttempt((attempt) => attempt + 1);
+  };
+
+  const save = async (next: GatewayState): Promise<boolean> => {
+    try {
+      setSaving(true);
+      setError(null);
+      const config = await updateModelGatewayConfig(client, orgId, {
+        enforceMemberModelGateway: next.enabled,
+        modelGatewayBaseUrl: next.baseUrl.length > 0 ? next.baseUrl : null,
+        modelGatewayModels: next.models,
+        modelGatewayEnforced: next.enforced,
+        modelGatewayPromptCachePassthrough: next.promptCachePassthrough,
+      });
+      const confirmed = readGateway(config);
+      latestRef.current = confirmed;
+      setGateway(confirmed);
+      setBaseUrlDraft(confirmed.baseUrl);
+      return true;
+    } catch (err) {
+      setError(
+        errorCopy.actionCopy(err, {
+          action: 'update your model gateway',
+          known: [ORGANIZATION_LAPSED_ERROR],
+        }),
+      );
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  /**
+   * Enforcement is ON but the capability is gone: members are routed through a
+   * gateway right now under a plan that no longer includes one. The runtime
+   * keeps honoring it (a compliance boundary is not a cost control), so the
+   * card must keep offering the way OUT: turning it off, softening it to
+   * additive, or removing an additive route. It must lock additions and
+   * mutations that would expand or repoint what the lapsed plan can use.
+   *
+   * Strictly `=== false`; an unresolved plan read is unknown, not downgraded.
+   */
+  const relaxOnly = gateway?.enabled === true && entitled === false;
+  const editable = entitled === true;
+  const billingHref = organizationBillingPath(orgId);
+  const upgradeText = requiredPlanName
+    ? `Upgrade to ${requiredPlanName}`
+    : 'Upgrade';
+  /* Authoring a row expands what a lapsed plan may use, and the catalog is
+     capped, so both states hide the form rather than fail the save. */
+  const onlyRouteLocked =
+    gateway !== null && !gateway.enforced && (relaxOnly || !gateway.enabled);
+  const canAddModel =
+    gateway !== null &&
+    !relaxOnly &&
+    gateway.models.length < MODEL_GATEWAY_MAX_MODELS;
+
+  const trimmedDraft = baseUrlDraft.trim().replace(/\/+$/, '');
+  const baseUrlChanged = gateway !== null && trimmedDraft !== gateway.baseUrl;
+
+  const addModel = (model: ModelGatewayModel): void => {
+    void (async (): Promise<void> => {
+      const ok = await save({
+        ...latestRef.current,
+        models: [...latestRef.current.models, model],
+      });
+      if (ok) setAddOpen(false);
+    })();
+  };
+
+  const removeModel = (id: string): void => {
+    void save({
+      ...latestRef.current,
+      models: latestRef.current.models.filter((model) => model.id !== id),
+    });
+  };
+
+  return (
+    <section
+      className="rounded-xl bg-card p-5 shadow-sm"
+      data-testid="team-model-gateway-section"
+    >
+      <div className="flex items-start gap-3">
+        <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent-subtle fg-accent">
+          <Globe size={18} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h2 className="text-m font-semibold fg-primary">Model gateway</h2>
+              <p className="mt-1 text-s fg-secondary">
+                Specify a custom AI gateway available to your members
+              </p>
+            </div>
+            {gateway?.enabled === true ? (
+              <span
+                className="shrink-0 rounded-full bg-success-subtle px-2 py-0.5 text-xs font-medium fg-success"
+                data-testid="model-gateway-status-pill"
+              >
+                {gateway.enforced ? 'Only route' : 'Active'}
+              </span>
+            ) : null}
+          </div>
+
+          <ErrorBanner className="mt-3" error={error} />
+          <ErrorBanner className="mt-3" error={loadError} onRetry={retryLoad} />
+          <ErrorBanner
+            className="mt-3"
+            // One load banner: both share the same copy and Retry.
+            error={loadError === null ? entitlementError : null}
+            onRetry={retryLoad}
+          />
+
+          {!entitlementResolved || gateway === null ? (
+            <div className="mt-4" data-testid="model-gateway-pending">
+              <DelayedLoadingPlaceholder>
+                <SettingsFormSkeleton />
+              </DelayedLoadingPlaceholder>
+            </div>
+          ) : editable || relaxOnly ? (
+            /*
+             * Three panels, in the order the admin has to think about them:
+             * whether traffic moves at all, where it goes, and what it may
+             * ask for. Everything below the first panel is configuration for
+             * a route that only the first panel can switch on.
+             */
+            <div className="mt-4 space-y-3">
+              <div className="rounded-lg border bg-subtle/45 p-4">
+                <label className="flex cursor-pointer items-start gap-3">
+                  <input
+                    type="checkbox"
+                    checked={gateway.enabled}
+                    disabled={saving || (!gateway.enabled && !canEnableGateway)}
+                    data-testid="enforce-member-model-gateway-checkbox"
+                    onChange={(event) => {
+                      if (!event.target.checked) {
+                        setError(null);
+                        setConfirmDisable(true);
+                        return;
+                      }
+                      // Turning it ON is a tightening the lapsed-plan state may
+                      // not perform; the switch is checked whenever `relaxOnly`
+                      // holds, so this only guards a race.
+                      if (relaxOnly) return;
+                      void save({ ...latestRef.current, enabled: true });
+                    }}
+                    className="mt-0.5 h-4 w-4 rounded"
+                  />
+                  <span className="min-w-0">
+                    <span className="block text-s font-medium fg-primary">
+                      Route member traffic through your gateway
+                    </span>
+                    <span className="block text-xs fg-secondary">
+                      Members add their own gateway key in desktop settings.
+                    </span>
+                  </span>
+                </label>
+
+                {!gateway.enabled && !canEnableGateway ? (
+                  <p className="mt-2 pl-7 text-xs fg-secondary">
+                    Add a gateway URL and one model to turn this on.
+                  </p>
+                ) : null}
+
+                {gateway.enabled || editable ? (
+                  <div
+                    className={`mt-3 border-t pt-3 ${
+                      onlyRouteLocked ? 'opacity-60' : ''
+                    }`}
+                  >
+                    <label className="flex cursor-pointer items-start gap-3">
+                      <input
+                        type="checkbox"
+                        checked={gateway.enforced}
+                        disabled={saving || onlyRouteLocked}
+                        data-testid="model-gateway-enforced-checkbox"
+                        onChange={(event) =>
+                          void save({
+                            ...latestRef.current,
+                            enforced: event.target.checked,
+                          })
+                        }
+                        className="mt-0.5 h-4 w-4 rounded"
+                      />
+                      <span className="min-w-0">
+                        <span className="block text-s font-medium fg-primary">
+                          Make this the only route
+                        </span>
+                        <span className="block text-xs fg-secondary">
+                          Members can&apos;t use their own provider sign-ins or
+                          hosted credits.
+                        </span>
+                      </span>
+                    </label>
+                  </div>
+                ) : null}
+              </div>
+
+              {relaxOnly ? (
+                <div
+                  className="flex items-start gap-2 rounded-lg bg-warning-subtle px-3 py-2"
+                  data-testid="model-gateway-relax-only-note"
+                >
+                  <Lock
+                    size={14}
+                    aria-hidden="true"
+                    className="mt-0.5 shrink-0 fg-warning"
+                  />
+                  <p className="text-xs fg-secondary">
+                    Your plan no longer includes a model gateway, but yours is
+                    still routing your members. You can
+                    {gateway.enforced
+                      ? ' turn it off or stop making it the only route.'
+                      : ' turn it off or remove models.'}{' '}
+                    Changing the endpoint, caching, or models needs the
+                    capability back.{' '}
+                    <SettingsLink
+                      href={billingHref}
+                      data-testid="model-gateway-relax-only-upgrade"
+                      className="underline fg-accent"
+                    >
+                      {upgradeText}
+                    </SettingsLink>
+                  </p>
+                </div>
+              ) : null}
+
+              {gateway.enabled || editable ? (
+                <>
+                  <div className="rounded-lg border p-4">
+                    <label
+                      className="block text-s font-medium fg-primary"
+                      htmlFor="model-gateway-base-url"
+                    >
+                      Gateway URL
+                    </label>
+                    <p className="mt-0.5 text-xs fg-secondary">
+                      The HTTPS base serving{' '}
+                      <code className="font-mono">/v1/messages</code> and{' '}
+                      <code className="font-mono">/v1/responses</code>
+                    </p>
+                    <div className="mt-2 flex gap-2">
+                      <input
+                        id="model-gateway-base-url"
+                        type="url"
+                        value={baseUrlDraft}
+                        disabled={saving || relaxOnly}
+                        placeholder="https://gateway.example.com"
+                        data-testid="model-gateway-base-url-input"
+                        onChange={(event) =>
+                          setBaseUrlDraft(event.target.value)
+                        }
+                        className={joinClassNames(
+                          'focus-ring min-w-0 flex-1 rounded-lg border bg-base px-3 py-2 text-s font-mono disabled:opacity-50',
+                          maskClassName,
+                        )}
+                      />
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="compact"
+                        disabled={saving || relaxOnly || !baseUrlChanged}
+                        data-testid="model-gateway-base-url-save"
+                        onClick={() =>
+                          void save({
+                            ...latestRef.current,
+                            baseUrl: trimmedDraft,
+                          })
+                        }
+                      >
+                        Save
+                      </Button>
+                    </div>
+                    <div className="mt-3 border-t pt-3">
+                      <label className="flex cursor-pointer items-start gap-3">
+                        <input
+                          type="checkbox"
+                          checked={gateway.promptCachePassthrough}
+                          disabled={saving || relaxOnly}
+                          data-testid="model-gateway-prompt-cache-checkbox"
+                          onChange={(event) =>
+                            void save({
+                              ...latestRef.current,
+                              promptCachePassthrough: event.target.checked,
+                            })
+                          }
+                          className="mt-0.5 h-4 w-4 rounded"
+                        />
+                        <span className="min-w-0">
+                          <span className="block text-s font-medium fg-primary">
+                            Gateway supports prompt caching
+                          </span>
+                          <span className="block text-xs fg-secondary">
+                            Most of the savings come from caching. Turn it off
+                            only if your gateway rejects cache markers.
+                          </span>
+                        </span>
+                      </label>
+                    </div>
+                  </div>
+
+                  <div
+                    className="rounded-lg border"
+                    data-testid="model-gateway-models-panel"
+                  >
+                    <div className="flex items-center justify-between gap-3 px-4 py-3">
+                      <h3 className="text-s font-medium fg-primary">
+                        Models
+                        {gateway.models.length > 0
+                          ? ` (${gateway.models.length})`
+                          : ''}
+                      </h3>
+                      {canAddModel && !addOpen ? (
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="compact"
+                          disabled={saving}
+                          data-testid="model-gateway-add-model-toggle"
+                          onClick={() => setAddOpen(true)}
+                        >
+                          Add model
+                        </Button>
+                      ) : null}
+                    </div>
+
+                    {gateway.models.length > 0 ? (
+                      <GatewayModelList
+                        models={gateway.models}
+                        busy={saving}
+                        /* Removing a row narrows an enforced catalog, which the
+                           server counts as a tightening. */
+                        canRemove={!relaxOnly || !gateway.enforced}
+                        onRemove={removeModel}
+                      />
+                    ) : !addOpen ? (
+                      <p
+                        className="border-t px-4 py-5 text-center text-xs fg-secondary"
+                        data-testid="model-gateway-models-empty"
+                      >
+                        Add a model so your members have something to pick.
+                      </p>
+                    ) : null}
+
+                    {addOpen && canAddModel ? (
+                      <AddGatewayModelForm
+                        busy={saving}
+                        existing={gateway.models}
+                        organizationId={orgId}
+                        onAdd={addModel}
+                        onCancel={() => setAddOpen(false)}
+                      />
+                    ) : null}
+
+                    {!relaxOnly &&
+                    gateway.models.length >= MODEL_GATEWAY_MAX_MODELS ? (
+                      <p
+                        className="border-t px-4 py-3 text-xs fg-secondary"
+                        data-testid="model-gateway-model-limit"
+                      >
+                        You&apos;ve added the maximum of{' '}
+                        {MODEL_GATEWAY_MAX_MODELS} models. Remove one to add
+                        another.
+                      </p>
+                    ) : null}
+                  </div>
+                </>
+              ) : null}
+            </div>
+          ) : (
+            /*
+             * Painted door for an org with no capability and no live gateway.
+             * The switch stays visible so the capability is discoverable, but
+             * none of the configuration renders: an uneditable URL and model
+             * table would read as a gateway this org has, and it has none.
+             */
+            <Tooltip
+              label={
+                <span className="block max-w-64 whitespace-normal">
+                  Your plan doesn&apos;t include a model gateway, so members use
+                  the models your plan already covers.
+                </span>
+              }
+              link={{ href: billingHref, text: upgradeText, external: false }}
+            >
+              <span
+                className="mt-4 flex cursor-not-allowed items-start gap-3 opacity-60"
+                data-testid="model-gateway-upgrade-cta"
+              >
+                <Lock
+                  size={14}
+                  aria-hidden="true"
+                  className="mt-0.5 fg-secondary/70"
+                />
+                <span className="min-w-0">
+                  <span className="block text-s font-medium fg-primary">
+                    Route member traffic through your gateway
+                  </span>
+                  <span className="block text-xs fg-secondary">
+                    {requiredPlanName
+                      ? `Available on ${requiredPlanName}.`
+                      : 'Not included in your plan.'}
+                  </span>
+                </span>
+              </span>
+            </Tooltip>
+          )}
+
+          {confirmDisable ? (
+            <SettingsConfirmDialog
+              dataTestId="model-gateway-disable-dialog"
+              title="Turn off your model gateway?"
+              confirmLabel="Turn it off"
+              busyLabel="Saving…"
+              busy={saving}
+              onCancel={() => setConfirmDisable(false)}
+              onConfirm={() => {
+                void (async (): Promise<void> => {
+                  const ok = await save({
+                    ...latestRef.current,
+                    enabled: false,
+                  });
+                  if (ok) setConfirmDisable(false);
+                })();
+              }}
+              message={
+                <div className="flex flex-col gap-2">
+                  <p>
+                    Your members stop routing through your gateway and go back
+                    to the models your plan covers. Their chats keep working.
+                  </p>
+                  <p>
+                    Your endpoint and model list are kept, so you can turn it
+                    back on later.
+                  </p>
+                  {error !== null ? (
+                    <p
+                      role="alert"
+                      data-testid="model-gateway-disable-error"
+                      className="fg-destructive"
+                    >
+                      {error}
+                    </p>
+                  ) : null}
+                </div>
+              }
+            />
+          ) : null}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+interface GatewayModelListProps {
+  models: readonly ModelGatewayModel[];
+  busy: boolean;
+  canRemove: boolean;
+  onRemove: (id: string) => void;
+}
+
+function GatewayModelList({
+  models,
+  busy,
+  canRemove,
+  onRemove,
+}: GatewayModelListProps): JSX.Element {
+  return (
+    <ul className="divide-y border-t" data-testid="model-gateway-model-list">
+      {models.map((model) => (
+        <li
+          key={model.id}
+          className="flex items-start justify-between gap-4 px-4 py-3"
+          data-testid={`model-gateway-row-${model.id}`}
+        >
+          <div className="min-w-0">
+            <p className="truncate text-s font-medium fg-primary">
+              {model.label}
+            </p>
+            <p className="mt-0.5 truncate text-xs font-mono fg-secondary">
+              {model.gatewayId}
+            </p>
+            <p className="mt-1 text-xs fg-secondary/80">
+              {[
+                model.harness === 'claude' ? 'Claude harness' : 'Codex harness',
+                `${model.contextWindow.toLocaleString()} tokens`,
+                ...(model.supportedThinkingLevels.length > 0
+                  ? [model.supportedThinkingLevels.join(', ')]
+                  : []),
+              ].join(' · ')}
+            </p>
+          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="compact"
+            disabled={busy || !canRemove}
+            data-testid={`model-gateway-remove-${model.id}`}
+            onClick={() => onRemove(model.id)}
+          >
+            Remove
+          </Button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+interface AddGatewayModelFormProps {
+  busy: boolean;
+  existing: readonly ModelGatewayModel[];
+  organizationId: string;
+  onAdd: (model: ModelGatewayModel) => void;
+  onCancel: () => void;
+}
+
+/**
+ * The authoring form for one row.
+ *
+ * `id` is derived from the organization and label rather than asked for: it is
+ * an internal selection key, and the organization namespace keeps an ordinary
+ * label from colliding with a shipped model id in the merged desktop catalog.
+ */
+function AddGatewayModelForm({
+  busy,
+  existing,
+  organizationId,
+  onAdd,
+  onCancel,
+}: AddGatewayModelFormProps): JSX.Element {
+  const [label, setLabel] = useState('');
+  const [gatewayId, setGatewayId] = useState('');
+  const [harness, setHarness] = useState<ModelGatewayModel['harness']>('codex');
+  const [contextWindow, setContextWindow] = useState(
+    String(DEFAULT_CONTEXT_WINDOW),
+  );
+  const [thinking, setThinking] = useState<ReadonlySet<AiGatewayThinkingLevel>>(
+    new Set(),
+  );
+  const [flatSchema, setFlatSchema] = useState(false);
+
+  const trimmedLabel = label.trim();
+  const trimmedGatewayId = gatewayId.trim();
+  const parsedContext = Number.parseInt(contextWindow, 10);
+  const slug = trimmedLabel
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  const modelId = `${organizationId}-${slug}`.slice(
+    0,
+    MODEL_GATEWAY_MAX_ID_LENGTH,
+  );
+  const duplicateLabel = existing.some(
+    (model) => model.label.toLowerCase() === trimmedLabel.toLowerCase(),
+  );
+  const duplicateId = existing.some((model) => model.id === modelId);
+  const valid =
+    trimmedLabel.length > 0 &&
+    trimmedGatewayId.length > 0 &&
+    slug.length > 0 &&
+    Number.isInteger(parsedContext) &&
+    parsedContext > 0 &&
+    !duplicateLabel &&
+    !duplicateId;
+
+  const submit = (): void => {
+    if (!valid) return;
+    onAdd({
+      id: modelId,
+      gatewayId: trimmedGatewayId,
+      label: trimmedLabel,
+      harness,
+      contextWindow: parsedContext,
+      // Emitted in canonical ascending order regardless of click order —
+      // desktop rejects a set that is not ascending.
+      supportedThinkingLevels: SELECTABLE_THINKING_LEVELS.filter((level) =>
+        thinking.has(level),
+      ),
+      toolSchemaProfile: flatSchema ? 'flat' : 'standard',
+    });
+    setLabel('');
+    setGatewayId('');
+    setThinking(new Set());
+  };
+
+  return (
+    <div
+      className="border-t bg-subtle/45 p-4"
+      data-testid="model-gateway-add-model"
+    >
+      <p className="text-s font-medium fg-primary">Add a model</p>
+      <p className="mt-1 text-xs fg-secondary">
+        Use a name your members will recognize. Names have to be unique, because
+        that&apos;s all the composer shows.
+      </p>
+
+      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+        <label className="block text-xs">
+          <span className="mb-1 block fg-secondary">Name</span>
+          <input
+            type="text"
+            value={label}
+            disabled={busy}
+            placeholder="Acme Qwen3 Coder"
+            data-testid="model-gateway-add-label"
+            onChange={(event) => setLabel(event.target.value)}
+            className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s disabled:opacity-50"
+          />
+        </label>
+        <label className="block text-xs">
+          <span className="mb-1 block fg-secondary">Gateway model ID</span>
+          <input
+            type="text"
+            value={gatewayId}
+            disabled={busy}
+            placeholder="vertex/qwen3-coder"
+            data-testid="model-gateway-add-gateway-id"
+            onChange={(event) => setGatewayId(event.target.value)}
+            className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s font-mono disabled:opacity-50"
+          />
+        </label>
+        <label className="block text-xs">
+          <span className="mb-1 block fg-secondary">Harness</span>
+          <SettingsControlSelect
+            value={harness}
+            disabled={busy}
+            data-testid="model-gateway-add-harness"
+            onChange={(event) =>
+              setHarness(event.target.value === 'claude' ? 'claude' : 'codex')
+            }
+            fill
+          >
+            <option value="codex">Codex</option>
+            <option value="claude">Claude</option>
+          </SettingsControlSelect>
+        </label>
+        <label className="block text-xs">
+          <span className="mb-1 block fg-secondary">Context window</span>
+          <input
+            type="number"
+            min={1}
+            value={contextWindow}
+            disabled={busy}
+            data-testid="model-gateway-add-context-window"
+            onChange={(event) => setContextWindow(event.target.value)}
+            className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s disabled:opacity-50"
+          />
+        </label>
+      </div>
+
+      <fieldset className="mt-4">
+        <legend className="text-xs fg-secondary">Thinking levels</legend>
+        <div className="mt-1.5 flex flex-wrap gap-2">
+          {SELECTABLE_THINKING_LEVELS.map((level) => (
+            <label
+              key={level}
+              className="flex cursor-pointer items-center gap-1.5 rounded-md bg-subtle/45 px-2 py-1 text-xs"
+            >
+              <input
+                type="checkbox"
+                checked={thinking.has(level)}
+                disabled={busy}
+                data-testid={`model-gateway-add-thinking-${level}`}
+                onChange={(event) =>
+                  setThinking((prev) => {
+                    const next = new Set(prev);
+                    if (event.target.checked) {
+                      next.add(level);
+                    } else {
+                      next.delete(level);
+                    }
+                    return next;
+                  })
+                }
+                className="h-3.5 w-3.5 rounded"
+              />
+              <span className="fg-primary">{level}</span>
+            </label>
+          ))}
+        </div>
+      </fieldset>
+
+      <label className="mt-4 flex cursor-pointer items-start gap-2 text-xs">
+        <input
+          type="checkbox"
+          checked={flatSchema}
+          disabled={busy}
+          data-testid="model-gateway-add-flat-schema"
+          onChange={(event) => setFlatSchema(event.target.checked)}
+          className="mt-0.5 h-3.5 w-3.5 rounded"
+        />
+        <span className="fg-secondary">
+          Send simplified tool schemas. Try this if the model errors on tool
+          calls.
+        </span>
+      </label>
+
+      {duplicateLabel && trimmedLabel.length > 0 ? (
+        <p
+          className="mt-3 text-xs fg-destructive"
+          data-testid="model-gateway-add-duplicate"
+        >
+          You already have a model with this name. Pick another so members can
+          tell them apart.
+        </p>
+      ) : null}
+
+      <div className="mt-4 flex items-center justify-end gap-2">
+        <Button
+          type="button"
+          variant="ghost"
+          size="compact"
+          disabled={busy}
+          data-testid="model-gateway-add-cancel"
+          onClick={onCancel}
+        >
+          Cancel
+        </Button>
+        <Button
+          type="button"
+          variant="primary"
+          size="compact"
+          disabled={busy || !valid}
+          data-testid="model-gateway-add-submit"
+          onClick={submit}
+        >
+          Add model
+        </Button>
+      </div>
+    </div>
+  );
+}

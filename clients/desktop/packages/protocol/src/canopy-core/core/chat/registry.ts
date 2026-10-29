@@ -1,0 +1,214 @@
+// Nested core modules use ../../ for common canopy-core definitions.
+
+import {
+  defineCanopyInstruction,
+  defineCanopyInstructionRegistry,
+} from '../../definitions';
+import {
+  defineCanopyQuery,
+  defineCanopyQueryRegistry,
+  defineCanopyStream,
+  defineCanopyStreamRegistry,
+} from '../shared';
+import {
+  CoreChatEventsEndSchema,
+  CoreChatEventsErrorSchema,
+  CoreChatEventsItemSchema,
+  CoreChatEventsOpenResultSchema,
+  CoreChatEventsParamsSchema,
+} from './events';
+import {
+  CoreChatListErrorSchema,
+  CoreChatListParamsSchema,
+  CoreChatListResultSchema,
+  CoreChatSnapshotGetErrorSchema,
+  CoreChatSnapshotGetParamsSchema,
+  CoreChatSnapshotGetResultSchema,
+} from './snapshot';
+import {
+  CoreChatArchiveParamsSchema,
+  CoreChatCreateParamsSchema,
+  CoreChatDeleteParamsSchema,
+  CoreChatForkErrorSchema,
+  CoreChatForkParamsSchema,
+  CoreChatLifecycleErrorSchema,
+  CoreChatLifecycleResultSchema,
+  CoreChatUpdateParamsSchema,
+} from './commands-lifecycle';
+import {
+  CoreChatTranscriptPageErrorSchema,
+  CoreChatTranscriptPageParamsSchema,
+  CoreChatTranscriptPageResultSchema,
+  CoreChatTranscriptSearchErrorSchema,
+  CoreChatTranscriptSearchParamsSchema,
+  CoreChatTranscriptSearchResultSchema,
+} from './transcript';
+import {
+  CoreChatToolOutputReadErrorSchema,
+  CoreChatToolOutputReadParamsSchema,
+  CoreChatToolOutputReadResultSchema,
+} from './tool-output';
+import {
+  CoreChatVisualReadErrorSchema,
+  CoreChatVisualReadParamsSchema,
+  CoreChatVisualReadResultSchema,
+} from './visual';
+import {
+  CoreChatSendReceiptParamsSchema,
+  CoreChatSendReceiptResultSchema,
+  CoreChatSendReceiptErrorSchema,
+} from './send-receipt';
+
+export const CORE_CHAT_INSTRUCTION_DEFINITIONS =
+  defineCanopyInstructionRegistry('core', {
+    'core.chat.create': defineCanopyInstruction({
+      plane: 'core',
+      domain: 'chat',
+      version: 1,
+      placement: 'core-only',
+      params: CoreChatCreateParamsSchema,
+      result: CoreChatLifecycleResultSchema,
+      error: CoreChatLifecycleErrorSchema,
+      idempotency: 'keyed',
+      requiredGrants: ['core.chat.write'],
+    }),
+    'core.chat.update': defineCanopyInstruction({
+      plane: 'core',
+      domain: 'chat',
+      version: 1,
+      placement: 'core-only',
+      params: CoreChatUpdateParamsSchema,
+      result: CoreChatLifecycleResultSchema,
+      error: CoreChatLifecycleErrorSchema,
+      idempotency: 'keyed',
+      requiredGrants: ['core.chat.write'],
+    }),
+    'core.chat.archive': defineCanopyInstruction({
+      plane: 'core',
+      domain: 'chat',
+      version: 1,
+      placement: 'core-only',
+      params: CoreChatArchiveParamsSchema,
+      result: CoreChatLifecycleResultSchema,
+      error: CoreChatLifecycleErrorSchema,
+      idempotency: 'keyed',
+      requiredGrants: ['core.chat.write'],
+    }),
+    'core.chat.delete': defineCanopyInstruction({
+      plane: 'core',
+      domain: 'chat',
+      version: 1,
+      placement: 'core-only',
+      params: CoreChatDeleteParamsSchema,
+      result: CoreChatLifecycleResultSchema,
+      error: CoreChatLifecycleErrorSchema,
+      idempotency: 'keyed',
+      requiredGrants: ['core.chat.write'],
+    }),
+    'core.chat.fork': defineCanopyInstruction({
+      plane: 'core',
+      domain: 'chat',
+      version: 1,
+      placement: 'core-only',
+      params: CoreChatForkParamsSchema,
+      result: CoreChatLifecycleResultSchema,
+      error: CoreChatForkErrorSchema,
+      idempotency: 'keyed',
+      requiredGrants: ['core.chat.write'],
+    }),
+  });
+export const CORE_CHAT_QUERY_DEFINITIONS = defineCanopyQueryRegistry('core', {
+  'core.chat.send.receipt': defineCanopyQuery({
+    plane: 'core',
+    domain: 'chat',
+    version: 1,
+    placement: 'core-only',
+    idempotency: 'inherent',
+    requiredGrants: ['core.chat.read'],
+    params: CoreChatSendReceiptParamsSchema,
+    result: CoreChatSendReceiptResultSchema,
+    error: CoreChatSendReceiptErrorSchema,
+  }),
+  'core.chat.snapshot.get': defineCanopyQuery({
+    plane: 'core',
+    domain: 'chat',
+    version: 1,
+    placement: 'core-only',
+    idempotency: 'inherent',
+    requiredGrants: ['core.chat.read'],
+    params: CoreChatSnapshotGetParamsSchema,
+    result: CoreChatSnapshotGetResultSchema,
+    error: CoreChatSnapshotGetErrorSchema,
+  }),
+  'core.chat.list': defineCanopyQuery({
+    plane: 'core',
+    domain: 'chat',
+    version: 1,
+    placement: 'core-only',
+    idempotency: 'inherent',
+    requiredGrants: ['core.chat.read'],
+    params: CoreChatListParamsSchema,
+    result: CoreChatListResultSchema,
+    error: CoreChatListErrorSchema,
+  }),
+  'core.chat.transcript.page': defineCanopyQuery({
+    plane: 'core',
+    domain: 'chat',
+    version: 1,
+    placement: 'core-only',
+    idempotency: 'inherent',
+    requiredGrants: ['core.chat.read'],
+    params: CoreChatTranscriptPageParamsSchema,
+    result: CoreChatTranscriptPageResultSchema,
+    error: CoreChatTranscriptPageErrorSchema,
+  }),
+  'core.chat.transcript.search': defineCanopyQuery({
+    plane: 'core',
+    domain: 'chat',
+    version: 1,
+    placement: 'core-only',
+    idempotency: 'inherent',
+    requiredGrants: ['core.chat.read'],
+    params: CoreChatTranscriptSearchParamsSchema,
+    result: CoreChatTranscriptSearchResultSchema,
+    error: CoreChatTranscriptSearchErrorSchema,
+  }),
+  'core.chat.toolOutput.read': defineCanopyQuery({
+    plane: 'core',
+    domain: 'chat',
+    version: 1,
+    placement: 'core-only',
+    idempotency: 'inherent',
+    requiredGrants: ['core.chat.read'],
+    params: CoreChatToolOutputReadParamsSchema,
+    result: CoreChatToolOutputReadResultSchema,
+    error: CoreChatToolOutputReadErrorSchema,
+  }),
+  'core.chat.visual.read': defineCanopyQuery({
+    plane: 'core',
+    domain: 'chat',
+    version: 1,
+    placement: 'core-only',
+    idempotency: 'inherent',
+    requiredGrants: ['core.chat.read'],
+    params: CoreChatVisualReadParamsSchema,
+    result: CoreChatVisualReadResultSchema,
+    error: CoreChatVisualReadErrorSchema,
+  }),
+});
+
+export const CORE_CHAT_STREAM_DEFINITIONS = defineCanopyStreamRegistry('core', {
+  'core.chat.events': defineCanopyStream({
+    plane: 'core',
+    domain: 'chat',
+    version: 1,
+    placement: 'core-only',
+    idempotency: 'inherent',
+    requiredGrants: ['core.chat.read'],
+    params: CoreChatEventsParamsSchema,
+    item: CoreChatEventsItemSchema,
+    end: CoreChatEventsEndSchema,
+    openResult: CoreChatEventsOpenResultSchema,
+    error: CoreChatEventsErrorSchema,
+  }),
+});

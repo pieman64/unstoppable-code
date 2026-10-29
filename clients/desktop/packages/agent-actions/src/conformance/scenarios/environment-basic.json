@@ -1,0 +1,249 @@
+{
+  "steps": [
+    {
+      "group": "reads",
+      "name": "workspace.get returns the current workspace without settings or host paths",
+      "requires": ["workspace.get"],
+      "args": { "action": { "type": "workspace.get" } },
+      "expect": {
+        "isError": false,
+        "json": {
+          "ok": true,
+          "result": {
+            "workspace": {
+              "workspaceId": "w1",
+              "name": "Conformance workspace",
+              "kind": "git",
+              "repositories": [
+                {
+                  "repoId": "r1",
+                  "remoteUrl": "https://example.com/conformance/app.git"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "group": "reads",
+      "name": "worktree.list lists the workspace worktrees and marks the current one",
+      "requires": ["worktree.list"],
+      "args": { "action": { "type": "worktree.list" } },
+      "expect": {
+        "isError": false,
+        "json": {
+          "ok": true,
+          "result": {
+            "worktrees": [
+              { "worktreeId": "t1", "title": "Main", "isCurrent": true },
+              { "worktreeId": "t2", "title": "Feature", "isCurrent": false }
+            ],
+            "nextCursor": null
+          }
+        }
+      }
+    },
+    {
+      "group": "reads",
+      "name": "chat.list lists the current worktree's chats without archived ones",
+      "requires": ["chat.list"],
+      "args": { "action": { "type": "chat.list" } },
+      "expect": {
+        "isError": false,
+        "json": {
+          "ok": true,
+          "result": {
+            "chats": [
+              {
+                "chatId": "c1",
+                "worktreeId": "t1",
+                "title": "Current chat",
+                "state": "running",
+                "modelId": "M1",
+                "isCurrent": true,
+                "messageable": true
+              },
+              {
+                "chatId": "c2",
+                "worktreeId": "t1",
+                "title": "Idle chat",
+                "state": "idle",
+                "modelId": "M2",
+                "isCurrent": false,
+                "messageable": true
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "group": "reads",
+      "name": "chat.list reads another worktree and includes archived chats on request",
+      "requires": ["chat.list"],
+      "args": {
+        "action": {
+          "type": "chat.list",
+          "inWorktreeId": "t2",
+          "includeArchived": true
+        }
+      },
+      "expect": {
+        "isError": false,
+        "json": {
+          "ok": true,
+          "result": {
+            "chats": [
+              { "chatId": "c3", "worktreeId": "t2", "state": "archived" }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "group": "reads",
+      "name": "chat.get returns the chat and its latest response",
+      "requires": ["chat.get"],
+      "args": { "action": { "type": "chat.get", "chatId": "c2" } },
+      "expect": {
+        "isError": false,
+        "json": {
+          "ok": true,
+          "result": {
+            "chat": {
+              "chatId": "c2",
+              "worktreeId": "t1",
+              "title": "Idle chat",
+              "state": "idle",
+              "modelId": "M2",
+              "lastResponse": "Finished the review.",
+              "messageable": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "group": "reads",
+      "name": "models.list lists the models and the default",
+      "requires": ["models.list"],
+      "args": { "action": { "type": "models.list" } },
+      "expect": {
+        "isError": false,
+        "json": {
+          "ok": true,
+          "result": {
+            "models": [
+              {
+                "modelId": "M1",
+                "label": "Model one",
+                "isDefault": true,
+                "thinkingLevels": ["off", "medium", "high"]
+              },
+              {
+                "modelId": "M2",
+                "label": "Model two",
+                "isDefault": false,
+                "thinkingLevels": []
+              }
+            ],
+            "defaultModelId": "M1"
+          }
+        }
+      }
+    },
+    {
+      "group": "reads",
+      "name": "chat.get reports an unknown chat as not_found",
+      "requires": ["chat.get"],
+      "args": { "action": { "type": "chat.get", "chatId": "missing-chat" } },
+      "expect": { "isError": true, "errorCodes": ["not_found"] }
+    },
+    {
+      "group": "envelope",
+      "name": "caller scope ids are dropped, not applied",
+      "requires": ["chat.get"],
+      "args": {
+        "action": {
+          "type": "chat.get",
+          "chatId": "c2",
+          "projectId": "w2",
+          "worktreeId": "tx"
+        }
+      },
+      "expect": {
+        "isError": false,
+        "json": { "ok": true, "result": { "chat": { "chatId": "c2" } } }
+      }
+    },
+    {
+      "group": "envelope",
+      "name": "UI-only fields are rejected before validation",
+      "requires": ["chat.list"],
+      "args": { "action": { "type": "chat.list", "route": "/settings" } },
+      "expect": {
+        "isError": true,
+        "text": "Invalid arguments for DispatchAction.\n- UI-only field \"route\" is not accepted by generic actions."
+      }
+    },
+    {
+      "group": "envelope",
+      "name": "unknown payload fields are invalid arguments",
+      "requires": ["chat.list"],
+      "args": { "action": { "type": "chat.list", "verbose": true } },
+      "expect": {
+        "isError": true,
+        "textPrefix": "Invalid arguments for DispatchAction.\n- "
+      }
+    },
+    {
+      "group": "envelope",
+      "name": "a missing action is invalid arguments",
+      "args": {},
+      "expect": {
+        "isError": true,
+        "textPrefix": "Invalid arguments for DispatchAction.\n- "
+      }
+    },
+    {
+      "group": "envelope",
+      "name": "an unknown action type is unsupported_action",
+      "args": { "action": { "type": "conformance.unknown" } },
+      "expect": { "isError": true, "errorCodes": ["unsupported_action"] }
+    },
+    {
+      "group": "scoping",
+      "name": "chat.list rejects a worktree outside the workspace",
+      "requires": ["chat.list"],
+      "args": { "action": { "type": "chat.list", "inWorktreeId": "tx" } },
+      "expect": { "isError": true, "errorCodes": ["invalid_target"] }
+    },
+    {
+      "group": "scoping",
+      "name": "chat.get never reads a chat outside the workspace",
+      "requires": ["chat.get"],
+      "args": { "action": { "type": "chat.get", "chatId": "cx" } },
+      "expect": {
+        "isError": true,
+        "errorCodes": ["invalid_target", "not_found"]
+      }
+    },
+    {
+      "group": "scoping",
+      "name": "chat.send_message never reaches a chat outside the workspace",
+      "requires": ["chat.send_message"],
+      "args": {
+        "action": {
+          "type": "chat.send_message",
+          "chatId": "cx",
+          "message": "Hi"
+        }
+      },
+      "expect": {
+        "isError": true,
+        "errorCodes": ["invalid_target", "not_found"]
+      }
+    }
+  ]
+}

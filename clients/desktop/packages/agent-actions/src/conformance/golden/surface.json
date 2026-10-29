@@ -1,0 +1,594 @@
+{
+  "brand": {
+    "displayName": "Conformance Host",
+    "toolNamespace": "conformance_host"
+  },
+  "capabilities": {
+    "executionScope": "worktree",
+    "actionTypes": [
+      "workspace.get",
+      "worktree.list",
+      "chat.list",
+      "chat.get",
+      "chat.create",
+      "chat.send_message",
+      "models.list",
+      "experiments.set_enabled",
+      "settings.open"
+    ],
+    "chatCreatePlacements": ["current", "new_worktree"],
+    "watcherTriggers": ["worktree_chat_completion"],
+    "watcherTargetScope": "current_workspace",
+    "split": { "forked": true, "branched": false },
+    "hiddenInstructions": false,
+    "limits": true
+  },
+  "tools": [
+    {
+      "key": "search_actions",
+      "name": "SearchActions",
+      "description": "Search the typed Conformance Host actions available in this chat. Actions are scoped server-side to the current project. Categories: workspace, worktree, chat, models, and settings. Use this before DispatchAction / conformance_host_dispatch_action when you are unsure which action type or payload fields are supported.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Search terms describing the action you need."
+          },
+          "category": {
+            "type": "string",
+            "description": "Optional category filter: \"workspace\", \"worktree\", \"chat\", \"models\", or \"settings\". Omit to search all categories."
+          },
+          "actionType": {
+            "type": "string",
+            "description": "Optional exact action type: workspace.get, worktree.list, chat.list, chat.get, chat.create, chat.send_message, models.list, experiments.set_enabled, or settings.open."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "description": "Maximum number of matching actions to return."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "key": "dispatch_action",
+      "name": "DispatchAction",
+      "description": "Dispatch a typed Conformance Host action. Actions run in the current project; the scope is applied server-side, so do not provide projectId or worktreeId. Supports workspace.get, worktree.list, chat.list, chat.get, chat.create, chat.send_message, models.list, experiments.set_enabled, and settings.open.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "object",
+            "description": "One chat-scoped Conformance Host action payload. Use SearchActions / conformance_host_search_actions to discover the exact type and required fields. Do not include projectId or worktreeId.",
+            "required": ["type"],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "workspace.get",
+                  "worktree.list",
+                  "chat.list",
+                  "chat.get",
+                  "chat.create",
+                  "chat.send_message",
+                  "models.list",
+                  "experiments.set_enabled",
+                  "settings.open"
+                ]
+              },
+              "limit": { "type": "integer", "minimum": 1, "maximum": 100 },
+              "cursor": { "type": "string", "minLength": 1, "maxLength": 2048 },
+              "inWorktreeId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              "includeArchived": { "type": "boolean" },
+              "chatId": { "type": "string", "minLength": 1, "maxLength": 512 },
+              "message": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100000
+              },
+              "placement": {
+                "type": "string",
+                "enum": ["current", "new_worktree"]
+              },
+              "model": { "type": "string", "minLength": 1, "maxLength": 512 },
+              "thinkingLevel": {
+                "type": "string",
+                "enum": [
+                  "off",
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultra"
+                ]
+              },
+              "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+              "watchers": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 5,
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "label": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "followUpInstruction": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 100000
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "experimentId": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+              },
+              "enabled": { "type": "boolean" },
+              "destination": {
+                "type": "object",
+                "description": "Settings destination for settings.open. Account pages: account, profile, digests, notifications, integrations, security, billing, labs. Organization pages: feed (the Timeline), statistics, digests, members, groups, projects, memory, settings.",
+                "properties": {
+                  "scope": {
+                    "type": "string",
+                    "enum": ["account", "organizations", "organization"]
+                  },
+                  "organizationId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 192
+                  },
+                  "page": {
+                    "type": "string",
+                    "enum": [
+                      "account",
+                      "profile",
+                      "digests",
+                      "notifications",
+                      "integrations",
+                      "security",
+                      "billing",
+                      "labs",
+                      "feed",
+                      "statistics",
+                      "members",
+                      "groups",
+                      "projects",
+                      "memory",
+                      "settings"
+                    ]
+                  },
+                  "subtab": {
+                    "type": "string",
+                    "enum": [
+                      "general",
+                      "policies",
+                      "integrations",
+                      "usage",
+                      "billing"
+                    ]
+                  },
+                  "memoryView": {
+                    "type": "string",
+                    "enum": ["facts", "graph", "ops"]
+                  },
+                  "itemId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 192
+                  },
+                  "userId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 192
+                  },
+                  "digestId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 192
+                  },
+                  "factId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 192
+                  },
+                  "invoiceId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 192
+                  }
+                },
+                "required": ["scope"],
+                "additionalProperties": false
+              }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "properties": { "type": { "const": "chat.get" } },
+                  "required": ["type"]
+                },
+                "then": { "required": ["chatId"] }
+              },
+              {
+                "if": {
+                  "properties": { "type": { "const": "chat.create" } },
+                  "required": ["type"]
+                },
+                "then": { "required": ["message"] }
+              },
+              {
+                "if": {
+                  "properties": { "type": { "const": "chat.send_message" } },
+                  "required": ["type"]
+                },
+                "then": { "required": ["chatId", "message"] }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "type": { "const": "experiments.set_enabled" }
+                  }
+                },
+                "then": { "required": ["experimentId", "enabled"] }
+              },
+              {
+                "if": {
+                  "properties": { "type": { "const": "settings.open" } },
+                  "required": ["type"]
+                },
+                "then": { "required": ["destination"] }
+              }
+            ],
+            "additionalProperties": true
+          }
+        },
+        "required": ["action"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "key": "search_watchers",
+      "name": "SearchWatchers",
+      "description": "Search the Conformance Host watcher catalog and list active watchers for this chat. Only chat-completion watchers are available here, and they may target only chats in the current project. Use this before SetupWatchers / conformance_host_setup_watchers for watch, notify, or wait-until-done requests. Prefer watchers over polling a chat's status in a loop.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Search terms such as \"pipeline finished\", \"watch execution\", or \"notify on failure\"."
+          },
+          "trigger": {
+            "type": "string",
+            "enum": ["worktree_chat_completion"],
+            "description": "Optional trigger filter. Only chat-completion watchers on chats in the current project are available here."
+          },
+          "includeActive": {
+            "type": "boolean",
+            "description": "When false, only the catalog is returned. Defaults to true so active watchers for this chat are included."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "description": "Maximum number of catalog entries to return."
+          },
+          "detailLevel": {
+            "type": "string",
+            "enum": ["minimal", "standard"],
+            "description": "minimal (default) returns bounded catalog rows; standard also returns usage guidance."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "key": "setup_watchers",
+      "name": "SetupWatchers",
+      "description": "Create one or more watchers that notify this same chat when a targeted chat in the current project finishes its turn. Use trigger worktree_chat_completion and supply the full target ids (projectId, worktreeId, chatId); a chat cannot watch itself. Set armForNextCompletion:true to arm an idle target for its next completed turn; otherwise idle targets are rejected. Identical active watchers are deduped unless allowDuplicate is true. The notification arrives in this chat as a visible message, usually within about a minute of the target finishing. A watcher fires once and expires after 24 hours. The destination chat is always captured server-side; never provide destination ids, session ids, or display metadata.",
+      "inputSchema": {
+        "type": "object",
+        "required": ["watchers"],
+        "properties": {
+          "watchers": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["target"],
+              "properties": {
+                "trigger": {
+                  "type": "string",
+                  "enum": ["worktree_chat_completion"],
+                  "description": "Watcher trigger. Chat-completion watchers require an explicit worktree_chat_completion."
+                },
+                "label": {
+                  "type": "string",
+                  "maxLength": 200,
+                  "description": "Optional human-readable label. Usually omit so Conformance Host captures display metadata."
+                },
+                "target": {
+                  "type": "object",
+                  "required": ["projectId", "worktreeId", "chatId"],
+                  "description": "The watched chat: the current project id as projectId, plus its worktreeId and chatId. A chat cannot watch itself. Do not include kind, destination chatId, or display names.",
+                  "properties": {
+                    "projectId": {
+                      "type": "string",
+                      "description": "The current project id."
+                    },
+                    "worktreeId": {
+                      "type": "string",
+                      "description": "Worktree id of the watched chat."
+                    },
+                    "chatId": {
+                      "type": "string",
+                      "description": "Chat id of the watched chat. Not a title or session key."
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "followUpInstruction": {
+                  "type": "string",
+                  "description": "Optional instruction included in the visible message posted when the watcher fires."
+                },
+                "allowDuplicate": {
+                  "type": "boolean",
+                  "description": "Usually omit. When false or omitted, identical active watchers for this chat are deduped."
+                },
+                "armForNextCompletion": {
+                  "type": "boolean",
+                  "description": "Chat-completion watchers only. Set true to arm an idle chat for its next completed turn; omit to require a running or pending turn."
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "key": "delete_watchers",
+      "name": "DeleteWatchers",
+      "description": "Delete 1–20 agent-created watchers owned by this same chat. Use watcher ids returned by SearchWatchers or SetupWatchers. Results are reported per id as deleted, not_found, or busy (its notification is being delivered); watchers owned by another chat are never deletable through this tool and are reported as not_found. Conformance Host captures the destination and ownership server-side; pass only watcherIds and never provide destination, project, worktree, chat, session, or subscriber-notification fields.",
+      "inputSchema": {
+        "type": "object",
+        "required": ["watcherIds"],
+        "properties": {
+          "watcherIds": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 20,
+            "uniqueItems": true,
+            "description": "Watcher ids returned for this chat by SearchWatchers or SetupWatchers.",
+            "items": { "type": "string", "minLength": 1, "maxLength": 256 }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "key": "start_forked_agent",
+      "name": "StartForkedAgent",
+      "description": "Fork this chat at its current mid-turn snapshot into a new independent chat in a new worktree, then post followUpInstruction there as a visible message that starts it immediately. Use only when user intent to split off work is very clear, such as an explicit user or skill instruction. These are fire-and-forget independent chats, not inspectable subagents: no child transcript inspection, control, or automatic result delivery. The originating agent receives confirmation and continues running. Source chat and worktree scope are captured server-side.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "followUpInstruction": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100000,
+            "description": "The follow-up instruction posted to the independent forked chat as its first visible message."
+          }
+        },
+        "required": ["followUpInstruction"],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "environmentCatalog": [
+    {
+      "type": "workspace.get",
+      "category": "workspace",
+      "summary": "Read the current Conformance Host workspace: its id, name, kind, and repositories.",
+      "fields": [],
+      "example": { "type": "workspace.get" },
+      "keywords": ["workspace", "project", "current", "repositories", "repo"]
+    },
+    {
+      "type": "worktree.list",
+      "category": "worktree",
+      "summary": "List the worktrees in the current workspace and mark the current one.",
+      "fields": [
+        {
+          "name": "limit",
+          "type": "number",
+          "required": false,
+          "description": "Maximum rows to return, 1-100."
+        },
+        {
+          "name": "cursor",
+          "type": "string",
+          "required": false,
+          "description": "nextCursor from the previous page."
+        }
+      ],
+      "example": { "type": "worktree.list", "limit": 20 },
+      "keywords": ["worktree", "worktrees", "branch", "task", "tasks", "list"]
+    },
+    {
+      "type": "chat.list",
+      "category": "chat",
+      "summary": "List chats in a worktree of the current workspace with their state and model.",
+      "fields": [
+        {
+          "name": "inWorktreeId",
+          "type": "string",
+          "required": false,
+          "description": "Worktree id from worktree.list. Defaults to the current worktree."
+        },
+        {
+          "name": "includeArchived",
+          "type": "boolean",
+          "required": false,
+          "description": "Include archived chats. Defaults to false."
+        },
+        {
+          "name": "limit",
+          "type": "number",
+          "required": false,
+          "description": "Maximum rows to return, 1-100."
+        },
+        {
+          "name": "cursor",
+          "type": "string",
+          "required": false,
+          "description": "nextCursor from the previous page."
+        }
+      ],
+      "example": { "type": "chat.list" },
+      "keywords": ["chat", "chats", "tabs", "conversations", "list", "running"],
+      "notes": [
+        "A chat with messageable: false cannot receive chat.send_message (for example, it runs in a terminal session). Sending to it fails with invalid_target; do not retry. Start a chat with chat.create instead."
+      ]
+    },
+    {
+      "type": "chat.get",
+      "category": "chat",
+      "summary": "Read one chat in the current workspace, including its latest response.",
+      "fields": [
+        {
+          "name": "chatId",
+          "type": "string",
+          "required": true,
+          "description": "Chat id from chat.list."
+        }
+      ],
+      "example": { "type": "chat.get", "chatId": "chat-id" },
+      "keywords": ["chat", "get", "read", "status", "response", "result"],
+      "notes": [
+        "A chat with messageable: false cannot receive chat.send_message (for example, it runs in a terminal session). Sending to it fails with invalid_target; do not retry. Start a chat with chat.create instead."
+      ]
+    },
+    {
+      "type": "chat.create",
+      "category": "chat",
+      "summary": "Start an independent chat with a first message, in the current worktree or a new one.",
+      "fields": [
+        {
+          "name": "message",
+          "type": "string",
+          "required": true,
+          "description": "First user message of the new chat."
+        },
+        {
+          "name": "placement",
+          "type": "string",
+          "required": false,
+          "description": "current (default) starts the chat in this worktree; new_worktree starts it in a new worktree."
+        },
+        {
+          "name": "model",
+          "type": "string",
+          "required": false,
+          "description": "Model id from models.list. Defaults to the default model."
+        },
+        {
+          "name": "thinkingLevel",
+          "type": "string",
+          "required": false,
+          "description": "Thinking level the model supports: off, low, medium, high, xhigh, max, ultra."
+        },
+        {
+          "name": "title",
+          "type": "string",
+          "required": false,
+          "description": "Chat title."
+        },
+        {
+          "name": "watchers",
+          "type": "array",
+          "required": false,
+          "description": "Up to 5 watchers armed with the message: each { label?, followUpInstruction? } notifies this chat when the target chat finishes the turn this action starts."
+        }
+      ],
+      "example": {
+        "type": "chat.create",
+        "message": "Review the open pull request and summarize the risks.",
+        "watchers": [{ "label": "Review finished" }]
+      },
+      "additionalExamples": [
+        {
+          "type": "chat.create",
+          "message": "Prototype the parser in a separate branch.",
+          "placement": "new_worktree"
+        }
+      ],
+      "keywords": [
+        "chat",
+        "create",
+        "new",
+        "start",
+        "spawn",
+        "agent",
+        "parallel",
+        "delegate",
+        "worktree"
+      ],
+      "notes": [
+        "The new chat is independent: it does not report back unless a watcher is armed."
+      ]
+    },
+    {
+      "type": "chat.send_message",
+      "category": "chat",
+      "summary": "Send a user message to another chat in the current workspace.",
+      "fields": [
+        {
+          "name": "chatId",
+          "type": "string",
+          "required": true,
+          "description": "Chat id from chat.list. Not the current chat, and not a chat with messageable: false."
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "required": true,
+          "description": "Message text."
+        },
+        {
+          "name": "watchers",
+          "type": "array",
+          "required": false,
+          "description": "Up to 5 watchers armed with the message: each { label?, followUpInstruction? } notifies this chat when the target chat finishes the turn this action starts."
+        }
+      ],
+      "example": {
+        "type": "chat.send_message",
+        "chatId": "chat-id",
+        "message": "Also cover the migration path."
+      },
+      "keywords": ["chat", "send", "message", "reply", "follow", "up", "tell"]
+    },
+    {
+      "type": "models.list",
+      "category": "models",
+      "summary": "List the models new chats can use and the default model.",
+      "fields": [],
+      "example": { "type": "models.list" },
+      "keywords": ["models", "model", "list", "thinking", "default"]
+    }
+  ]
+}

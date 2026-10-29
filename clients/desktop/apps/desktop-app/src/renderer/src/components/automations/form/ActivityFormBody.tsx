@@ -1,0 +1,1710 @@
+// The automation form's fields: name, enabled, trigger, If Command, target,
+// prompt or pipeline, and the notices under them, plus the pipeline picker
+// they open. Hosts draw the chrome around it: `ActivityFormPanel` puts it in
+// a modal with a footer, and a full-page editor can mount one body per
+// section (`fieldGroup`) over the same `FormState`.
+
+import {
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type JSX,
+  type ReactNode,
+  type Ref,
+} from 'react';
+import { AutomationAuthorTargetRequirement } from '@/components/automations/AutomationAuthorTargetRequirement';
+import { ConfigurationChatComposer } from '@/components/shared/ConfigurationChatComposer';
+import { resolveAutomationComposerContext } from '@/lib/configurationComposerTargets';
+import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
+import type {
+  AutomationTrigger,
+  ChatInterfaceMode,
+  PersistedChatTab,
+} from '@canopy/desktop-shared/types';
+import { APP_ADVISOR_PROJECT_ID } from '@canopy/desktop-shared/types';
+import { emptyPluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { canonicalizeAgentModelConfig } from '@canopy/desktop-shared/lib/codex-speed';
+import { CHAT_UNIT_LABEL, WORKTREE_UNIT_LABEL } from '@canopy/protocol';
+import { brandText } from '@/lib/brand';
+import {
+  AUTOMATION_IF_CMD_IDEMPOTENCY_KEY_VAR_NAMES,
+  AUTOMATION_IF_CMD_IDEMPOTENCY_SCOPE_VAR_NAMES,
+  AUTOMATION_IF_CMD_OUTPUT_VAR_NAMES,
+  createAutomationPromptVariableToken,
+  formatCronValidationError,
+  getAutomationChatRunModeLabel,
+  getAutomationIfCommandVariableDefinitions,
+  getNextAutomationTriggerRun,
+  validateAutomationTrigger,
+  type AutomationChatRunMode,
+} from '@canopy/desktop-shared/lib/automations';
+import type { PipelineData } from '@canopy/desktop-shared/types/pipeline';
+import type { useProjectsStore } from '@/stores/projectsStore';
+import { getWorkspaceDisplayName } from '@/lib/workspaceDisplayName';
+import { automationContextNoteMessage } from '@canopy/desktop-shared/lib/automation-context-copy';
+import type { WorktreeSessionTarget } from '@/components/automations/worktreeSessionPrompt';
+import { AutomationSidebarGroupPicker } from '@/components/automations/AutomationSidebarGroupPicker';
+import {
+  PipelineTriggerModal,
+  type PipelinePluginCollectionRunContext,
+} from '@/components/activity/PipelineTriggerModal';
+import { usePipelineWorktreeContext } from '@/components/activity/usePipelineWorktreeContext';
+import { CanopyLogo } from '@/components/CanopyLogo';
+import { useClaudeTuiChatsEnabled } from '@/lib/claude-tui-chats';
+import {
+  AppAdvisorIcon,
+  ChatIcon,
+  PipelineIcon,
+  TerminalBorderedIcon,
+} from '@canopy/ui-shared/icons';
+import { ChevronDownMediumIcon as AppCatalogChevronDownMediumIcon } from '@canopy/ui-shared/icons/AppIcons';
+import type { AutomationScope } from '@/hooks/useAutomationScope';
+import { ProjectIcon } from '@/components/shared/ProjectIcon';
+import { Tooltip } from '@canopy/ui-shared';
+import { Notice, NoticeButton } from '@canopy/ui-shared/components';
+import {
+  SearchableSelect,
+  type SearchableSelectOption,
+} from '@/components/shared/SearchableSelect';
+import {
+  AutomationChatTargetPicker,
+  AUTOMATION_CHAT_TARGET_INCOMPLETE_ERROR,
+  AUTOMATION_CHAT_TARGET_UNAVAILABLE_ERROR,
+  type AutomationChatTargetStatus,
+} from '@/components/automations/AutomationChatTargetPicker';
+import {
+  applyAppAdvisorActionCategorySelection,
+  applyAppAdvisorRunModeSelection,
+  applyChatRunModeSelection,
+  applyChatTargetSelection,
+  applyWorkspaceActionSelection,
+  automationFormActionCategory,
+  automationFormChatRunMode,
+  automationFormChatTarget,
+  automationFormSidebarGroupScope,
+  buildAction,
+  clearedPipelineSelection,
+  getAutomationWorktreeLabel,
+  getPipelineModelAliasBlockingError,
+  hasChatAuthoredPayload,
+  resolveRepickedSharedPipeline,
+  selectedAutomationWorkspaceId,
+  workspaceActionModeForType,
+  type ActionCategory,
+  type FormState,
+  type WorkspaceActionMode,
+} from './automationFormState';
+
+/**
+ * Which fields a body renders. `definition` is everything except the trigger
+ * block; `trigger` is the schedule kind, the cron or one-time inputs with the
+ * cron generator, and the If Command ("Only run if").
+ */
+export type ActivityFormFieldGroup = 'all' | 'definition' | 'trigger';
+
+/**
+ * Why the form changed. `mount` marks a normalization a field made on its own
+ * before the user touched this body (for example the prompt editor settling
+ * its value), so a host can take its clean baseline after it. Everything the
+ * user does is `user`.
+ */
+export interface ActivityFormChangeMeta {
+  origin: 'mount' | 'user';
+}
+
+export interface ActivityFormBodyHandle {
+  /**
+   * Runs the checks the Save button runs (a pending prompt editor or an
+   * unresolved chat destination blocks it), then calls `onSubmit`. Also drops
+   * an If Command generation still in flight.
+   */
+  submit: () => Promise<void>;
+  /** Drops an If Command generation still in flight, as cancel does. */
+  cancelPendingGenerations: () => void;
+}
+
+export interface ActivityFormBodyProps {
+  state: FormState;
+  saving: boolean;
+  /** Every project, so a saved target resolves even outside the context. */
+  projects: ReturnType<typeof useProjectsStore.getState>['projects'];
+  /**
+   * Personal/organization scope (CAN-3448). The Project picker offers only
+   * projects in the selected context; omit to offer every project.
+   */
+  scope?: Pick<
+    AutomationScope,
+    'context' | 'projectsInContext' | 'labelForWorkspace' | 'memberOfWorkspace'
+  >;
+  /**
+   * A failed save (for example, turning on an automation whose target is in
+   * another context), shown under the fields. With two bodies mounted, pass it
+   * to one of them.
+   */
+  error?: string | null;
+  ownerDocument?: Document;
+  onChange: (next: FormState, meta: ActivityFormChangeMeta) => void;
+  /** Called by `handleRef.submit()` once the form's own checks pass. */
+  onSubmit?: () => void | Promise<void>;
+  /** Defaults to `all`. */
+  fieldGroup?: ActivityFormFieldGroup;
+  /** Defaults to true. A host that shows Enabled itself can hide it here. */
+  showEnabledField?: boolean;
+  handleRef?: Ref<ActivityFormBodyHandle>;
+  /**
+   * Whether Save can run, ignoring `saving`: false while the prompt editor is
+   * pending or invalid, the chat destination is unresolved, or a pipeline
+   * model alias still needs configuring. Reported on mount and on change. A
+   * `trigger` body has no such checks and always reports true.
+   */
+  onSubmitAvailabilityChange?: (canSubmit: boolean) => void;
+  /**
+   * Draws the host's frame around the fields and notices. Without it they
+   * render in a root that carries `data-testid="automations-form-body"`. The
+   * pipeline picker always renders after the frame.
+   */
+  renderFrame?: (content: ReactNode) => ReactNode;
+}
+
+/**
+ * Chat | Pipeline selector for the `project` action category: a rounded-full
+ * bordered pill with a primary-filled active segment and visible labels next
+ * to the icons.
+ */
+interface WorkspaceActionModePillProps {
+  value: WorkspaceActionMode;
+  onChange: (value: WorkspaceActionMode) => void;
+  disabled?: boolean;
+}
+
+function WorkspaceActionModePill({
+  value,
+  onChange,
+  disabled = false,
+}: WorkspaceActionModePillProps): JSX.Element {
+  const options: Array<{
+    value: WorkspaceActionMode;
+    label: string;
+    icon: JSX.Element;
+  }> = [
+    {
+      value: 'chat',
+      label: CHAT_UNIT_LABEL,
+      icon: <ChatIcon width={14} height={14} aria-hidden="true" />,
+    },
+    {
+      value: 'pipeline',
+      label: 'Pipeline',
+      icon: <PipelineIcon width={14} height={14} aria-hidden="true" />,
+    },
+  ];
+  return (
+    <div className="flex flex-col gap-1 text-xs fg-secondary">
+      <span>Type</span>
+      <div
+        role="radiogroup"
+        aria-label="Project action type"
+        data-testid="automations-form-workspace-action-mode"
+        className="inline-flex items-center gap-1 self-start rounded-full border bg-base p-1"
+      >
+        {options.map((option) => {
+          const active = value === option.value;
+          return (
+            <button
+              key={option.value}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              disabled={disabled}
+              onClick={(): void => onChange(option.value)}
+              data-testid={`automations-form-workspace-action-mode-${option.value}`}
+              className={`focus-ring inline-flex h-6 items-center gap-1.5 rounded-full px-2.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-60 ${
+                active
+                  ? 'bg-accent fg-emphasis'
+                  : 'fg-secondary hover:bg-fg-primary/[0.06] hover:fg-primary'
+              }`}
+            >
+              {option.icon}
+              <span>{option.label}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function InterfaceModePill({
+  value,
+  onChange,
+}: {
+  value: ChatInterfaceMode | '';
+  onChange: (value: ChatInterfaceMode | '') => void;
+}): JSX.Element {
+  const options: Array<{
+    value: ChatInterfaceMode | '';
+    label: string;
+    icon?: JSX.Element;
+  }> = [
+    { value: '', label: 'Default' },
+    {
+      value: 'canopy',
+      label: brandText.shortName,
+      icon: <CanopyLogo width={14} height={14} aria-hidden="true" />,
+    },
+    {
+      value: 'claude-code',
+      label: 'Claude Code',
+      icon: <TerminalBorderedIcon width={14} height={14} aria-hidden="true" />,
+    },
+  ];
+
+  return (
+    <div
+      className="flex items-center gap-0.5 rounded-lg border bg-card/95 p-0.5"
+      role="group"
+      aria-label="Claude chat mode"
+      data-testid="automations-form-interface-mode"
+    >
+      {options.map((option) => {
+        const selected = value === option.value;
+        return (
+          <button
+            key={option.value || 'default'}
+            type="button"
+            onClick={(): void => onChange(option.value)}
+            aria-pressed={selected}
+            className={`focus-ring inline-flex h-7 items-center gap-1 rounded-md px-2 text-2xs transition-colors ${
+              selected
+                ? 'bg-accent-subtle fg-accent'
+                : 'fg-secondary hover:fg-primary'
+            }`}
+          >
+            {option.icon}
+            <span>{option.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * Resolve the cowork workspace root (managed `home/` or attached external
+ * folder) for the pipeline picker's cwd. Returns `undefined` while loading,
+ * when no workspace is provided, or when resolution fails.
+ */
+function useCoworkRootCwd(workspaceId: string | undefined): string | undefined {
+  const [cwd, setCwd] = useState<string | undefined>(undefined);
+  useEffect(() => {
+    let cancelled = false;
+    if (!workspaceId) {
+      setCwd(undefined);
+      return undefined;
+    }
+    setCwd(undefined);
+    void window.api.homeGetCoworkRoot({ workspaceId }).then(
+      (path): void => {
+        if (!cancelled) setCwd(path || undefined);
+      },
+      (): void => {
+        if (!cancelled) setCwd(undefined);
+      },
+    );
+    return (): void => {
+      cancelled = true;
+    };
+  }, [workspaceId]);
+  return workspaceId ? cwd : undefined;
+}
+
+export function ActivityFormBody({
+  state,
+  saving,
+  projects,
+  scope,
+  error = null,
+  ownerDocument,
+  onChange: reportChange,
+  onSubmit,
+  fieldGroup = 'all',
+  showEnabledField = true,
+  handleRef,
+  onSubmitAvailabilityChange,
+  renderFrame,
+}: ActivityFormBodyProps): JSX.Element {
+  const showDefinition = fieldGroup !== 'trigger';
+  const showTrigger = fieldGroup !== 'definition';
+  // Until the user interacts with this body, a change a child field reports
+  // on its own is a mount normalization, not an edit.
+  const userInteractedRef = useRef(false);
+  const markUserInteraction = useCallback((): void => {
+    userInteractedRef.current = true;
+  }, []);
+  const onChange = useCallback(
+    (next: FormState): void => reportChange(next, { origin: 'user' }),
+    [reportChange],
+  );
+  const onFieldChange = useCallback(
+    (next: FormState): void =>
+      reportChange(next, {
+        origin: userInteractedRef.current ? 'user' : 'mount',
+      }),
+    [reportChange],
+  );
+  const claudeTuiChatsEnabled = useClaudeTuiChatsEnabled();
+  const actionCategory = automationFormActionCategory(state);
+  const workspaceActionMode = workspaceActionModeForType(state.actionType);
+  const selectedWorkspaceId = selectedAutomationWorkspaceId(state);
+  const selectedProject = projects.find((p) => p.id === selectedWorkspaceId);
+  const pickerProjects = scope?.context ? scope.projectsInContext : projects;
+  // A saved target outside the selected context stays selected (never
+  // dropped or swapped); the note says where it runs.
+  const selectedOutsideContext =
+    selectedProject !== undefined &&
+    !pickerProjects.some((project) => project.id === selectedProject.id);
+  const contextNote =
+    scope && selectedProject && selectedOutsideContext
+      ? automationContextNoteMessage({
+          targetName: getWorkspaceDisplayName(selectedProject),
+          targetContext: scope.memberOfWorkspace(selectedProject)
+            ? scope.labelForWorkspace(selectedProject)
+            : null,
+        })
+      : null;
+  const selectedIsCowork = selectedProject?.type === 'cowork';
+  const selectedProjectWorktrees =
+    selectedProject && selectedProject.type !== 'cowork'
+      ? selectedProject.worktrees
+      : [];
+  const baseWorktree =
+    selectedProjectWorktrees.find(
+      (worktree) => worktree.id === state.baseWorktreeId,
+    ) ?? selectedProjectWorktrees[0];
+  const isCoworkPipeline =
+    state.actionType === 'worktree_pipeline' && selectedIsCowork;
+  // The pipeline picker and the prompt editor live in the definition fields,
+  // so a trigger-only body skips the reads that feed them.
+  const pipelineWorktreeContext = usePipelineWorktreeContext(
+    showDefinition &&
+      state.actionType === 'worktree_pipeline' &&
+      !selectedIsCowork
+      ? state.workspaceId
+      : undefined,
+    showDefinition &&
+      state.actionType === 'worktree_pipeline' &&
+      !selectedIsCowork
+      ? baseWorktree?.id
+      : undefined,
+  );
+  const coworkRootCwd = useCoworkRootCwd(
+    showDefinition && isCoworkPipeline ? state.workspaceId : undefined,
+  );
+  const [pipelinePickerOpen, setPipelinePickerOpen] = useState(false);
+  const [cronAssistantOpen, setCronAssistantOpen] = useState(false);
+  const [cronAssistantText, setCronAssistantText] = useState('');
+  const [cronGenerating, setCronGenerating] = useState(false);
+  const [cronGenerationWarning, setCronGenerationWarning] = useState<
+    string | null
+  >(null);
+  const [composerPending, setComposerPending] = useState(false);
+  const [composerInvalid, setComposerInvalid] = useState(false);
+  const composerBlocked =
+    (state.actionType === 'app_advisor_prompt' ||
+      workspaceActionMode === 'chat') &&
+    (composerPending || composerInvalid);
+  const onComposerValidityChange = useCallback(
+    (result: { valid: boolean }): void => setComposerInvalid(!result.valid),
+    [],
+  );
+  const [sessionPreview, setSessionPreview] = useState<{
+    key: string;
+    tab: PersistedChatTab;
+  }>();
+  const sessionTarget =
+    showDefinition && state.actionType === 'worktree_session_prompt'
+      ? state.worktreeSessionTarget
+      : undefined;
+  const sessionKey = sessionTarget
+    ? `${sessionTarget.workspaceId}/${sessionTarget.worktreeId}/${sessionTarget.chatId}`
+    : '';
+  useEffect(() => {
+    if (
+      !sessionTarget?.workspaceId ||
+      !sessionTarget.worktreeId ||
+      !sessionTarget.chatId ||
+      !window.api?.chat?.loadTabs
+    )
+      return;
+    let cancelled = false;
+    setSessionPreview(undefined);
+    void window.api.chat
+      .loadTabs({
+        projectId: sessionTarget.workspaceId,
+        worktreeId: sessionTarget.worktreeId,
+      })
+      .then((loaded) => {
+        const tab = loaded.tabs.find(
+          (entry) =>
+            entry.id === sessionTarget.chatId &&
+            (entry.kind ?? 'chat') === 'chat' &&
+            !entry.readOnly,
+        );
+        if (!cancelled && tab) setSessionPreview({ key: sessionKey, tab });
+      })
+      .catch(() => {
+        if (!cancelled) setSessionPreview(undefined);
+      });
+    return (): void => {
+      cancelled = true;
+    };
+  }, [
+    sessionKey,
+    sessionTarget?.workspaceId,
+    sessionTarget?.worktreeId,
+    sessionTarget?.chatId,
+  ]);
+  const previewTab =
+    sessionPreview?.key === sessionKey ? sessionPreview.tab : undefined;
+  const composerContext = resolveAutomationComposerContext({
+    actionType: state.actionType,
+    workspaceId: selectedWorkspaceId,
+    isCowork: selectedIsCowork,
+    baseWorktreeId: state.baseWorktreeId,
+    existingWorktreeId: state.existingWorktreeId,
+    sessionTarget,
+    selectedRepoId: previewTab?.selectedRepoId,
+    sessionReady: Boolean(previewTab),
+  });
+  const [ifCommandOpen, setIfCommandOpen] = useState<boolean>(
+    () => state.ifCommand.trim().length > 0,
+  );
+  const [ifCommandAssistantOpen, setIfCommandAssistantOpen] = useState(false);
+  const [ifCommandAssistantText, setIfCommandAssistantText] = useState('');
+  const [ifCommandGenerating, setIfCommandGenerating] = useState(false);
+  const [ifCommandWarning, setIfCommandWarning] = useState<string | null>(null);
+  const latestStateRef = useRef(state);
+  const ifCommandGenerationRevisionRef = useRef(0);
+
+  useEffect(() => {
+    latestStateRef.current = state;
+  }, [state]);
+
+  useEffect(
+    () => (): void => {
+      ifCommandGenerationRevisionRef.current += 1;
+    },
+    [],
+  );
+  const isWorktreeSessionPrompt =
+    state.actionType === 'worktree_session_prompt';
+  const sidebarGroupScope = automationFormSidebarGroupScope(state);
+  const chatRunMode = automationFormChatRunMode(state);
+  // CAN-2937: the read-only gate is keyed on whether the payload was authored
+  // from chat, not on the action type, so a form-authored existing-chat
+  // automation round-trips and a composer-authored one can still be
+  // re-pointed (Run-in + picker stay interactive below).
+  const formReadOnly = hasChatAuthoredPayload(state);
+  const destinationOnlyEdit = hasChatAuthoredPayload(state);
+  const isAppAdvisorTarget = actionCategory === 'app_advisor';
+  // The picker's scope: App Advisor Work Entries, or the selected project.
+  const chatTargetWorkspaceId = isAppAdvisorTarget
+    ? APP_ADVISOR_PROJECT_ID
+    : selectedWorkspaceId;
+  const showRunInSelector =
+    chatRunMode !== undefined &&
+    (isAppAdvisorTarget ||
+      (actionCategory === 'workspace' &&
+        workspaceActionMode === 'chat' &&
+        Boolean(selectedProject)));
+  const [chatTargetStatus, setChatTargetStatus] =
+    useState<AutomationChatTargetStatus>(
+      chatRunMode === 'existing_chat' ? 'incomplete' : 'ready',
+    );
+  // Both non-ready states block Save, but "you have not picked one yet" and
+  // "the one you picked is gone" are different problems and read differently.
+  // The destination picker is a definition field; a trigger-only body never
+  // mounts it, so it never waits on it.
+  const chatTargetBlocked =
+    showDefinition &&
+    chatRunMode === 'existing_chat' &&
+    chatTargetStatus !== 'ready';
+  const chatTargetBlockingMessage = !chatTargetBlocked
+    ? null
+    : chatTargetStatus === 'unavailable'
+      ? AUTOMATION_CHAT_TARGET_UNAVAILABLE_ERROR
+      : AUTOMATION_CHAT_TARGET_INCOMPLETE_ERROR;
+  const droppedAttachmentCount =
+    (state.attachmentPaths?.length ?? 0) + (state.fileReferences?.length ?? 0);
+
+  const previewDate = useMemo(() => {
+    if (state.triggerKind === 'cron') {
+      const trigger: AutomationTrigger = {
+        kind: 'cron',
+        expression: state.cronExpression.trim(),
+        timezone: 'local',
+      };
+      if (validateAutomationTrigger(trigger)) return null;
+      return getNextAutomationTriggerRun(trigger, new Date());
+    }
+    if (!state.oneTimeDate || !state.oneTimeTime) return null;
+    const dt = new Date(`${state.oneTimeDate}T${state.oneTimeTime}:00`);
+    if (Number.isNaN(dt.getTime())) return null;
+    return dt;
+  }, [
+    state.cronExpression,
+    state.oneTimeDate,
+    state.oneTimeTime,
+    state.triggerKind,
+  ]);
+
+  const cronError = useMemo(() => {
+    if (state.triggerKind !== 'cron') return null;
+    const error = validateAutomationTrigger({
+      kind: 'cron',
+      expression: state.cronExpression.trim(),
+      timezone: 'local',
+    });
+    return error ? formatCronValidationError(error) : null;
+  }, [state.cronExpression, state.triggerKind]);
+
+  const update = <K extends keyof FormState>(
+    key: K,
+    value: FormState[K],
+  ): void => {
+    onChange({ ...state, [key]: value });
+  };
+
+  const resolveWorkspaceSelection = (
+    id: string,
+  ): { id: string; isCowork: boolean } | null => {
+    if (!id) return null;
+    const project = projects.find((p) => p.id === id);
+    if (!project) return null;
+    return { id, isCowork: project.type === 'cowork' };
+  };
+
+  const handleActionCategoryChange = (category: ActionCategory): void => {
+    if (category === actionCategory) return;
+    // The Run-in mode carries across targets; an existing destination does
+    // not, because worktrees and Work Entries belong to one target.
+    if (chatRunMode === 'existing_chat') setChatTargetStatus('incomplete');
+    if (category === 'app_advisor') {
+      onChange(
+        applyAppAdvisorActionCategorySelection(
+          state,
+          chatRunMode ?? 'new_chat',
+        ),
+      );
+      return;
+    }
+    // Re-enter the workspace category in Chat mode, restoring whichever
+    // workspace selection survived the round trip through App Advisor. An
+    // existing-chat automation parks its workspace on the session target, so
+    // that is the third place worth looking.
+    onChange(
+      applyWorkspaceActionSelection(
+        state,
+        'chat',
+        resolveWorkspaceSelection(
+          state.workspaceId ||
+            state.chatProjectId ||
+            state.worktreeSessionTarget?.workspaceId ||
+            '',
+        ),
+      ),
+    );
+  };
+
+  const handleWorkspaceChange = (nextId: string): void => {
+    if (chatRunMode === 'existing_chat') setChatTargetStatus('incomplete');
+    onChange(
+      applyWorkspaceActionSelection(
+        state,
+        workspaceActionMode,
+        resolveWorkspaceSelection(nextId),
+      ),
+    );
+  };
+
+  const handleWorkspaceActionModeChange = (mode: WorkspaceActionMode): void => {
+    onChange(
+      applyWorkspaceActionSelection(
+        state,
+        mode,
+        resolveWorkspaceSelection(selectedWorkspaceId),
+      ),
+    );
+  };
+
+  const handleChatRunModeChange = (runMode: AutomationChatRunMode): void => {
+    setChatTargetStatus(runMode === 'existing_chat' ? 'incomplete' : 'ready');
+    onChange(
+      isAppAdvisorTarget
+        ? applyAppAdvisorRunModeSelection(state, runMode)
+        : applyChatRunModeSelection(
+            state,
+            runMode,
+            resolveWorkspaceSelection(selectedWorkspaceId),
+          ),
+    );
+  };
+
+  const handleChatTargetChange = (
+    next: WorktreeSessionTarget | undefined,
+  ): void => {
+    setChatTargetStatus('incomplete');
+    onChange(
+      applyChatTargetSelection(
+        state,
+        chatTargetWorkspaceId,
+        !isAppAdvisorTarget && selectedIsCowork,
+        next,
+      ),
+    );
+  };
+
+  const runInControls = showRunInSelector && chatRunMode && (
+    <>
+      <SegmentedControl
+        label="Run in"
+        value={chatRunMode}
+        options={[
+          {
+            label: getAutomationChatRunModeLabel('new_chat'),
+            value: 'new_chat',
+          },
+          {
+            label: getAutomationChatRunModeLabel('existing_chat'),
+            value: 'existing_chat',
+          },
+        ]}
+        onChange={handleChatRunModeChange}
+        testId="automations-form-run-in"
+      />
+      {chatRunMode === 'existing_chat' && (
+        <AutomationChatTargetPicker
+          workspaceId={chatTargetWorkspaceId}
+          value={automationFormChatTarget(state)}
+          ownerDocument={ownerDocument}
+          onChange={handleChatTargetChange}
+          onStatusChange={setChatTargetStatus}
+        />
+      )}
+      {destinationOnlyEdit && droppedAttachmentCount > 0 && (
+        <p
+          className="text-2xs fg-secondary"
+          data-testid="automations-form-run-in-attachment-warning"
+        >
+          {isWorktreeSessionPrompt
+            ? `Choosing a new ${CHAT_UNIT_LABEL.toLowerCase()} drops`
+            : 'Saving this destination drops'}{' '}
+          the {droppedAttachmentCount} attached file
+          {droppedAttachmentCount === 1 ? '' : 's'} because a new chat cannot
+          carry them.
+        </p>
+      )}
+    </>
+  );
+
+  const cancelPendingGenerations = useCallback((): void => {
+    ifCommandGenerationRevisionRef.current += 1;
+  }, []);
+
+  const handleSubmitForm = useCallback(async (): Promise<void> => {
+    ifCommandGenerationRevisionRef.current += 1;
+    if (composerBlocked || chatTargetBlocked) return;
+    await onSubmit?.();
+  }, [onSubmit, composerBlocked, chatTargetBlocked]);
+
+  useImperativeHandle(
+    handleRef,
+    (): ActivityFormBodyHandle => ({
+      submit: handleSubmitForm,
+      cancelPendingGenerations,
+    }),
+    [cancelPendingGenerations, handleSubmitForm],
+  );
+
+  const handleGenerateCron = useCallback(async (): Promise<void> => {
+    const description = cronAssistantText.trim();
+    if (!description || cronGenerating) return;
+    setCronAssistantOpen(false);
+    setCronGenerationWarning(null);
+    setCronGenerating(true);
+    try {
+      const response = await window.api.automations.generateCron({
+        description,
+      });
+      if (!response.ok) {
+        setCronGenerationWarning(response.error);
+        return;
+      }
+      const validationError = validateAutomationTrigger({
+        kind: 'cron',
+        expression: response.expression.trim(),
+        timezone: 'local',
+      });
+      if (validationError) {
+        setCronGenerationWarning(
+          formatCronValidationError(validationError) ||
+            'Generated cron expression is invalid.',
+        );
+        return;
+      }
+      onChange({
+        ...latestStateRef.current,
+        cronExpression: response.expression.trim(),
+      });
+      setCronAssistantText('');
+    } catch (error) {
+      setCronGenerationWarning(
+        error instanceof Error
+          ? error.message
+          : 'Could not generate a cron expression.',
+      );
+    } finally {
+      setCronGenerating(false);
+    }
+  }, [cronAssistantText, cronGenerating, onChange]);
+
+  const handleGenerateIfCommand = useCallback(async (): Promise<void> => {
+    const description = ifCommandAssistantText.trim();
+    if (!description || ifCommandGenerating) return;
+    const generationRevision = ifCommandGenerationRevisionRef.current;
+    setIfCommandAssistantOpen(false);
+    setIfCommandWarning(null);
+    setIfCommandGenerating(true);
+    try {
+      const response = await window.api.automations.generateIfCommand({
+        description,
+        currentCommand: state.ifCommand,
+      });
+      if (generationRevision !== ifCommandGenerationRevisionRef.current) {
+        return;
+      }
+      if (!response.ok) {
+        setIfCommandWarning(response.error);
+        return;
+      }
+      onChange({ ...latestStateRef.current, ifCommand: response.command });
+      setIfCommandAssistantText('');
+    } catch (error) {
+      if (generationRevision !== ifCommandGenerationRevisionRef.current) {
+        return;
+      }
+      setIfCommandWarning(
+        error instanceof Error
+          ? error.message
+          : 'Could not generate an If Command.',
+      );
+    } finally {
+      if (generationRevision === ifCommandGenerationRevisionRef.current) {
+        setIfCommandGenerating(false);
+      }
+    }
+  }, [ifCommandAssistantText, ifCommandGenerating, onChange, state.ifCommand]);
+
+  const ifCommandConfigured = state.ifCommand.trim().length > 0;
+  const promptVariableItems = getAutomationIfCommandVariableDefinitions().map(
+    (definition) => ({
+      ...definition,
+      disabled: !ifCommandConfigured,
+      ...(ifCommandConfigured
+        ? {}
+        : {
+            disabledReason:
+              'Configure an If Command above to enable this variable.',
+          }),
+    }),
+  );
+  const modelAliasBlockingError = showDefinition
+    ? getPipelineModelAliasBlockingError(state)
+    : undefined;
+  const canSubmit =
+    !modelAliasBlockingError && !chatTargetBlocked && !composerBlocked;
+  // Before paint, so a host's Save button never shows a stale state.
+  useLayoutEffect(() => {
+    onSubmitAvailabilityChange?.(canSubmit);
+  }, [canSubmit, onSubmitAvailabilityChange]);
+
+  const applyPipelineSelection = useCallback(
+    (
+      _pipelineId: string,
+      pipeline: PipelineData,
+      inputs: Record<string, string> | undefined,
+      selectedRepoId: string | undefined,
+      pluginCollectionContext: PipelinePluginCollectionRunContext,
+    ): Promise<void> => {
+      const info = pipeline.info;
+      onChange({
+        ...state,
+        pipelineId: info.id,
+        pipelineName: info.name,
+        pipelineSource: info.source,
+        projectPipelineFilename: info.source === 'project' ? info.filename : '',
+        sharedPipeline: resolveRepickedSharedPipeline(
+          state.sharedPipeline,
+          info,
+        ),
+        repoId: selectedRepoId ?? '',
+        pipelineInputs: Object.entries(inputs ?? {}).map(([key, value]) => ({
+          key,
+          value,
+        })),
+        pluginCollectionPreferences:
+          Object.keys(pluginCollectionContext.preferences).length > 0
+            ? pluginCollectionContext.preferences
+            : undefined,
+        modelAliasPreferences:
+          pluginCollectionContext.modelAliasPreferences &&
+          Object.keys(pluginCollectionContext.modelAliasPreferences).length > 0
+            ? pluginCollectionContext.modelAliasPreferences
+            : undefined,
+        pipelineModelAliases: pipeline.content.model_aliases ?? [],
+        pipelinePluginCollectionIds: (
+          pipeline.content.plugin_collections ?? []
+        ).map((collection) => collection.id),
+        modelConfig: pluginCollectionContext.modelConfig,
+      });
+      setPipelinePickerOpen(false);
+      return Promise.resolve();
+    },
+    [onChange, state],
+  );
+
+  // Any input inside the fields counts, including menus the fields portal
+  // out, since React events bubble through portals.
+  const interactionCapture = {
+    onPointerDownCapture: markUserInteraction,
+    onClickCapture: markUserInteraction,
+    onKeyDownCapture: markUserInteraction,
+    onInputCapture: markUserInteraction,
+    onChangeCapture: markUserInteraction,
+    onPasteCapture: markUserInteraction,
+    onDropCapture: markUserInteraction,
+  };
+
+  const content = (
+    <>
+      <div
+        className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-4 py-3 text-s"
+        {...interactionCapture}
+      >
+        {showDefinition && (
+          <>
+            <Field label="Name">
+              <input
+                type="text"
+                value={state.name}
+                onChange={(event): void => update('name', event.target.value)}
+                readOnly={formReadOnly}
+                placeholder="Daily standup digest"
+                data-testid="automations-form-name"
+                className="focus-ring w-full rounded-md border bg-base px-2 py-1.5 text-s fg-primary read-only:cursor-default read-only:opacity-80"
+              />
+            </Field>
+            {showEnabledField && (
+              <label className="flex items-center gap-2 text-xs fg-primary">
+                <input
+                  type="checkbox"
+                  checked={state.enabled}
+                  onChange={(event): void =>
+                    update('enabled', event.target.checked)
+                  }
+                  disabled={formReadOnly}
+                  data-testid="automations-form-enabled"
+                  className="h-4 w-4 rounded bg-base"
+                />
+                <span>Enabled</span>
+              </label>
+            )}
+          </>
+        )}
+        {showTrigger && (
+          <>
+            {formReadOnly ? (
+              <div
+                data-testid="automations-form-schedule-readonly"
+                className="rounded-md border bg-base/40 px-3 py-2"
+              >
+                <div className="mb-2 text-xs font-medium fg-secondary">
+                  Trigger
+                </div>
+                <div className="mb-2 inline-flex rounded-md border bg-fg-primary/[0.04] px-2 py-1 text-xs fg-primary">
+                  One-time
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <Field label="Date">
+                    <input
+                      type="date"
+                      value={state.oneTimeDate}
+                      readOnly
+                      data-testid="automations-form-date"
+                      className="w-full cursor-default rounded-md border bg-base px-2 py-1.5 text-s fg-primary opacity-80"
+                    />
+                  </Field>
+                  <Field label="Time">
+                    <input
+                      type="time"
+                      value={state.oneTimeTime}
+                      readOnly
+                      data-testid="automations-form-time"
+                      className="w-full cursor-default rounded-md border bg-base px-2 py-1.5 text-s fg-primary opacity-80"
+                    />
+                  </Field>
+                </div>
+                {previewDate ? (
+                  <div className="mt-2 text-xs fg-secondary">
+                    Triggers at {previewDate.toLocaleString()}
+                  </div>
+                ) : null}
+              </div>
+            ) : (
+              <SegmentedControl
+                label="Trigger"
+                value={state.triggerKind}
+                options={[
+                  { label: 'Scheduled', value: 'cron' },
+                  { label: 'One-time', value: 'one_time' },
+                ]}
+                onChange={(value): void => update('triggerKind', value)}
+                testId="automations-form-schedule-kind"
+              />
+            )}
+            {!formReadOnly && state.triggerKind === 'cron' ? (
+              <Field label="Cron expression">
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={state.cronExpression}
+                    onChange={(event): void =>
+                      update('cronExpression', event.target.value)
+                    }
+                    disabled={cronGenerating}
+                    aria-busy={cronGenerating}
+                    spellCheck={false}
+                    data-testid="automations-form-cron"
+                    className={`focus-ring w-full rounded-md border bg-base px-2 py-1.5 pr-9 font-mono text-xs fg-primary disabled:cursor-wait disabled:opacity-70 ${
+                      cronGenerating ? 'animate-pulse' : ''
+                    }`}
+                  />
+                  <span className="absolute right-1 top-1/2 -translate-y-1/2">
+                    <Tooltip label="Generate cron expression">
+                      <button
+                        type="button"
+                        aria-label="Generate cron expression"
+                        disabled={cronGenerating}
+                        onClick={(): void => {
+                          setCronAssistantOpen((open) => !open);
+                          setCronGenerationWarning(null);
+                        }}
+                        data-testid="automations-form-cron-assistant"
+                        className="focus-ring inline-flex h-6 w-6 items-center justify-center rounded-md fg-secondary transition hover:bg-fg-primary/[0.08] hover:fg-primary disabled:cursor-wait disabled:opacity-60"
+                      >
+                        <AppAdvisorIcon className="h-4 w-4" />
+                      </button>
+                    </Tooltip>
+                  </span>
+                </div>
+                {cronAssistantOpen && !cronGenerating && (
+                  <div className="mt-2 flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={cronAssistantText}
+                      onChange={(event): void =>
+                        setCronAssistantText(event.target.value)
+                      }
+                      onKeyDown={(event): void => {
+                        if (event.key !== 'Enter') return;
+                        event.preventDefault();
+                        void handleGenerateCron();
+                      }}
+                      placeholder="Describe schedule in natural language"
+                      data-testid="automations-form-cron-natural-language"
+                      className="focus-ring min-w-0 flex-1 rounded-md border bg-base px-2 py-1.5 text-xs fg-primary"
+                    />
+                    <button
+                      type="button"
+                      disabled={cronAssistantText.trim().length === 0}
+                      onClick={() => void handleGenerateCron()}
+                      data-testid="automations-form-cron-generate"
+                      className="focus-ring rounded-md border border-line-accent/40 bg-accent-subtle px-2.5 py-1.5 text-xs font-medium fg-accent transition hover:bg-accent-subtle/80 disabled:cursor-default disabled:opacity-50"
+                    >
+                      Generate
+                    </button>
+                  </div>
+                )}
+                {cronGenerating && (
+                  <div className="mt-1 text-xs fg-secondary">Generating…</div>
+                )}
+                {cronGenerationWarning && !cronGenerating && (
+                  <Notice
+                    intent="attention"
+                    role="alert"
+                    className="mt-2"
+                    data-testid="automations-form-cron-generation-warning"
+                    actions={
+                      <NoticeButton
+                        variant="primary"
+                        onClick={(): void => {
+                          setCronGenerationWarning(null);
+                          setCronAssistantOpen(true);
+                        }}
+                        data-testid="automations-form-cron-generation-try-again"
+                      >
+                        Try again
+                      </NoticeButton>
+                    }
+                  >
+                    {cronGenerationWarning}
+                  </Notice>
+                )}
+                {cronError ? (
+                  <div className="mt-1 text-xs fg-destructive">{cronError}</div>
+                ) : previewDate ? (
+                  <div className="mt-1 text-xs fg-secondary">
+                    Next trigger: {previewDate.toLocaleString()}
+                  </div>
+                ) : null}
+              </Field>
+            ) : !formReadOnly ? (
+              <div className="flex flex-col gap-2">
+                <Field label="Date">
+                  <input
+                    type="date"
+                    value={state.oneTimeDate}
+                    onChange={(event): void =>
+                      update('oneTimeDate', event.target.value)
+                    }
+                    data-testid="automations-form-date"
+                    className="focus-ring w-full rounded-md border bg-base px-2 py-1.5 text-s fg-primary"
+                  />
+                </Field>
+                <Field label="Time">
+                  <input
+                    type="time"
+                    value={state.oneTimeTime}
+                    onChange={(event): void =>
+                      update('oneTimeTime', event.target.value)
+                    }
+                    data-testid="automations-form-time"
+                    className="focus-ring w-full rounded-md border bg-base px-2 py-1.5 text-s fg-primary"
+                  />
+                </Field>
+                {previewDate ? (
+                  previewDate.getTime() <= Date.now() ? (
+                    <div className="text-xs fg-destructive">
+                      Choose a future time.
+                    </div>
+                  ) : (
+                    <div className="text-xs fg-secondary">
+                      Triggers at {previewDate.toLocaleString()}
+                    </div>
+                  )
+                ) : null}
+              </div>
+            ) : null}
+            {!formReadOnly && (
+              <div
+                data-testid="automations-form-if-command-section"
+                className="rounded-md border bg-base/40"
+              >
+                <button
+                  type="button"
+                  onClick={(): void => setIfCommandOpen((open) => !open)}
+                  data-testid="automations-form-if-command-toggle"
+                  className="focus-ring flex w-full items-center justify-between px-3 py-2 text-left text-xs font-medium fg-primary"
+                >
+                  <span>
+                    If command <span className="fg-secondary">(optional)</span>
+                  </span>
+                  <AppCatalogChevronDownMediumIcon
+                    width="12"
+                    height="12"
+                    className={`fg-secondary transition-transform ${ifCommandOpen ? 'rotate-180' : ''}`}
+                  />
+                </button>
+                {ifCommandOpen && (
+                  <div className="flex flex-col gap-2 border-t px-3 py-2">
+                    <p className="text-2xs fg-secondary">
+                      Runs before the action. Exit 0 runs the action; any
+                      non-zero exit skips it. Standard output is available to
+                      prompts as{' '}
+                      <code className="font-mono">
+                        {`{{${AUTOMATION_IF_CMD_OUTPUT_VAR_NAMES[0] ?? 'AUTOMATION_IF_CMD_OUTPUT'}}}`}
+                      </code>
+                      . To prevent duplicate processing, print{' '}
+                      <code className="font-mono">
+                        {`${AUTOMATION_IF_CMD_IDEMPOTENCY_KEY_VAR_NAMES[0] ?? 'IDEMPOTENCY_KEY'}=value`}
+                      </code>{' '}
+                      on its own stdout line; automations will be skipped if a
+                      recent run used the same key. Scope defaults to this
+                      automation only; print{' '}
+                      <code className="font-mono">
+                        {`${AUTOMATION_IF_CMD_IDEMPOTENCY_SCOPE_VAR_NAMES[0] ?? 'IDEMPOTENCY_SCOPE'}=global`}
+                      </code>{' '}
+                      to compare against all automations. Idempotency lines are
+                      stripped from prompt output.
+                    </p>
+                    <div className="relative">
+                      <textarea
+                        value={state.ifCommand}
+                        onChange={(event): void =>
+                          update('ifCommand', event.target.value)
+                        }
+                        disabled={ifCommandGenerating}
+                        rows={2}
+                        spellCheck={false}
+                        placeholder="e.g. test -f ~/ready-to-run.txt"
+                        data-testid="automations-form-if-command"
+                        className="focus-ring w-full rounded-md border bg-base px-2 py-1.5 pr-9 font-mono text-xs fg-primary disabled:cursor-wait disabled:opacity-70"
+                      />
+                      <span className="absolute right-1 top-1">
+                        <Tooltip label="Generate if command">
+                          <button
+                            type="button"
+                            aria-label="Generate if command"
+                            disabled={ifCommandGenerating}
+                            onClick={(): void => {
+                              setIfCommandAssistantOpen((open) => !open);
+                              setIfCommandWarning(null);
+                            }}
+                            data-testid="automations-form-if-command-assistant"
+                            className="focus-ring inline-flex h-6 w-6 items-center justify-center rounded-md fg-secondary transition hover:bg-fg-primary/[0.08] hover:fg-primary disabled:cursor-wait disabled:opacity-60"
+                          >
+                            <AppAdvisorIcon className="h-4 w-4" />
+                          </button>
+                        </Tooltip>
+                      </span>
+                    </div>
+                    {ifCommandAssistantOpen && !ifCommandGenerating && (
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          value={ifCommandAssistantText}
+                          onChange={(event): void =>
+                            setIfCommandAssistantText(event.target.value)
+                          }
+                          onKeyDown={(event): void => {
+                            if (event.key !== 'Enter') return;
+                            event.preventDefault();
+                            void handleGenerateIfCommand();
+                          }}
+                          placeholder="Describe the gate in natural language"
+                          data-testid="automations-form-if-command-natural-language"
+                          className="focus-ring min-w-0 flex-1 rounded-md border bg-base px-2 py-1.5 text-xs fg-primary"
+                        />
+                        <button
+                          type="button"
+                          disabled={ifCommandAssistantText.trim().length === 0}
+                          onClick={() => void handleGenerateIfCommand()}
+                          data-testid="automations-form-if-command-generate"
+                          className="focus-ring rounded-md border border-line-accent/40 bg-accent-subtle px-2.5 py-1.5 text-xs font-medium fg-accent transition hover:bg-accent-subtle/80 disabled:cursor-default disabled:opacity-50"
+                        >
+                          Generate
+                        </button>
+                      </div>
+                    )}
+                    {ifCommandGenerating && (
+                      <div className="text-xs fg-secondary">Generating…</div>
+                    )}
+                    {ifCommandWarning && !ifCommandGenerating && (
+                      <Notice
+                        intent="attention"
+                        role="alert"
+                        data-testid="automations-form-if-command-warning"
+                      >
+                        {ifCommandWarning}
+                      </Notice>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </>
+        )}
+        {showDefinition && (
+          <>
+            <SegmentedControl
+              label="Target"
+              value={actionCategory}
+              options={[
+                { label: 'App Advisor', value: 'app_advisor' },
+                { label: 'Project', value: 'workspace' },
+              ]}
+              onChange={handleActionCategoryChange}
+              testId="automations-form-action-type"
+              disabled={destinationOnlyEdit}
+            />
+            <AutomationAuthorTargetRequirement
+              action={buildAction(state).action}
+              requirement={state.targetRequirement}
+              installed={state.installed}
+              onChange={(contexts): void =>
+                onChange({
+                  ...state,
+                  targetRequirement: contexts ? { contexts } : undefined,
+                })
+              }
+            />
+            {isAppAdvisorTarget && runInControls}
+            {actionCategory === 'workspace' && (
+              <>
+                <Field label="Project">
+                  <SearchableSelect
+                    value={selectedWorkspaceId}
+                    ownerDocument={ownerDocument}
+                    selectedFallback={
+                      selectedProject && selectedOutsideContext
+                        ? projectPickerOption(selectedProject)
+                        : undefined
+                    }
+                    options={pickerProjects.map(projectPickerOption)}
+                    onChange={handleWorkspaceChange}
+                    placeholder={
+                      pickerProjects.length === 0
+                        ? 'No projects available'
+                        : 'Select a project'
+                    }
+                    searchPlaceholder="Search projects"
+                    emptyListMessage="No matching projects"
+                    disabled={pickerProjects.length === 0}
+                    testId="automations-form-workspace"
+                  />
+                </Field>
+                {contextNote && (
+                  <Notice data-testid="automations-form-context-note">
+                    {contextNote}
+                  </Notice>
+                )}
+                {selectedProject && (
+                  <WorkspaceActionModePill
+                    value={workspaceActionMode}
+                    onChange={handleWorkspaceActionModeChange}
+                    disabled={destinationOnlyEdit}
+                  />
+                )}
+                {runInControls}
+                {selectedProject &&
+                  chatRunMode !== 'existing_chat' &&
+                  !selectedIsCowork && (
+                    <Field label={`Base ${WORKTREE_UNIT_LABEL}`}>
+                      <SearchableSelect
+                        value={state.baseWorktreeId}
+                        ownerDocument={ownerDocument}
+                        options={selectedProjectWorktrees.map((worktree) => ({
+                          id: worktree.id,
+                          label: getAutomationWorktreeLabel(worktree),
+                        }))}
+                        onChange={(nextId): void =>
+                          onChange({
+                            ...state,
+                            baseWorktreeId: nextId,
+                            ...(nextId ? { baseBranch: '' } : {}),
+                            ...clearedPipelineSelection(),
+                          })
+                        }
+                        placeholder="Project default"
+                        emptyOption={{
+                          id: '',
+                          label: 'Project default',
+                          subtitle: "Use the project's default branch",
+                        }}
+                        searchPlaceholder="Search worktrees"
+                        emptyListMessage="No matching worktrees"
+                        testId="automations-form-base-worktree"
+                      />
+                    </Field>
+                  )}
+              </>
+            )}
+            {sidebarGroupScope &&
+              (sidebarGroupScope.appAdvisor ||
+                selectedProject !== undefined) && (
+                <Field label="Sidebar group" as="div">
+                  <AutomationSidebarGroupPicker
+                    scope={sidebarGroupScope}
+                    value={state.sidebarGroupName}
+                    onChange={(name): void =>
+                      onFieldChange({ ...state, sidebarGroupName: name })
+                    }
+                    disabled={saving || destinationOnlyEdit}
+                  />
+                </Field>
+              )}
+            {(state.actionType === 'app_advisor_prompt' ||
+              ((state.actionType === 'worktree_prompt' ||
+                state.actionType === 'standalone_prompt') &&
+                selectedProject) ||
+              isWorktreeSessionPrompt) && (
+              <Field label="Prompt" as="div">
+                <ConfigurationChatComposer
+                  editorId={`automation-${state.id ?? 'new'}`}
+                  dataTestId="automations-form-prompt"
+                  draftGeneration={0}
+                  context={composerContext}
+                  selectionMode="local"
+                  readOnly={formReadOnly}
+                  disabled={saving}
+                  effectiveModel={previewTab?.model}
+                  speedRouteContext={
+                    isWorktreeSessionPrompt && state.worktreeSessionTarget
+                      ? {
+                          kind: 'chat',
+                          projectId: state.worktreeSessionTarget.workspaceId,
+                          worktreeId: state.worktreeSessionTarget.worktreeId,
+                          chatId: state.worktreeSessionTarget.chatId,
+                        }
+                      : undefined
+                  }
+                  speedRouteModelSelection={previewTab?.modelSelectionMode}
+                  effectiveModelConfig={
+                    previewTab?.modelConfig ??
+                    (previewTab?.thinkingLevel
+                      ? { thinkingLevel: previewTab.thinkingLevel }
+                      : undefined)
+                  }
+                  executionHarness={
+                    previewTab?.executionHarness === 'claude' ||
+                    previewTab?.executionHarness === 'codex'
+                      ? previewTab.executionHarness
+                      : undefined
+                  }
+                  effectivePlanMode={previewTab?.planMode}
+                  effectiveApprovalMode={previewTab?.approvalMode}
+                  inheritedSelections={previewTab?.pluginSelections}
+                  value={{
+                    prompt: state.prompt,
+                    promptReferences: state.promptReferences,
+                    model: state.model,
+                    modelConfig: canonicalizeAgentModelConfig({
+                      ...state.chatModelConfig,
+                      ...(state.thinkingLevel !== undefined
+                        ? { thinkingLevel: state.thinkingLevel }
+                        : {}),
+                      ...(state.fastMode !== undefined
+                        ? { fastMode: state.fastMode }
+                        : {}),
+                    }),
+                    planMode: state.planMode,
+                    approvalMode: state.approvalMode,
+                    plugins: state.plugins,
+                    pluginSelections: state.pluginSelections,
+                  }}
+                  onChange={(next) =>
+                    onFieldChange({
+                      ...state,
+                      prompt: next.prompt,
+                      promptReferences: next.promptReferences,
+                      model: next.model,
+                      chatModelConfig: next.modelConfig,
+                      thinkingLevel: next.modelConfig?.thinkingLevel,
+                      fastMode: next.modelConfig?.fastMode,
+                      planMode: next.planMode,
+                      approvalMode: next.approvalMode,
+                      plugins: next.plugins ?? [],
+                      pluginSelections:
+                        next.pluginSelections ?? emptyPluginSelections(),
+                    })
+                  }
+                  onPendingChange={setComposerPending}
+                  onValidityChange={onComposerValidityChange}
+                  variables={promptVariableItems.map((variable) => ({
+                    ...variable,
+                    token: createAutomationPromptVariableToken(variable.name),
+                  }))}
+                />
+                {!formReadOnly && isWorktreeSessionPrompt && (
+                  <p className="mt-2 text-2xs fg-secondary">
+                    Settings changed here apply to this chat when the automation
+                    runs. Unchanged settings follow the chat.
+                  </p>
+                )}
+                {!formReadOnly &&
+                  state.actionType === 'worktree_prompt' &&
+                  claudeTuiChatsEnabled && (
+                    <div className="mt-3 flex flex-col gap-1">
+                      <span className="text-2xs font-medium fg-secondary">
+                        Claude Code mode
+                      </span>
+                      <InterfaceModePill
+                        value={state.interfaceMode}
+                        onChange={(nextMode) =>
+                          update('interfaceMode', nextMode)
+                        }
+                      />
+                    </div>
+                  )}
+              </Field>
+            )}
+            {state.actionType === 'worktree_pipeline' && selectedProject && (
+              <>
+                <Field label="Pipeline">
+                  <div className="rounded-md border bg-base p-2">
+                    {state.pipelineId ? (
+                      <div className="mb-2 min-w-0">
+                        <div className="truncate text-s font-medium fg-primary">
+                          {state.pipelineName || state.pipelineId}
+                        </div>
+                        <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-2xs fg-secondary">
+                          {state.pipelineSource && (
+                            <span className="rounded bg-fg-primary/[0.06] px-1.5 py-0.5">
+                              {state.pipelineSource}
+                            </span>
+                          )}
+                          {state.repoId && (
+                            <span className="rounded bg-fg-primary/[0.06] px-1.5 py-0.5">
+                              {state.repoId}
+                            </span>
+                          )}
+                          <span>
+                            {state.pipelineInputs.length === 1
+                              ? '1 input'
+                              : `${state.pipelineInputs.length} inputs`}
+                          </span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="mb-2 text-xs fg-secondary">
+                        {!state.workspaceId
+                          ? 'Select a project to load pipelines.'
+                          : 'Select a dispatch pipeline and configure its inputs.'}
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      disabled={
+                        !state.workspaceId ||
+                        (isCoworkPipeline ? !coworkRootCwd : !baseWorktree)
+                      }
+                      onClick={(): void => setPipelinePickerOpen(true)}
+                      data-testid="automations-form-pipeline"
+                      className="focus-ring rounded-md border px-2.5 py-1.5 text-xs font-medium fg-primary transition hover:bg-fg-primary/[0.06] disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {state.pipelineId ? 'Change pipeline' : 'Select pipeline'}
+                    </button>
+                    {modelAliasBlockingError && (
+                      <div
+                        role="alert"
+                        data-testid="automations-form-model-alias-error"
+                        className="mt-2 rounded-md border border-line-destructive/40 bg-destructive-subtle px-2 py-1.5 text-xs fg-primary"
+                      >
+                        {modelAliasBlockingError}
+                      </div>
+                    )}
+                  </div>
+                </Field>
+                {state.pipelineInputs.length > 0 && (
+                  <Field label="Inputs">
+                    <div
+                      className="space-y-1 rounded-md border bg-fg-primary/[0.02] p-2"
+                      data-testid="automations-form-pipeline-inputs"
+                    >
+                      {state.pipelineInputs.map((row) => (
+                        <div
+                          key={row.key}
+                          className="grid grid-cols-[minmax(0,0.4fr)_minmax(0,0.6fr)] gap-2 text-xs"
+                        >
+                          <span className="truncate fg-secondary">
+                            {row.key}
+                          </span>
+                          <span
+                            // Input values can carry the automation's prompt;
+                            // keys stay recorded.
+                            className={`${POSTHOG_REPLAY_BLOCK_CLASS} truncate fg-primary`}
+                          >
+                            {row.value || '(empty)'}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </Field>
+                )}
+              </>
+            )}
+          </>
+        )}
+      </div>
+      {chatTargetBlockingMessage && (
+        <div
+          role="alert"
+          data-testid="automations-form-chat-target-error"
+          className={`shrink-0 border-t px-4 pt-3 text-xs ${
+            chatTargetStatus === 'unavailable'
+              ? 'fg-destructive'
+              : 'fg-secondary'
+          }`}
+        >
+          {chatTargetBlockingMessage}
+        </div>
+      )}
+      {error && (
+        <Notice
+          intent="destructive"
+          className="mx-4 mb-3 shrink-0"
+          data-testid="automations-form-error"
+        >
+          {error}
+        </Notice>
+      )}
+    </>
+  );
+
+  return (
+    <>
+      {renderFrame ? (
+        renderFrame(content)
+      ) : (
+        <div
+          data-testid="automations-form-body"
+          data-field-group={fieldGroup}
+          className="flex min-h-0 flex-col"
+        >
+          {content}
+        </div>
+      )}
+      {pipelinePickerOpen && state.actionType === 'worktree_pipeline' && (
+        <PipelineTriggerModal
+          triggerType="dispatch"
+          labels={{
+            title: 'Select dispatch pipeline',
+            selectSubtitle: 'Select a pipeline with dispatch trigger',
+            emptyMessage: 'No pipelines with dispatch trigger found',
+          }}
+          cwd={isCoworkPipeline ? coworkRootCwd : pipelineWorktreeContext.cwd}
+          repoChoices={
+            isCoworkPipeline ? [] : pipelineWorktreeContext.repoChoices
+          }
+          defaultRepoId={state.repoId || undefined}
+          executionScope={isCoworkPipeline ? 'directory' : 'worktree'}
+          onClose={(): void => setPipelinePickerOpen(false)}
+          onRun={applyPipelineSelection}
+          runLabel="Use pipeline"
+          ownerDocument={ownerDocument}
+        />
+      )}
+    </>
+  );
+}
+
+function Field({
+  label,
+  children,
+  as: Component = 'label',
+}: {
+  label: string;
+  children: ReactNode;
+  /** Composite editors contain buttons that must not become implicit label targets. */
+  as?: 'label' | 'div';
+}): JSX.Element {
+  return (
+    <Component
+      className="flex flex-col gap-1 text-xs fg-secondary"
+      role={Component === 'div' ? 'group' : undefined}
+      aria-label={Component === 'div' ? label : undefined}
+    >
+      <span>{label}</span>
+      {children}
+    </Component>
+  );
+}
+
+function SegmentedControl<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+  testId,
+  disabled = false,
+}: {
+  label: string;
+  /** `undefined` renders with no segment selected (edit-only action types). */
+  value: T | undefined;
+  options: Array<{ label: string; value: T }>;
+  onChange: (value: T) => void;
+  testId: string;
+  disabled?: boolean;
+}): JSX.Element {
+  return (
+    <div className="flex flex-col gap-1 text-xs fg-secondary">
+      <span>{label}</span>
+      <div
+        role="radiogroup"
+        data-testid={testId}
+        className="inline-flex flex-wrap items-center gap-0.5 rounded-md border bg-fg-primary/[0.03] p-0.5"
+      >
+        {options.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            role="radio"
+            aria-checked={value === option.value}
+            disabled={disabled}
+            data-testid={`${testId}-${option.value}`}
+            onClick={(): void => onChange(option.value)}
+            className={`focus-ring rounded px-2.5 py-1 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-60 ${
+              value === option.value
+                ? 'bg-card fg-primary'
+                : 'fg-secondary hover:fg-primary'
+            }`}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Project picker row for the automation form. */
+function projectPickerOption(
+  project: ReturnType<typeof useProjectsStore.getState>['projects'][number],
+): SearchableSelectOption {
+  const displayName = getWorkspaceDisplayName(project);
+  const isMultiRepo = project.type === 'multi-repo';
+  const isCowork = project.type === 'cowork';
+  const subtitle = isMultiRepo
+    ? `${project.repos.length} ${
+        project.repos.length === 1 ? 'repo' : 'repos'
+      }${project.temporary === true ? ' • Temporary' : ''}`
+    : undefined;
+  return {
+    id: project.id,
+    label: displayName,
+    subtitle,
+    badge: (
+      <WorkspaceBadge
+        color={project.color}
+        repoPath={project.type === 'single-repo' ? project.repoPath : undefined}
+        kind={isCowork ? 'cowork' : isMultiRepo ? 'multi-repo' : 'single-repo'}
+        temporary={isMultiRepo && project.temporary === true}
+      />
+    ),
+  };
+}
+
+function WorkspaceBadge({
+  color,
+  kind,
+  repoPath,
+  temporary,
+}: {
+  color?: string;
+  kind: 'single-repo' | 'multi-repo' | 'cowork';
+  repoPath?: string;
+  temporary?: boolean;
+}): JSX.Element {
+  return (
+    <ProjectIcon
+      kind={kind}
+      temporary={temporary}
+      color={color}
+      repoPath={repoPath}
+    />
+  );
+}

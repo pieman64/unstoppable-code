@@ -1,0 +1,44 @@
+name: Plan With Review
+description: Generate a plan, review it, and iterate up to a bounded revision count.
+log_format_hint: agent
+inputs:
+  prompt:
+    description: Planning prompt text.
+    required: false
+    default: ''
+  prompt_file:
+    description: Path to a file containing the planning prompt.
+    required: false
+  max_revisions:
+    description: Maximum additional revisions after the first draft.
+    required: false
+    default: 2
+  model:
+    description: Optional Claude model override.
+    required: false
+  permission_preset:
+    description: Permission preset for planning queries.
+    required: false
+    default: read_only
+  system_prompt:
+    description: Optional system prompt appendix.
+    required: false
+  max_turns:
+    description: Maximum Claude turns per internal query.
+    required: false
+outputs:
+  plans_file:
+    description: File containing the final plan text.
+  research_file:
+    description: File containing the research summary used for planning.
+  transcript_file:
+    description: Path to the step log or transcript capture for research, plan, and review iterations.
+  revision_count:
+    description: Number of revisions performed after the first draft.
+  text_response:
+    description: Final plan text with whitespace normalized.
+  feedback:
+    description: Latest review feedback.
+runs:
+  using: node
+  main: index.js

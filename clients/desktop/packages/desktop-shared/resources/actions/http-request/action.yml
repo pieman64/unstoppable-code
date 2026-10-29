@@ -1,0 +1,43 @@
+name: HTTP Request
+description: Make a generic HTTP request with optional retries and emit response status, headers, and body artifacts. Secrets must be supplied through environment variables, not YAML literals.
+inputs:
+  url:
+    description: Absolute URL to request.
+    required: true
+  method:
+    description: HTTP method to use.
+    default: GET
+  headers:
+    description: JSON object string of request headers.
+  body:
+    description: Inline request body. Prefer body_file for larger payloads.
+  body_file:
+    description: File path containing the request body.
+  content_type:
+    description: Content-Type header to set when a body is present.
+  timeout_seconds:
+    description: Per-attempt timeout in seconds.
+    default: '30'
+  retries:
+    description: Number of retry attempts after the first failed network attempt.
+    default: '0'
+  expected_status:
+    description: Optional expected status code, comma list, or inclusive range such as 200,201 or 200-299. The step fails when the response status is outside this set.
+  auth_header_env:
+    description: Name of an environment variable whose value is sent as the Authorization header. Use secret environment variables for credentials.
+outputs:
+  status:
+    description: Numeric HTTP response status.
+  ok:
+    description: 'true when the response status is 2xx, otherwise false.'
+  headers_json:
+    description: Single-line JSON object containing response headers.
+  body:
+    description: Response body truncated to about 16 KB with line breaks escaped for pipeline output safety.
+  body_file:
+    description: File path containing the full response body.
+  json_file:
+    description: File path containing the full response body when it is JSON.
+runs:
+  using: node
+  main: index.js

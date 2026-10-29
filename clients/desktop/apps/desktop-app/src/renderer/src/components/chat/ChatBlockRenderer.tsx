@@ -1,0 +1,1694 @@
+import { useDelegatedAgentTranscript } from './delegated-agent-transcript';
+import { isClaudeAiCreditsFallbackErrorCode } from '@canopy/protocol/llm-gateway';
+import { ClaudeAiCreditsFallbackError } from './ClaudeAiCreditsFallbackError';
+import { codexAgentState } from './agent-block-state';
+import {
+  Children,
+  createContext,
+  Fragment,
+  memo,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ComponentPropsWithoutRef,
+  type JSX,
+  type ReactNode,
+} from 'react';
+import {
+  DelegatedAgentCard,
+  AccountProxySwitchLine,
+  CompactionInfoBlock,
+  compactionHeadline,
+  DEFAULT_MARKDOWN_OVERRIDES,
+  Markdown,
+  extractExitPlanModePlan,
+  markdownOptions,
+  markdownTableCellProps,
+  Notice,
+  ChatAppNote,
+  useCleanChatLook,
+  withSoftLineBreaks,
+  type MarkdownOverrides,
+} from '@canopy/ui-shared/components';
+import type { PendingQuestion } from '@/stores/chatStore';
+import { ThinkingSpinner } from '../shared/loading/spinners/ThinkingSpinner';
+import { AnsweredQuestionsBlock } from './AnsweredQuestionsBlock';
+import { parseAnsweredQuestions } from './answered-questions';
+import { AgentBlock } from './AgentBlock';
+import { WorkflowBlock } from './WorkflowBlock';
+import { CollapsibleBlock } from './CollapsibleBlock';
+import { ToolCallBlock } from './ToolCallBlock';
+import { ChatVisualBlock, type ChatVisualOwner } from '@canopy/ui-app';
+import type { ToolResult } from './types';
+import { TurnTimer } from './TurnTimer';
+import type { DisplayBlock } from './types';
+import { HookInfoBanner } from './HookInfoBanner';
+import { isAskUserQuestionToolName } from '@/lib/canopy-tool-aliases';
+import { findPendingAskUserQuestion } from './ask-user-pending-match';
+import { SkillIcon } from '@canopy/ui-shared/icons';
+import {
+  TimeFliesIcon as AppCatalogTimeFliesIcon,
+  InfoIcon as AppCatalogInfoIcon,
+} from '@canopy/ui-shared/icons/AppIcons';
+import { RevertIcon } from '@canopy/ui-shared/icons/AppIcons';
+import {
+  stripOpaqueAgentCitationMarkers,
+  stripProposedPlanEnvelope,
+} from '@canopy/ui-shared/lib';
+import { getDisplayBlockKey } from './display-block-keys';
+import { InvocableMention } from './InvocableMention';
+import { InvocableDetailsButton } from './InvocableDetailsModal';
+import {
+  findInvocableMentionTarget,
+  splitTextByInvocableMentions,
+  type InvocableMentionIndex,
+} from '@/lib/invocableMentionIndex';
+import {
+  splitTextByFilePathMentions,
+  type FilePathMentionIndex,
+} from '@/lib/filePathMentionIndex';
+import { FilePathMention } from './FilePathMention';
+import {
+  splitTextByPluginMentions,
+  type PluginMentionIndex,
+} from '@/lib/pluginMentionIndex';
+import { PluginMention } from './PluginMention';
+import { ChatMarkdownFileTargetContext } from './chat-markdown-file-target';
+import { ChatMarkdownLink } from './ChatMarkdownLink';
+import { GitHubReferencePreview, LinearReferencePreview } from '@canopy/ui-app';
+import {
+  gitHubReferenceFromHref,
+  gitHubReferenceLabel,
+} from '@canopy/desktop-shared/lib/github-reference-occurrences';
+import {
+  decorateReferences,
+  isGeneratedGitHubLinkLabel,
+  isGeneratedLinearLabel,
+  linearReferenceFromHref,
+  scanGitHubCandidates,
+  scanLinearCandidates,
+  useGitHubDecoration,
+  useLinearDecoration,
+  type GitHubCandidates,
+  type GitHubDecoration,
+  type LinearCandidates,
+  type LinearDecoration,
+} from './referencePreviewDecoration';
+import { isSafeCodexInlineImage } from '@canopy/agent-transcript/lib/codex-tool-images';
+import { AuthRecoveryCard } from './AuthRecoveryCard';
+import { CanopyProxyErrorNotice } from './CanopyProxyErrorNotice';
+import { APPROVAL_MODE_PROSE_LABELS } from './approval-mode-labels';
+import {
+  getHarnessConnectionProvider,
+  legacyProviderAuthFailure,
+  parseCanopyProxyError,
+} from './chatConnectionErrors';
+import { readAuthDependencyFailures } from '@canopy/protocol/auth-recovery';
+import type { DelegationWorkspaceChanges } from '@canopy/protocol/delegation';
+import {
+  ManagedDelegationStopContext,
+  requestManagedDelegationChanges,
+  requestManagedDelegationStop,
+} from './managed-delegation-stop';
+import { useSubagentOpenChatCallback } from '@/components/subagents/subagent-entry-actions';
+
+/**
+ * Conservative fast path for the common one-line prose blocks that Markdown
+ * renders as a single paragraph. Anything with block syntax, inline emphasis,
+ * links/autolinks, escapes, HTML, entities, or line breaks stays on the full
+ * parser. Mention and file-path decoration is applied separately below.
+ */
+function canRenderAsPlainParagraph(text: string): boolean {
+  if (
+    text.trim().length === 0 ||
+    /[\r\n\\&*_`[\]<>#~|]/.test(text) ||
+    text.includes('$$') ||
+    /^(?: {4,}| {0,3}\t)/.test(text)
+  ) {
+    return false;
+  }
+  if (
+    /^\s*(?:[-+>]|\d+[.)])(?:\s|$)/.test(text) ||
+    /^ {0,3}(?:-\s*){3,}$/.test(text) ||
+    /!\[/.test(text) ||
+    /(?:https?:\/\/|mailto:|www\.)/i.test(text) ||
+    /\b[^\s@]+@[^\s@]+\.[^\s@]+\b/.test(text)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+const MARKDOWN_COMPONENTS: MarkdownOverrides = {
+  ...DEFAULT_MARKDOWN_OVERRIDES,
+  a: ChatMarkdownLink,
+  img: ({
+    src,
+    alt,
+    node,
+    ...props
+  }: ComponentPropsWithoutRef<'img'> & { node?: unknown }): JSX.Element => {
+    void node;
+    return <ChatMarkdownImage src={src} alt={alt} {...props} />;
+  },
+};
+
+function isAbsoluteLocalImageSource(source: string): boolean {
+  return /^\/(?!\/)/.test(source) || /^[a-zA-Z]:[\\/]/.test(source);
+}
+
+function isRemoteImageSource(source: string): boolean {
+  const candidate = source.trimStart();
+  return /^https?:/i.test(candidate) || /^[\\/]{2}/.test(candidate);
+}
+
+const ChatMarkdownImage = memo(function ChatMarkdownImage({
+  src,
+  alt,
+  ...props
+}: ComponentPropsWithoutRef<'img'>): JSX.Element {
+  const rawSrc = typeof src === 'string' ? src : '';
+  const target = useContext(ChatMarkdownFileTargetContext);
+  const [resolvedSrc, setResolvedSrc] = useState<string | null | undefined>();
+  const shouldResolve = target !== null && isAbsoluteLocalImageSource(rawSrc);
+  const shouldBlockRemote =
+    target?.allowRemoteImages === false && isRemoteImageSource(rawSrc);
+
+  useEffect(() => {
+    if (!shouldResolve || !target) return;
+    let cancelled = false;
+    setResolvedSrc(undefined);
+    void (async (): Promise<void> => {
+      try {
+        const resolved = await window.api.resolveFileReference({
+          projectId: target.projectId,
+          worktreeId: target.worktreeId,
+          baseFilePath: rawSrc,
+          href: rawSrc,
+        });
+        if (!resolved) {
+          if (!cancelled) setResolvedSrc(null);
+          return;
+        }
+        const content = await window.api.readFileContent({
+          absolutePath: resolved.absolutePath,
+        });
+        if (!cancelled) {
+          setResolvedSrc(content.kind === 'image' ? content.content : null);
+        }
+      } catch {
+        if (!cancelled) setResolvedSrc(null);
+      }
+    })();
+    return (): void => {
+      cancelled = true;
+    };
+  }, [rawSrc, shouldResolve, target]);
+
+  if (shouldBlockRemote) {
+    return (
+      <span
+        data-testid="chat-external-image-hidden"
+        className="text-xs fg-secondary"
+      >
+        {alt ? `${alt} (external image hidden)` : 'External image hidden'}
+      </span>
+    );
+  }
+  if (!shouldResolve) {
+    return <img src={src} alt={alt} {...props} />;
+  }
+
+  if (resolvedSrc === undefined) {
+    return <span className="text-xs fg-secondary">Loading image…</span>;
+  }
+  if (resolvedSrc === null) {
+    return (
+      <span className="text-xs fg-secondary">
+        {alt ? `${alt} (image unavailable)` : 'Image unavailable'}
+      </span>
+    );
+  }
+  return <img src={resolvedSrc} alt={alt} {...props} />;
+});
+
+interface ChatImageBlockProps {
+  path: string;
+  dataUrl?: string;
+  alt: string;
+}
+
+const ChatImageBlock = memo(function ChatImageBlock({
+  path,
+  dataUrl,
+  alt,
+}: ChatImageBlockProps): JSX.Element {
+  const [src, setSrc] = useState<string | null | undefined>();
+
+  useEffect(() => {
+    let cancelled = false;
+    setSrc(undefined);
+    if (dataUrl !== undefined) {
+      setSrc(isSafeCodexInlineImage(dataUrl) ? dataUrl : null);
+      return;
+    }
+    const windowsPath = path.replace(/\//g, '\\');
+    if (
+      windowsPath.startsWith('\\\\') ||
+      windowsPath.startsWith('\\??\\') ||
+      windowsPath.toUpperCase().startsWith('\\GLOBALROOT\\')
+    ) {
+      setSrc(null);
+      return (): void => {
+        cancelled = true;
+      };
+    }
+    void window.api
+      .readFileContent({
+        absolutePath: path,
+        allowedRoot: 'codex-generated-images',
+      })
+      .then((content) => {
+        if (!cancelled) {
+          setSrc(content.kind === 'image' ? content.content : null);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setSrc(null);
+      });
+    return (): void => {
+      cancelled = true;
+    };
+  }, [path, dataUrl]);
+
+  if (src === undefined) {
+    return (
+      <div
+        data-testid="chat-generated-image-loading"
+        className="flex min-h-32 items-center justify-center rounded-lg bg-fg-primary/[0.04] fg-secondary"
+      >
+        <ThinkingSpinner tone="accent" />
+      </div>
+    );
+  }
+  if (src === null) {
+    return (
+      <div
+        data-testid="chat-generated-image-unavailable"
+        className="rounded-lg bg-fg-primary/[0.04] px-4 py-3 text-sm fg-secondary"
+      >
+        Image unavailable
+      </div>
+    );
+  }
+
+  return (
+    <img
+      data-testid="chat-generated-image"
+      src={src}
+      alt={alt}
+      onError={() => setSrc(null)}
+      className="max-h-[70vh] max-w-full rounded-lg object-contain shadow-sm"
+    />
+  );
+});
+
+function decorateFilePathText(
+  text: string,
+  index: FilePathMentionIndex | null | undefined,
+  keyPrefix: string,
+  originChatTabId: string | undefined,
+): ReactNode[] {
+  return splitTextByFilePathMentions(text, index).map((piece, index) => {
+    if (piece.type === 'text') {
+      return piece.text;
+    }
+    return (
+      <FilePathMention
+        key={`${keyPrefix}-file-${index}`}
+        target={piece.target}
+        location={piece.location}
+        displayText={piece.text}
+        originChatTabId={originChatTabId}
+      >
+        {piece.text}
+      </FilePathMention>
+    );
+  });
+}
+
+function decoratePluginAndFilePathText(
+  text: string,
+  filePathIndex: FilePathMentionIndex | null | undefined,
+  pluginIndex: PluginMentionIndex | null | undefined,
+  keyPrefix: string,
+  originChatTabId: string | undefined,
+): ReactNode[] {
+  return splitTextByPluginMentions(text, pluginIndex).flatMap(
+    (piece, index) => {
+      if (piece.type === 'text') {
+        return decorateFilePathText(
+          piece.text,
+          filePathIndex,
+          `${keyPrefix}-plugin-${index}`,
+          originChatTabId,
+        );
+      }
+      return (
+        <PluginMention
+          key={`${keyPrefix}-plugin-mention-${index}`}
+          target={piece.target}
+        >
+          {piece.text}
+        </PluginMention>
+      );
+    },
+  );
+}
+
+function decorateMentionText(
+  text: string,
+  invocableIndex: InvocableMentionIndex | null | undefined,
+  filePathIndex: FilePathMentionIndex | null | undefined,
+  pluginIndex: PluginMentionIndex | null | undefined,
+  keyPrefix: string,
+  originChatTabId: string | undefined,
+): ReactNode[] {
+  return splitTextByInvocableMentions(text, invocableIndex).flatMap(
+    (piece, index) => {
+      if (piece.type === 'text') {
+        return decoratePluginAndFilePathText(
+          piece.text,
+          filePathIndex,
+          pluginIndex,
+          `${keyPrefix}-text-${index}`,
+          originChatTabId,
+        );
+      }
+      return (
+        <InvocableMention
+          key={`${keyPrefix}-mention-${index}`}
+          target={piece.target}
+        >
+          {piece.text}
+        </InvocableMention>
+      );
+    },
+  );
+}
+
+function hasTextDecorators(
+  invocableIndex: InvocableMentionIndex | null | undefined,
+  filePathIndex: FilePathMentionIndex | null | undefined,
+  pluginIndex: PluginMentionIndex | null | undefined,
+): boolean {
+  return Boolean(
+    (invocableIndex && invocableIndex.aliases.size > 0) ||
+    (filePathIndex && filePathIndex.aliases.size > 0) ||
+    (pluginIndex && pluginIndex.aliases.size > 0),
+  );
+}
+
+function decorateMentionChildren(
+  children: ReactNode,
+  invocableIndex: InvocableMentionIndex | null | undefined,
+  filePathIndex: FilePathMentionIndex | null | undefined,
+  pluginIndex: PluginMentionIndex | null | undefined,
+  keyPrefix: string,
+  originChatTabId: string | undefined,
+  linear: LinearDecoration | null = null,
+  github: GitHubDecoration | null = null,
+): ReactNode {
+  const mentions = hasTextDecorators(
+    invocableIndex,
+    filePathIndex,
+    pluginIndex,
+  );
+  const teamKeys = linear?.teamKeys ?? null;
+  if (!mentions && !teamKeys && !github) return children;
+  return Children.toArray(children).map((child, childIndex) => {
+    if (typeof child === 'string') {
+      const key = `${keyPrefix}-${childIndex}`;
+      const decorateText = (text: string): ReactNode =>
+        mentions
+          ? decorateMentionText(
+              text,
+              invocableIndex,
+              filePathIndex,
+              pluginIndex,
+              key,
+              originChatTabId,
+            )
+          : text;
+      return (
+        <Fragment key={key}>
+          {teamKeys || github
+            ? decorateReferences(
+                child,
+                key,
+                decorateText,
+                teamKeys,
+                github,
+                linear?.mode,
+              )
+            : decorateText(child)}
+        </Fragment>
+      );
+    }
+    return child;
+  });
+}
+
+interface MentionDecorators {
+  invocableIndex: InvocableMentionIndex | null | undefined;
+  filePathIndex: FilePathMentionIndex | null | undefined;
+  pluginIndex: PluginMentionIndex | null | undefined;
+  originChatTabId: string | undefined;
+  /** Settled prose whose Linear references are eligible for decoration. */
+  linear: LinearDecoration | null;
+  /** Settled prose whose GitHub references are eligible for decoration. */
+  github: GitHubDecoration | null;
+}
+
+const NO_MENTION_DECORATORS: MentionDecorators = {
+  invocableIndex: undefined,
+  filePathIndex: undefined,
+  pluginIndex: undefined,
+  originChatTabId: undefined,
+  linear: null,
+  github: null,
+};
+
+/**
+ * Mention indexes for the Markdown elements of one text block.
+ *
+ * The indexes reach the element overrides through context so the overrides
+ * keep one identity. An override that changes identity is a different
+ * component type to React: when a file index loaded after a transcript was
+ * shown, every paragraph, heading and table cell of every visible message was
+ * unmounted and rebuilt (and re-styled and laid out), only to render the same
+ * text with its mentions decorated.
+ */
+const MentionDecoratorsContext = createContext<MentionDecorators>(
+  NO_MENTION_DECORATORS,
+);
+
+function decorateWithMentions(
+  decorators: MentionDecorators,
+  children: ReactNode,
+  keyPrefix: string,
+  references = true,
+): ReactNode {
+  return decorateMentionChildren(
+    children,
+    decorators.invocableIndex,
+    decorators.filePathIndex,
+    decorators.pluginIndex,
+    keyPrefix,
+    decorators.originChatTabId,
+    references ? decorators.linear : null,
+    references ? decorators.github : null,
+  );
+}
+
+function useDecoratedChildren(
+  children: ReactNode,
+  keyPrefix: string,
+): ReactNode {
+  return decorateWithMentions(
+    useContext(MentionDecoratorsContext),
+    children,
+    keyPrefix,
+  );
+}
+
+const MENTION_MARKDOWN_COMPONENTS: MarkdownOverrides = {
+  ...MARKDOWN_COMPONENTS,
+  a: function MentionMarkdownLink(
+    props: ComponentPropsWithoutRef<'a'>,
+  ): JSX.Element {
+    const decorators = useContext(MentionDecoratorsContext);
+    // A link label never nests a reference trigger, including in its emphasis.
+    const labelDecorators = useMemo(
+      (): MentionDecorators => ({ ...decorators, linear: null, github: null }),
+      [decorators],
+    );
+    const linear =
+      decorators.linear?.urls === true && typeof props.href === 'string'
+        ? linearReferenceFromHref(props.href)
+        : null;
+    const github =
+      decorators.github && typeof props.href === 'string'
+        ? gitHubReferenceFromHref(props.href)
+        : null;
+    return (
+      <MentionDecoratorsContext.Provider value={labelDecorators}>
+        {github && decorators.github && typeof props.href === 'string' ? (
+          <GitHubReferencePreview
+            target={github.target}
+            mode={decorators.github.mode}
+            href={props.href}
+            label={gitHubReferenceLabel(
+              github.target,
+              decorators.github.originRepository,
+            )}
+            expandTitle={isGeneratedGitHubLinkLabel(
+              props.children,
+              props.href,
+              github.target,
+            )}
+          >
+            {props.children}
+          </GitHubReferencePreview>
+        ) : linear && typeof props.href === 'string' ? (
+          <LinearReferencePreview
+            {...linear}
+            mode={decorators.linear?.mode}
+            href={props.href}
+            expandTitle={isGeneratedLinearLabel(
+              props.children,
+              props.href,
+              linear.identifier,
+            )}
+          >
+            {props.children}
+          </LinearReferencePreview>
+        ) : (
+          <ChatMarkdownLink
+            {...props}
+            originChatTabId={decorators.originChatTabId}
+          />
+        )}
+      </MentionDecoratorsContext.Provider>
+    );
+  },
+  p: function MentionParagraph({
+    children,
+    ...props
+  }: ComponentPropsWithoutRef<'p'>): JSX.Element {
+    return <p {...props}>{useDecoratedChildren(children, 'p')}</p>;
+  },
+  li: function MentionListItem({
+    children,
+    ...props
+  }: ComponentPropsWithoutRef<'li'>): JSX.Element {
+    return <li {...props}>{useDecoratedChildren(children, 'li')}</li>;
+  },
+  strong: function MentionStrong({
+    children,
+    ...props
+  }: ComponentPropsWithoutRef<'strong'>): JSX.Element {
+    return (
+      <strong {...props}>{useDecoratedChildren(children, 'strong')}</strong>
+    );
+  },
+  em: function MentionEmphasis({
+    children,
+    ...props
+  }: ComponentPropsWithoutRef<'em'>): JSX.Element {
+    return <em {...props}>{useDecoratedChildren(children, 'em')}</em>;
+  },
+  code: function MentionCode({
+    children,
+    className,
+    ...props
+  }: ComponentPropsWithoutRef<'code'>): JSX.Element {
+    const decorators = useContext(MentionDecoratorsContext);
+    const isCodeBlock =
+      typeof className === 'string' &&
+      (className.includes('lang-') || className.includes('language-'));
+    // Fenced code stays literal, so it is never scanned for mentions: a large
+    // generated block would otherwise pay for a decoration it then drops.
+    // Inline code keeps mentions but never becomes a reference link.
+    return (
+      <code className={className} {...props}>
+        {isCodeBlock
+          ? children
+          : decorateWithMentions(decorators, children, 'code', false)}
+      </code>
+    );
+  },
+  h1: function MentionHeading1({
+    children,
+    ...props
+  }: ComponentPropsWithoutRef<'h1'>): JSX.Element {
+    return <h1 {...props}>{useDecoratedChildren(children, 'h1')}</h1>;
+  },
+  h2: function MentionHeading2({
+    children,
+    ...props
+  }: ComponentPropsWithoutRef<'h2'>): JSX.Element {
+    return <h2 {...props}>{useDecoratedChildren(children, 'h2')}</h2>;
+  },
+  h3: function MentionHeading3({
+    children,
+    ...props
+  }: ComponentPropsWithoutRef<'h3'>): JSX.Element {
+    return <h3 {...props}>{useDecoratedChildren(children, 'h3')}</h3>;
+  },
+  blockquote: function MentionBlockquote({
+    children,
+    ...props
+  }: ComponentPropsWithoutRef<'blockquote'>): JSX.Element {
+    return (
+      <blockquote {...props}>
+        {useDecoratedChildren(children, 'blockquote')}
+      </blockquote>
+    );
+  },
+  td: function MentionTableCell({
+    children,
+    ...props
+  }: ComponentPropsWithoutRef<'td'>): JSX.Element {
+    return (
+      <td {...props} {...markdownTableCellProps(children)}>
+        {useDecoratedChildren(children, 'td')}
+      </td>
+    );
+  },
+  th: function MentionTableHeader({
+    children,
+    ...props
+  }: ComponentPropsWithoutRef<'th'>): JSX.Element {
+    return (
+      <th {...props} {...markdownTableCellProps(children, true)}>
+        {useDecoratedChildren(children, 'th')}
+      </th>
+    );
+  },
+};
+
+const MENTION_MARKDOWN_OPTIONS = markdownOptions(MENTION_MARKDOWN_COMPONENTS, {
+  allowLocalFileLinks: true,
+});
+const MENTION_MARKDOWN_OPTIONS_WITH_LINE_BREAKS = withSoftLineBreaks(
+  MENTION_MARKDOWN_OPTIONS,
+);
+
+const MARKDOWN_OPTIONS = markdownOptions(MARKDOWN_COMPONENTS, {
+  allowLocalFileLinks: true,
+});
+
+const EMPTY_PENDING: PendingQuestion[] = [];
+
+type BuiltinGhChatKind = Extract<
+  DisplayBlock,
+  { type: 'builtin_gh_chat_info' }
+>['kind'];
+
+/**
+ * Banner copy for a chat a GitHub action started. A marker persisted by a
+ * newer build can carry a kind this build does not know, so the fallback stays
+ * neutral instead of claiming a specific cause.
+ */
+function builtinGhChatBannerCopy(
+  kind: BuiltinGhChatKind,
+  target: string,
+): { source: string; description: string } {
+  switch (kind) {
+    case 'merge_conflict':
+      return {
+        source: 'Merge conflict resolution',
+        description: `GitHub reported merge conflicts for ${target}. An agent will resolve the conflicts, then commit and push the merge.`,
+      };
+    case 'review_comment_triage':
+      return {
+        source: 'Review comment triage',
+        description: `GitHub reported unresolved review comments on ${target}. An agent will triage them and get your approval before addressing.`,
+      };
+    case 'ci_check_fix':
+      return {
+        source: 'CI check fix',
+        description: `GitHub reported failing CI checks on ${target}. An agent will diagnose the failures and push fixes.`,
+      };
+    case 'merge_queue':
+      return {
+        source: 'Merge queue',
+        description: `The base branch for ${target} uses a merge queue. This chat can add the pull request to the queue, watch it, and help resolve failures.`,
+      };
+    default:
+      return {
+        source: 'GitHub',
+        description: `An agent will work on ${target}.`,
+      };
+  }
+}
+
+function copyNativeSessionId(id: string): void {
+  void navigator.clipboard.writeText(id).catch(() => undefined);
+}
+
+/**
+ * The delegated-task card with the host's Stop. Only this component reads
+ * the stop context, so a change in live delegations re-renders the delegated
+ * cards, never the rest of the transcript.
+ */
+const DelegatedAgentCallCard = memo(function DelegatedAgentCallCard({
+  block: committed,
+  renderSubBlock,
+}: {
+  block: Extract<DisplayBlock, { type: 'delegated_agent_call' }>;
+  renderSubBlock: (subBlock: DisplayBlock, index: number) => ReactNode;
+}): JSX.Element {
+  // A logged card's progress and children come from its live snapshots or
+  // its delegate log rather than from committed child rows.
+  const block = useDelegatedAgentTranscript(committed);
+  const stopControls = useContext(ManagedDelegationStopContext);
+  const target = stopControls?.target;
+  const delegationId = block.delegationId;
+  const onOpenChat = useSubagentOpenChatCallback(
+    'managed',
+    delegationId,
+    block.description,
+  );
+  const live = block.status === 'pending' || block.status === 'running';
+  const onStop = useMemo(
+    () =>
+      target && live
+        ? (): Promise<boolean> =>
+            requestManagedDelegationStop(target, delegationId)
+        : undefined,
+    [delegationId, live, target],
+  );
+  const revision = block.workspaceDiscarded
+    ? undefined
+    : block.isolatedWorkspace?.revision;
+  const onLoadChanges = useMemo(
+    () =>
+      target && revision
+        ? (): Promise<DelegationWorkspaceChanges> =>
+            requestManagedDelegationChanges(target, delegationId, revision)
+        : undefined,
+    [delegationId, revision, target],
+  );
+  return (
+    <DelegatedAgentCard
+      snapshot={block}
+      parentHarnessId={block.parentHarnessId}
+      description={block.description}
+      prompt={block.prompt}
+      executionMode={block.executionMode}
+      onCopyNativeSessionId={copyNativeSessionId}
+      onOpenChat={onOpenChat}
+      onStop={onStop}
+      onLoadChanges={onLoadChanges}
+      hasLiveDescendants={
+        stopControls?.withLiveDescendants.has(delegationId) ?? false
+      }
+    >
+      {block.subBlocks
+        .filter(
+          (child) =>
+            !(
+              child.type === 'text' &&
+              child.text.trim() === block.finalText?.trim()
+            ),
+        )
+        .map((child, i) => renderSubBlock(child, i))}
+    </DelegatedAgentCard>
+  );
+});
+const LARGE_TRANSCRIPT_MARKDOWN_PROGRESSIVE_OPTIONS = Object.freeze({
+  minimumCharacters: 16_000,
+  initialBlocks: 6,
+  blocksPerFrame: 3,
+});
+
+const visualOwners = new WeakMap<ToolResult, ChatVisualOwner>();
+
+/** Share owner identity across ordinary and collapsed visual mounts. */
+export function ChatVisualResult({
+  result,
+  variant,
+}: {
+  result?: ToolResult;
+  variant: 'inline' | 'visual-only';
+}): JSX.Element | null {
+  if (
+    !result ||
+    result.isError ||
+    !result.visualRef ||
+    !result.messageId ||
+    !result.toolUseId
+  ) {
+    return null;
+  }
+  let owner = visualOwners.get(result);
+  if (!owner) {
+    owner = {
+      messageId: result.messageId,
+      toolUseId: result.toolUseId,
+      reference: result.visualRef,
+    };
+    visualOwners.set(result, owner);
+  }
+  return <ChatVisualBlock owner={owner} variant={variant} />;
+}
+
+interface TranscriptProseProps {
+  text: string;
+  invocableMentionIndex: InvocableMentionIndex | null | undefined;
+  filePathMentionIndex: FilePathMentionIndex | null | undefined;
+  pluginMentionIndex: PluginMentionIndex | null | undefined;
+  originChatTabId: string | undefined;
+  markdownOptions: typeof MENTION_MARKDOWN_OPTIONS;
+  streaming: boolean;
+  progressiveMarkdown: boolean;
+  linear: LinearDecoration | null;
+  github: GitHubDecoration | null;
+}
+
+function TranscriptProse({
+  text,
+  invocableMentionIndex,
+  filePathMentionIndex,
+  pluginMentionIndex,
+  originChatTabId,
+  markdownOptions,
+  streaming,
+  progressiveMarkdown,
+  linear,
+  github,
+}: TranscriptProseProps): JSX.Element {
+  const mentionDecorators = useMemo(
+    (): MentionDecorators => ({
+      invocableIndex: invocableMentionIndex,
+      filePathIndex: filePathMentionIndex,
+      pluginIndex: pluginMentionIndex,
+      originChatTabId,
+      linear,
+      github,
+    }),
+    [
+      filePathMentionIndex,
+      invocableMentionIndex,
+      pluginMentionIndex,
+      originChatTabId,
+      linear,
+      github,
+    ],
+  );
+  return (
+    <div className="prose prose-sm [--tw-prose-body:var(--fg-primary)] dark:prose-invert max-w-none break-words prose-p:my-0.5 prose-pre:my-1.5 prose-pre:overflow-x-auto prose-pre:bg-fg-primary/[0.06] prose-pre:fg-primary/80 prose-code:fg-accent prose-code:before:content-none prose-code:after:content-none prose-headings:fg-primary prose-a:fg-accent prose-strong:fg-primary prose-li:my-0.5">
+      {canRenderAsPlainParagraph(text) ? (
+        <p>
+          {decorateMentionChildren(
+            text,
+            invocableMentionIndex,
+            filePathMentionIndex,
+            pluginMentionIndex,
+            'p',
+            originChatTabId,
+            linear,
+            github,
+          )}
+        </p>
+      ) : (
+        <MentionDecoratorsContext.Provider value={mentionDecorators}>
+          <Markdown
+            options={markdownOptions}
+            streaming={streaming}
+            progressive={
+              progressiveMarkdown && !streaming
+                ? LARGE_TRANSCRIPT_MARKDOWN_PROGRESSIVE_OPTIONS
+                : undefined
+            }
+          >
+            {text}
+          </Markdown>
+        </MentionDecoratorsContext.Provider>
+      )}
+    </div>
+  );
+}
+
+/** Settled prose with GitHub candidates: decorate what the origin allows. */
+function GitHubTranscriptProse({
+  candidates,
+  ...props
+}: TranscriptProseProps & { candidates: GitHubCandidates }): JSX.Element {
+  const target = useContext(ChatMarkdownFileTargetContext);
+  return (
+    <TranscriptProse
+      {...props}
+      github={useGitHubDecoration(candidates, target)}
+    />
+  );
+}
+
+/** Settled prose with Linear candidates: decorate what the catalog allows. */
+function LinearTranscriptProse({
+  candidates,
+  githubCandidates,
+  ...props
+}: TranscriptProseProps & {
+  candidates: LinearCandidates;
+  githubCandidates: GitHubCandidates | null;
+}): JSX.Element {
+  const linear = useLinearDecoration(candidates);
+  return githubCandidates ? (
+    <GitHubTranscriptProse
+      {...props}
+      linear={linear}
+      candidates={githubCandidates}
+    />
+  ) : (
+    <TranscriptProse {...props} linear={linear} />
+  );
+}
+
+export const ChatBlockRenderer = memo(function ChatBlockRenderer({
+  block,
+  streaming = false,
+  chatPendingQuestions = EMPTY_PENDING,
+  invocableMentionIndex,
+  filePathMentionIndex,
+  pluginMentionIndex,
+  originChatTabId,
+  originMessageId,
+  isCodeReviewChat,
+  stripAgentCitations = false,
+  isSystemMessage = false,
+  preserveLineBreaks = false,
+  progressiveMarkdown = false,
+  settled = !streaming,
+}: {
+  block: DisplayBlock;
+  streaming?: boolean;
+  chatPendingQuestions?: PendingQuestion[];
+  invocableMentionIndex?: InvocableMentionIndex | null;
+  filePathMentionIndex?: FilePathMentionIndex | null;
+  /**
+   * Whole-plugin `@` mentions of THIS message (built from its
+   * `file_references` block), rendered as inline chips.
+   */
+  pluginMentionIndex?: PluginMentionIndex | null;
+  originChatTabId?: string;
+  originMessageId?: string;
+  /** True inside a Code Review sidecar chat — forwarded to `ToolCallBlock`
+   * so the shared plan/review comment tools pick the code-flavored icon. */
+  isCodeReviewChat?: boolean;
+  /** Strip opaque provider citation markers from assistant-authored text. */
+  stripAgentCitations?: boolean;
+  /** Enables narrowly classified recovery UI for host-generated errors. */
+  isSystemMessage?: boolean;
+  /**
+   * Render single newlines in text blocks as line breaks (CAN-2811). Set for
+   * user-authored bubbles, where a typed newline is deliberate; agent prose
+   * keeps standard markdown soft-break handling.
+   */
+  preserveLineBreaks?: boolean;
+  /** Progressively commit top-level blocks for large, completed transcript text. */
+  progressiveMarkdown?: boolean;
+  /**
+   * The block's text is final, so references may be decorated. Defaults to
+   * `!streaming`; a streaming turn's earlier blocks pass `true`.
+   */
+  settled?: boolean;
+}): JSX.Element | null {
+  const cleanChatLook = useCleanChatLook();
+  const textMarkdownOptions = preserveLineBreaks
+    ? MENTION_MARKDOWN_OPTIONS_WITH_LINE_BREAKS
+    : MENTION_MARKDOWN_OPTIONS;
+  const blockText = block.type === 'text' ? block.text : '';
+  // Pure scans, once per settled text; prose without reference candidates
+  // never reads preview state.
+  const linearCandidates = useMemo(
+    () => (settled ? scanLinearCandidates(blockText) : null),
+    [blockText, settled],
+  );
+  const githubCandidates = useMemo(
+    () => (settled ? scanGitHubCandidates(blockText) : null),
+    [blockText, settled],
+  );
+  // Recursive sub-block renderer passed down to AgentBlock so the AgentBlock
+  // module does not need to import ChatBlockRenderer (which would create a
+  // mutually-recursive import cycle). Same chatPendingQuestions is propagated
+  // so nested ask-user prompts continue to resolve correctly. Tool-approval
+  // prompts no longer thread through here — they render in `ToolApprovalDock`
+  // above the composer instead of anchoring to a transcript block.
+  const renderSubBlock = (
+    subBlock: DisplayBlock,
+    index: number,
+  ): JSX.Element | null => (
+    <ChatBlockRenderer
+      key={getDisplayBlockKey(subBlock, index)}
+      block={subBlock}
+      streaming={streaming}
+      settled={settled}
+      chatPendingQuestions={chatPendingQuestions}
+      invocableMentionIndex={invocableMentionIndex}
+      filePathMentionIndex={filePathMentionIndex}
+      pluginMentionIndex={pluginMentionIndex}
+      originChatTabId={originChatTabId}
+      originMessageId={originMessageId}
+      isCodeReviewChat={isCodeReviewChat}
+      stripAgentCitations={stripAgentCitations}
+      isSystemMessage={subBlock.isSystemMessage ?? isSystemMessage}
+    />
+  );
+
+  if (block.type === 'tool_use' && block.result?.fullOutputRef) {
+    return (
+      <ToolCallBlock
+        originChatTabId={originChatTabId}
+        originMessageId={originMessageId}
+        toolName={block.toolName}
+        input={block.input}
+        result={block.result}
+        resolvedRecipient={block.resolvedRecipient}
+        isCodeReviewChat={isCodeReviewChat}
+      />
+    );
+  }
+  switch (block.type) {
+    case 'mcp_activation':
+      return null;
+    case 'file_references':
+      return null;
+
+    case 'image':
+      return (
+        <ChatImageBlock
+          path={block.path}
+          dataUrl={block.dataUrl}
+          alt={block.alt}
+        />
+      );
+
+    case 'text': {
+      if (isClaudeAiCreditsFallbackErrorCode(block.errorCode)) {
+        return <ClaudeAiCreditsFallbackError />;
+      }
+      if (block.asyncQuestionAnswer) {
+        const { answers } = block.asyncQuestionAnswer;
+        return (
+          <>
+            <ToolCallBlock
+              originChatTabId={originChatTabId}
+              originMessageId={originMessageId}
+              toolName="AskUserQuestion"
+              input={JSON.stringify({
+                questions: answers.map((answer) => ({
+                  question: answer.question,
+                })),
+              })}
+              result={{ output: block.text, isError: false }}
+            />
+            <AnsweredQuestionsBlock
+              answers={answers.map((answer) => ({
+                question: answer.question,
+                answer: answer.selectedOptions.join(', '),
+                ...(answer.freeformText
+                  ? { additional: answer.freeformText }
+                  : {}),
+              }))}
+            />
+          </>
+        );
+      }
+      if (block.asyncQuestion) {
+        const pending = chatPendingQuestions.find(
+          (question) => question.requestId === block.asyncQuestion?.requestId,
+        );
+        if (pending && pending.dismissedAt === undefined) {
+          // Active controls live above the composer; completed answers stay here.
+          return null;
+        }
+      }
+      if (block.verbatim) {
+        return (
+          <pre
+            data-testid="chat-verbatim-text"
+            className="max-w-none whitespace-pre-wrap break-words rounded-md bg-fg-primary/[0.06] px-3 py-2 text-sm fg-primary/80"
+          >
+            {block.text}
+          </pre>
+        );
+      }
+      const text = stripAgentCitations
+        ? stripProposedPlanEnvelope(stripOpaqueAgentCitationMarkers(block.text))
+        : block.text;
+      // Checked BEFORE the harness-connection check: a structured AI Credits
+      // proxy failure gets its own notice, and its `credentials_unavailable`
+      // case must not fall through to a provider sign-in CTA. A body without
+      // the proxy marker parses to `null` and keeps today's rendering, so this
+      // is the single switch between the two paths.
+      const proxyError = isSystemMessage ? parseCanopyProxyError(text) : null;
+      if (proxyError) {
+        return (
+          <CanopyProxyErrorNotice
+            error={proxyError}
+            originChatTabId={originChatTabId}
+            // Raw block text, NOT the citation-stripped `text` above: this is
+            // the notice's identity in the transcript, and it must compare
+            // equal to the persisted message block it was rendered from.
+            sourceText={block.text}
+          />
+        );
+      }
+      // Structured data (CAN-1814) wins over the text heuristic below, and is
+      // NOT gated on `isSystemMessage`: main attached this verdict to the
+      // block itself, so there is nothing to guess at. Re-validated here for
+      // the same reason `ToolCallBlock` re-validates — the persisted read path
+      // passes `authFailure` through unchecked, so a hand-edited chat file
+      // could otherwise pair a non-recoverable class with a login recovery.
+      const structuredAuthFailures = readAuthDependencyFailures(block).failures;
+      if (structuredAuthFailures.length > 0) {
+        return (
+          <AuthRecoveryCard
+            failures={structuredAuthFailures}
+            originChatTabId={originChatTabId}
+            sourceMessageId={originMessageId}
+          />
+        );
+      }
+      const connectionProvider = isSystemMessage
+        ? getHarnessConnectionProvider(text)
+        : null;
+      if (connectionProvider) {
+        return (
+          <AuthRecoveryCard
+            failures={[legacyProviderAuthFailure(connectionProvider, text)]}
+          />
+        );
+      }
+      // Clean chat look: the app's own messages read as a quiet note, not as
+      // the agent talking.
+      if (cleanChatLook && isSystemMessage) {
+        return <ChatAppNote text={text} />;
+      }
+      const proseProps: TranscriptProseProps = {
+        text,
+        invocableMentionIndex,
+        filePathMentionIndex,
+        pluginMentionIndex,
+        originChatTabId,
+        markdownOptions: textMarkdownOptions,
+        streaming,
+        progressiveMarkdown,
+        linear: null,
+        github: null,
+      };
+      if (linearCandidates) {
+        return (
+          <LinearTranscriptProse
+            {...proseProps}
+            candidates={linearCandidates}
+            githubCandidates={githubCandidates}
+          />
+        );
+      }
+      return githubCandidates ? (
+        <GitHubTranscriptProse {...proseProps} candidates={githubCandidates} />
+      ) : (
+        <TranscriptProse {...proseProps} />
+      );
+    }
+
+    case 'thinking':
+      if (block.text.trim().length === 0) {
+        return null;
+      }
+      return (
+        <CollapsibleBlock
+          label="Thinking"
+          doneLabel="Thought"
+          running={!settled}
+          content={block.text}
+        />
+      );
+
+    case 'tool_use': {
+      if (block.toolName === 'ExitPlanMode') {
+        const plan = extractExitPlanModePlan(block.input);
+        if (!plan) return null;
+        return (
+          <div className="prose prose-sm [--tw-prose-body:var(--fg-primary)] dark:prose-invert max-w-none break-words prose-p:my-0.5 prose-pre:my-1.5 prose-pre:overflow-x-auto prose-pre:bg-fg-primary/[0.06] prose-pre:fg-primary/80 prose-code:fg-accent prose-code:before:content-none prose-code:after:content-none prose-headings:fg-primary prose-a:fg-accent prose-strong:fg-primary prose-li:my-0.5">
+            <Markdown options={MARKDOWN_OPTIONS} streaming={streaming}>
+              {plan}
+            </Markdown>
+          </div>
+        );
+      }
+
+      if (block.toolName === 'EnterPlanMode') return null;
+
+      if (block.toolName === 'Skill') {
+        let skillName = 'skill';
+        let rawCommand = '';
+        try {
+          const p = JSON.parse(block.input) as Record<string, unknown>;
+          if (typeof p.skill === 'string') skillName = p.skill;
+          if (typeof p.raw_command === 'string') rawCommand = p.raw_command;
+        } catch {
+          // ignore
+        }
+        if (rawCommand.length > 0) {
+          return (
+            <ToolCallBlock
+              originChatTabId={originChatTabId}
+              originMessageId={originMessageId}
+              toolName={block.toolName}
+              input={block.input}
+              result={block.result}
+            />
+          );
+        }
+        // Only a name the inventory resolves becomes a details button; an
+        // unknown name stays plain text rather than guessing a target.
+        const skillTarget = findInvocableMentionTarget(
+          invocableMentionIndex,
+          skillName,
+        );
+        return (
+          <div className="flex items-center gap-1.5 py-1 text-xs fg-secondary">
+            <span className="flex-shrink-0">
+              <SkillIcon />
+            </span>
+            <span>
+              Using skill{' '}
+              {skillTarget ? (
+                <InvocableDetailsButton target={skillTarget}>
+                  {skillName}
+                </InvocableDetailsButton>
+              ) : (
+                <code className="rounded bg-fg-primary/[0.08] px-1 py-0.5 font-mono text-2xs">
+                  {skillName}
+                </code>
+              )}
+            </span>
+            {!block.result && (
+              <ThinkingSpinner tone="accent" className="ml-1 flex-shrink-0" />
+            )}
+          </div>
+        );
+      }
+
+      if (isAskUserQuestionToolName(block.toolName)) {
+        // Hybrid matching (Frontend plan §F3.1):
+        //   1. Prefer exact `toolUseId` match when the block carries one and
+        //      at least one un-answered PendingQuestion in this chat has the
+        //      same `toolUseId`. Deterministic path for Codex dynamic
+        //      (`canopy_ask_user_question`) and Codex built-in
+        //      (`request_user_input`).
+        //   2. Fall back to the existing "first un-answered pending
+        //      question" heuristic for the Claude MCP path, which cannot
+        //      supply a `toolUseId` (the Claude Agent SDK `tool()` handler's
+        //      `extra` arg does not expose the transcript `tool_use_id`).
+        const pending = findPendingAskUserQuestion(
+          chatPendingQuestions,
+          block.toolName,
+          block.toolUseId,
+        );
+        if (!block.result && pending) {
+          return null;
+        }
+        if (!block.result) {
+          return (
+            <div className="flex items-center gap-1.5 py-1 text-xs fg-secondary">
+              <ThinkingSpinner tone="accent" />
+              <span>Preparing question…</span>
+            </div>
+          );
+        }
+        // Answered (non-error) questions keep the standard collapsed
+        // "User Questions" tool row and append the user's answers below it as
+        // inline user-style answer bubbles. Errors (dismissed / window
+        // unavailable) fall through to the standard tool-call display below.
+        if (!block.result.isError) {
+          const answered = parseAnsweredQuestions(
+            block.input,
+            block.result.output,
+          );
+          if (answered && answered.length > 0) {
+            return (
+              <>
+                <ToolCallBlock
+                  originChatTabId={originChatTabId}
+                  originMessageId={originMessageId}
+                  toolName={block.toolName}
+                  input={block.input}
+                  result={block.result}
+                />
+                <AnsweredQuestionsBlock answers={answered} />
+              </>
+            );
+          }
+        }
+      }
+
+      return (
+        <>
+          <ToolCallBlock
+            originChatTabId={originChatTabId}
+            originMessageId={originMessageId}
+            toolName={block.toolName}
+            input={block.input}
+            result={block.result}
+            resolvedRecipient={block.resolvedRecipient}
+            isCodeReviewChat={isCodeReviewChat}
+          />
+          <ChatVisualResult result={block.result} variant="inline" />
+        </>
+      );
+    }
+
+    case 'delegated_agent_call':
+      return (
+        <DelegatedAgentCallCard block={block} renderSubBlock={renderSubBlock} />
+      );
+    case 'agent':
+      return (
+        <AgentBlock
+          toolUseId={block.toolUseId}
+          chatId={originChatTabId}
+          subagentIdentity={{
+            kind: 'claude-native',
+            id: block.toolUseId,
+            title: block.description,
+          }}
+          subagentType={block.subagentType}
+          description={block.description}
+          prompt={block.prompt}
+          runInBackground={block.runInBackground}
+          result={block.result}
+          taskOutputResult={block.taskOutputResult}
+          subBlocks={block.subBlocks}
+          usage={block.usage}
+          renderSubBlock={renderSubBlock}
+        />
+      );
+
+    case 'workflow':
+      return (
+        <WorkflowBlock
+          workflowName={block.workflowName}
+          summary={block.summary}
+          runId={block.runId}
+          transcriptDir={block.transcriptDir}
+          result={block.result}
+        />
+      );
+
+    case 'codex_agent': {
+      // Codex `codex_agent` blocks never produce a Claude-shaped tool_result,
+      // so we drive the AgentBlock spinner / error label off `status` and
+      // `agentsStates` via the `*Override`props. Without these the spinner
+      // would be permanent (Phase F3 §4).
+      const { running: isRunningOverride, error: isErrorOverride } =
+        codexAgentState(block);
+      return (
+        <AgentBlock
+          subagentIdentity={{
+            kind: 'codex-native',
+            id: block.receiverThreadIds[0] ?? block.agentBlockId,
+            title: block.description || block.displayName,
+          }}
+          subagentType={block.displayName}
+          description={block.description}
+          prompt={block.prompt}
+          model={block.model}
+          reasoningEffort={block.reasoningEffort}
+          runInBackground={false}
+          subBlocks={block.subBlocks}
+          usage={block.usage}
+          isRunningOverride={isRunningOverride}
+          isErrorOverride={isErrorOverride}
+          renderSubBlock={renderSubBlock}
+        />
+      );
+    }
+
+    case 'turn_timer':
+      return (
+        <TurnTimer
+          startedAt={block.startedAt}
+          pausedAt={block.pausedAt}
+          resumedAt={block.resumedAt}
+          accumulatedPausedDurationMs={block.accumulatedPausedDurationMs}
+          completedAt={block.completedAt}
+          // Inline timer blocks (subagent transcripts, standalone messages)
+          // are not a turn's footer and have no `group/turn` scope to reveal
+          // them, so they stay visible at rest (CAN-4278).
+          alwaysVisible
+        />
+      );
+
+    case 'hook_info':
+      return (
+        <HookInfoBanner
+          triggerName={block.triggerName}
+          timestamp={block.timestamp}
+          originChatTabId={originChatTabId}
+        />
+      );
+
+    case 'automation_info': {
+      const localTime = new Date(block.timestamp).toLocaleTimeString([], {
+        hour: 'numeric',
+        minute: '2-digit',
+      });
+      return (
+        <div
+          className="flex items-center gap-2 rounded-lg border bg-fg-primary/[0.03] px-3 py-1.5 text-xs fg-secondary"
+          data-testid="chat-automation-info"
+        >
+          <AppCatalogTimeFliesIcon
+            width="14"
+            height="14"
+            className="flex-shrink-0"
+          />
+          <span>
+            Chat initiated by automation
+            {block.activityName ? (
+              <>
+                {' '}
+                <strong>{block.activityName}</strong>
+              </>
+            ) : null}{' '}
+            at {localTime}
+          </span>
+        </div>
+      );
+    }
+
+    case 'claude_terminal_sync_warning': {
+      const localTime = new Date(block.timestamp).toLocaleTimeString([], {
+        hour: 'numeric',
+        minute: '2-digit',
+      });
+      return (
+        <Notice
+          role="none"
+          intent="attention"
+          title={
+            <>
+              Claude Code transcript sync failed{' '}
+              <span className="fg-secondary">at {localTime}</span>
+            </>
+          }
+        >
+          {block.message ??
+            'This fork is still usable, but it may be missing the latest terminal output.'}
+        </Notice>
+      );
+    }
+
+    case 'account_proxy_switch':
+      return (
+        <AccountProxySwitchLine
+          account={block.account}
+          {...(block.previousAccount !== undefined
+            ? { previousAccount: block.previousAccount }
+            : {})}
+          {...(block.previousAtLimit === true ? { previousAtLimit: true } : {})}
+        />
+      );
+
+    case 'compaction_info': {
+      // Compaction banner copy is keyed off both provider and interface mode
+      // so native Codex events do not inherit the Claude-specific fallback;
+      // the rule is shared with the portal transcript. The block is
+      // append-only — earlier transcript content is never rewritten by the
+      // renderer.
+      const headline = compactionHeadline(block.provider, block.interfaceMode);
+      return (
+        <CompactionInfoBlock
+          headline={headline}
+          timestamp={block.timestamp}
+          summary={block.summary}
+        />
+      );
+    }
+
+    case 'pending_setup_info': {
+      const localTime = new Date(block.timestamp).toLocaleTimeString([], {
+        hour: 'numeric',
+        minute: '2-digit',
+      });
+      return (
+        <div className="flex items-center gap-2 rounded-lg border bg-fg-primary/[0.03] px-3 py-1.5 text-xs fg-secondary">
+          <AppCatalogTimeFliesIcon
+            width="14"
+            height="14"
+            className="flex-shrink-0"
+          />
+          <span>Chat initiated before project setup at {localTime}</span>
+        </div>
+      );
+    }
+
+    // A pending approval card was released without a click because the user
+    // widened the chat's approval mode while it was on screen (CAN-3083).
+    // Quiet by design: the user already made this decision in the composer,
+    // so this is a receipt, not a thing to act on.
+    case 'approval_resolution_info': {
+      const localTime = new Date(block.timestamp).toLocaleTimeString([], {
+        hour: 'numeric',
+        minute: '2-digit',
+      });
+      const modeLabel = APPROVAL_MODE_PROSE_LABELS[block.mode];
+      const requestCount = block.titles.length;
+      // Only claim a switch when one is actually recorded. Main omits
+      //`previousMode` when it cannot name a real widening — the live-authority
+      // clamp settled on the mode the chat was already in or on a narrower
+      // one, or the registration-window fallback had no prior mode stashed.
+      // Saying "by switching to" there would describe a transition that did
+      // not happen.
+      //
+      // Note this is a mode-direction test, not an authority test. A rule that
+      // landed while the card sat there can be what granted the allow, and a
+      // genuine widening around it still reports `previousMode` and still
+      // reads "by switching to" — intended, since without the widening the
+      // card would still be standing. The `approval_decision` diagnostic
+      // carries the real granting tier for the audit trail.
+      const releasedBySwitch = block.previousMode !== undefined;
+      const summary = releasedBySwitch
+        ? requestCount > 1
+          ? `Approved ${requestCount} requests by switching to ${modeLabel}`
+          : `Approved by switching to ${modeLabel}`
+        : requestCount > 1
+          ? `Approved ${requestCount} requests under ${modeLabel}`
+          : `Approved under ${modeLabel}`;
+      return (
+        <Notice
+          role="none"
+          intent="neutral"
+          title={
+            <>
+              {summary} <span className="fg-secondary">at {localTime}</span>
+            </>
+          }
+        >
+          {requestCount === 0 ? null : (
+            <ul className="list-none space-y-0.5">
+              {block.titles.map((title, titleIndex) => (
+                <li
+                  key={`${titleIndex}:${title}`}
+                  className="fg-secondary truncate font-mono text-xs"
+                  title={title}
+                >
+                  {title}
+                </li>
+              ))}
+            </ul>
+          )}
+        </Notice>
+      );
+    }
+
+    case 'revert_info': {
+      const localTime = new Date(block.timestamp).toLocaleTimeString([], {
+        hour: 'numeric',
+        minute: '2-digit',
+      });
+      const fileCount = block.files.length;
+      const fileSummary =
+        fileCount === 0
+          ? 'No tracked file changes'
+          : `${fileCount} file${fileCount === 1 ? '' : 's'} (+${block.totalInsertions}, -${block.totalDeletions})`;
+      return (
+        <Notice
+          role="none"
+          intent="attention"
+          icon={<RevertIcon size={16} aria-hidden="true" />}
+          title={
+            <>
+              Reverted prior turn{' '}
+              <span className="fg-secondary">at {localTime}</span>
+            </>
+          }
+        >
+          Rolled back {fileSummary}.
+          {block.attachmentPath
+            ? ' Summary attached to next message.'
+            : ' Summary could not be attached.'}
+        </Notice>
+      );
+    }
+
+    // Note: the raw `codex_agent_call` block never reaches this renderer —
+    // `mergeToolResults` folds it into the `codex_agent` display variant
+    // before grouping. The `case 'codex_agent'` arm above handles it.
+
+    case 'rebase_resolution_info': {
+      const localTime = new Date(block.timestamp).toLocaleTimeString([], {
+        hour: 'numeric',
+        minute: '2-digit',
+      });
+      const title =
+        block.kind === 'rebase_conflict'
+          ? 'Chat initiated to resolve rebase conflicts'
+          : 'Chat initiated to resolve stash-pop conflicts';
+      const description =
+        block.kind === 'rebase_conflict'
+          ? `"git pull --rebase --autostash" left ${block.repoName} (branch "${block.branchName}") in a rebasing state.`
+          : `"git pull --rebase --autostash" completed the rebase on ${block.repoName} (branch "${block.branchName}") but could not re-apply the autostashed changes.`;
+      return (
+        <Notice
+          role="none"
+          intent="attention"
+          title={
+            <>
+              {title} <span className="fg-secondary">at {localTime}</span>
+            </>
+          }
+        >
+          {description}
+        </Notice>
+      );
+    }
+
+    case 'builtin_gh_chat_info': {
+      const localTime = new Date(block.timestamp).toLocaleTimeString([], {
+        hour: 'numeric',
+        minute: '2-digit',
+      });
+      const target =
+        block.repoName && block.branchName
+          ? `${block.repoName} (branch "${block.branchName}")`
+          : (block.repoName ?? 'this pull request');
+      const { source, description } = builtinGhChatBannerCopy(
+        block.kind,
+        target,
+      );
+      return (
+        <div className="flex items-start gap-2 rounded-lg border bg-fg-primary/[0.03] px-3 py-1.5 text-xs fg-secondary">
+          <AppCatalogInfoIcon
+            width="14"
+            height="14"
+            className="mt-0.5 flex-shrink-0"
+          />
+          <div className="space-y-0.5">
+            <div>
+              Chat initiated by <strong>{source}</strong> at {localTime}
+            </div>
+            <div>{description}</div>
+          </div>
+        </div>
+      );
+    }
+  }
+});

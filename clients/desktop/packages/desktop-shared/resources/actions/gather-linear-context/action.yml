@@ -1,0 +1,34 @@
+name: Gather Linear Context
+description: Detect Linear ticket candidates, validate their team prefixes against the Linear team list, and emit review context artifacts.
+inputs:
+  current_branch:
+    description: Current git branch name to scan for Linear ticket ids.
+  pr_json_file:
+    description: File path containing PR lookup JSON with a pr.title and pr.body.
+  max_tickets:
+    description: Maximum number of validated tickets whose full details should be fetched.
+    default: '3'
+outputs:
+  linear_context_file:
+    description: File path containing structured Linear context JSON.
+  linear_summary_file:
+    description: File path containing a readable Linear context summary.
+  detected_ticket_ids_json:
+    description: JSON array string of ticket ids validated against the Linear team-prefix list.
+  ticket_sources_json:
+    description: JSON array string describing validated ticket extraction sources.
+  ticket_count:
+    description: Number of validated Linear ticket ids.
+  has_linear_token:
+    description: 'true when a Linear API key was available to the action.'
+  team_list_fetched:
+    description: 'true when the Linear team list was fetched successfully.'
+  valid_team_prefixes_json:
+    description: JSON array string of valid Linear team prefixes used for validation.
+  candidate_ticket_ids_json:
+    description: JSON array string of raw ticket-shaped candidates found before team-prefix validation.
+  invalid_ticket_candidates_json:
+    description: JSON array string of rejected candidates and rejection reasons.
+runs:
+  using: node
+  main: index.js

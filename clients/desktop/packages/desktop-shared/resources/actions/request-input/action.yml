@@ -1,0 +1,57 @@
+name: Request Input
+description: Pause and request typed input from a human, then continue with their answers.
+inputs:
+  title:
+    description: Short heading shown above the form.
+    required: false
+    default: ''
+  message:
+    description: Human-facing message shown at the pause point.
+    required: false
+    default: ''
+  fields:
+    description: >
+      Single-line JSON array of PauseInputField objects. Each field requires
+      key, label, and type (string, boolean, number, or choice). Choice fields
+      require a non-empty options array. Optional fields include description,
+      required, default, min/max for numbers, and multiline for strings.
+    required: false
+    default: '[]'
+runs:
+  using: composite
+  steps:
+    - id: request
+      shell: node
+      run: |
+        import { appendFileSync } from 'node:fs';
+
+        const outputFile = process.env.{{BRAND_ENV_PREFIX}}_OUTPUT;
+        if (!outputFile) {
+          throw new Error('{{BRAND_ENV_PREFIX}}_OUTPUT is required');
+        }
+
+        const oneLine = (value, fallback = '') =>
+          String(value ?? fallback).replace(/\r?\n+/g, ' ').trim();
+
+        let fields = [];
+        const rawFields = process.env.INPUT_FIELDS;
+        if (rawFields && rawFields.trim() && rawFields.trim() !== '[]') {
+          const parsed = JSON.parse(rawFields);
+          if (!Array.isArray(parsed)) {
+            throw new Error('fields must be a JSON array');
+          }
+          fields = parsed;
+        }
+
+        const request = { fields };
+        const title = oneLine(process.env.INPUT_TITLE);
+        if (title) request.title = title;
+        const message = oneLine(process.env.INPUT_MESSAGE);
+        if (message) request.message = message;
+
+        appendFileSync(
+          outputFile,
+          `{{BRAND_ENV_PREFIX}}_INPUT_REQUEST=${JSON.stringify(request)}\n`,
+          'utf8',
+        );
+        appendFileSync(outputFile, '{{BRAND_ENV_PREFIX}}_PAUSE=true\n', 'utf8');

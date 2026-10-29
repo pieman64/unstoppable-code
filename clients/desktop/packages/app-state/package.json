@@ -1,0 +1,27 @@
+{
+  "name": "@canopy/app-state",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Shared Zustand store factories and the CanopyClientProvider consumed by the desktop and web feature UI. Stores are created per injected CanopyClient.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./personal-organization-upgrade": "./src/personal-organization-upgrade/index.ts",
+    "./terminal": "./src/terminal/index.ts",
+    "./script-actions": "./src/script-actions/index.ts",
+    "./cost": "./src/cost/index.ts",
+    "./billing": "./src/billing.ts",
+    "./settings": "./src/settings/index.ts"
+  },
+  "dependencies": {
+    "@canopy/app-core": "workspace:*",
+    "zustand": "^5.0.11",
+    "@canopy/protocol": "workspace:*"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  }
+}

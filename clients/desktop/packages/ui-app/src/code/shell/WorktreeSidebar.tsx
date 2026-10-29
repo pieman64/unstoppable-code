@@ -1,0 +1,150 @@
+'use client';
+
+import { type JSX, type ReactNode } from 'react';
+import { useActivityStore, useCapabilities } from '@canopy/app-state';
+import { WorkspacesSidebarSections } from './WorkspacesSidebarSections';
+import { SidebarChrome } from './sidebar';
+import { partitionWorkspaces } from './workspace-sections-model';
+
+/**
+ * The write-once worktree sidebar for the Code tab — unifies the desktop
+ * `WorktreeManager` sidebar and the web `PortalWorkspaceRail` over the neutral
+ * shell snapshot (`useActivityStore().snapshot`). Renders workspace sections
+ * (shared `WorkspaceSectionHeader`) each containing their worktrees (shared
+ * `WorktreeRow`), with selection + collapse.
+ *
+ * Worktree sections and mutations are delegated to
+ * {@link WorkspacesSidebarSections}; this wrapper owns only shell chrome and
+ * top-level actions.
+ */
+export interface WorktreeSidebarProps {
+  readonly selectedWorktreeLocalId?: string;
+  readonly onSelectWorktree: (
+    workspaceLocalId: string,
+    worktreeLocalId: string,
+  ) => void;
+  /** Host-owned worktree creation dispatch. */
+  readonly onAddWorktree?: (workspaceLocalId: string) => void;
+  /** Host-owned navigation rows rendered after the worktree sections. */
+  readonly navigationExtension?: ReactNode;
+  /** Workspace-level entry points owned by the host. */
+  readonly workspaceActions?: ReactNode;
+  readonly onAddWorkspace?: () => void;
+  readonly onCreateTask?: () => void;
+  /** Enlarges interactive targets without prescribing a responsive layout. */
+  readonly touchTargets?: boolean;
+}
+
+export function WorktreeSidebar({
+  selectedWorktreeLocalId,
+  onSelectWorktree,
+  onAddWorktree,
+  navigationExtension,
+  workspaceActions,
+  onAddWorkspace,
+  onCreateTask,
+  touchTargets = false,
+}: WorktreeSidebarProps): JSX.Element {
+  const snapshot = useActivityStore((state) => state.snapshot);
+  const capabilities = useCapabilities();
+  const workspacePartitions = partitionWorkspaces(
+    snapshot?.workspaces ?? [],
+    snapshot?.worktrees ?? [],
+  );
+  const hasGitWorkspaces =
+    workspacePartitions.visible.length > 0 ||
+    workspacePartitions.hidden.length > 0;
+
+  if (
+    !hasGitWorkspaces &&
+    !navigationExtension &&
+    !workspaceActions &&
+    !onAddWorkspace &&
+    !onCreateTask
+  ) {
+    return (
+      <div
+        className="px-4 py-6 text-center text-xs fg-secondary"
+        data-testid="worktree-sidebar-empty"
+      >
+        No projects.
+      </div>
+    );
+  }
+
+  // A selected worktree that has not reached the snapshot yet (first-load
+  // race) resolves to the canonical no-selection sentinel rather than a
+  // fabricated empty workspace id.
+  const selectedWorkspaceLocalId = selectedWorktreeLocalId
+    ? snapshot?.worktrees.find(
+        (worktree) => worktree.localId === selectedWorktreeLocalId,
+      )?.workspaceLocalId
+    : undefined;
+  const selectedTarget =
+    selectedWorktreeLocalId && selectedWorkspaceLocalId
+      ? {
+          kind: 'worktree' as const,
+          workspaceLocalId: selectedWorkspaceLocalId,
+          worktreeLocalId: selectedWorktreeLocalId,
+        }
+      : null;
+
+  return (
+    <SidebarChrome
+      width="full"
+      density={touchTargets ? 'touch' : 'default'}
+      data-testid="worktree-sidebar"
+    >
+      {(workspaceActions || onAddWorkspace || onCreateTask) && (
+        <div
+          className="flex flex-wrap gap-2 border-b p-2"
+          data-testid="worktree-sidebar-actions"
+        >
+          {workspaceActions}
+          {onAddWorkspace && (
+            <button
+              type="button"
+              className="rounded px-2 py-1 text-xs"
+              onClick={onAddWorkspace}
+            >
+              Add project
+            </button>
+          )}
+          {onCreateTask && (
+            <button
+              type="button"
+              className="rounded px-2 py-1 text-xs"
+              onClick={onCreateTask}
+            >
+              Create task
+            </button>
+          )}
+        </div>
+      )}
+      {!hasGitWorkspaces && (
+        <div
+          className="px-4 py-6 text-center text-xs fg-secondary"
+          data-testid="worktree-sidebar-empty"
+        >
+          No projects.
+        </div>
+      )}
+      {snapshot && (
+        <WorkspacesSidebarSections
+          state={snapshot}
+          capabilities={capabilities}
+          selected={selectedTarget}
+          onSelectWorktree={onSelectWorktree}
+          creationEnabled={onAddWorktree !== undefined}
+          onCreateWorktree={(workspaceLocalId) => {
+            onAddWorktree?.(workspaceLocalId);
+            return Promise.resolve({ status: 'pending' });
+          }}
+          touchTargets={touchTargets}
+          testIds={{ workspace: 'worktree-sidebar-workspace' }}
+        />
+      )}
+      {navigationExtension}
+    </SidebarChrome>
+  );
+}

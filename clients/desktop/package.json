@@ -1,0 +1,676 @@
+{
+  "name": "unstoppable-code-client",
+  "private": true,
+  "version": "0.26.8",
+  "license": "MIT",
+  "description": "Desktop client source build",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "packageManager": "pnpm@12.11.2",
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "12.11.2",
+      "onFail": "download"
+    }
+  },
+  "main": "./out/main/index.js",
+  "workspaces": [
+    "apps/desktop-app",
+    "packages/protocol",
+    "packages/artifact-crypto",
+    "packages/plugin-interop",
+    "packages/agent-actions",
+    "packages/agent-transcript",
+    "packages/core-runtime",
+    "packages/core-platform",
+    "packages/core-transport",
+    "packages/core-client",
+    "packages/desktop-shared",
+    "packages/desktop-instrumentation",
+    "packages/ui-shared",
+    "packages/ui-rich",
+    "packages/app-core",
+    "packages/app-state",
+    "packages/ui-app",
+    "packages/pipeline-interop",
+    "packages/mcp-oauth-core"
+  ],
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.293",
+    "@datadog/browser-rum": "^7.1.0",
+    "@datadog/electron-sdk": "^0.2.0",
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/sortable": "^10.0.0",
+    "@dnd-kit/utilities": "^3.2.2",
+    "@electron-toolkit/preload": "^3.0.2",
+    "@electron-toolkit/utils": "^4.0.0",
+    "@github/copilot-sdk": "1.0.15",
+    "@linear/sdk": "^79.0.0",
+    "@monaco-editor/react": "^4.7.0",
+    "@octokit/rest": "^22.0.1",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "ansi_up": "^6.0.6",
+    "electron-log": "^5.4.4",
+    "electron-updater": "^6.7.3",
+    "ignore": "^5.3.2",
+    "js-yaml": "^4.1.1",
+    "launchdarkly-node-client-sdk": "^3.3.1",
+    "markdown-to-jsx": "^9.9.0",
+    "monaco-editor": "^0.55.1",
+    "node-pty": "^1.1.0",
+    "ollama": "^0.6.3",
+    "picomatch": "^4.0.4",
+    "posthog-js": "1.434.8",
+    "posthog-node": "5.52.5",
+    "react": "^19.0.0",
+    "react-diff-viewer-continued": "^4.2.0",
+    "react-dom": "^19.0.0",
+    "recharts": "^3.8.1",
+    "slate": "^0.123.0",
+    "slate-history": "^0.113.1",
+    "slate-react": "^0.123.0",
+    "tar": "^7.5.20",
+    "tldts": "7.4.3",
+    "typescript": "~5.7.0",
+    "web-tree-sitter": "0.26.10",
+    "yauzl": "^2.10.0",
+    "yazl": "^3.3.1",
+    "zod": "4.3.6",
+    "zustand": "^5.0.11",
+    "tsx": "^4.21.0",
+    "@types/picomatch": "^4.0.3"
+  },
+  "devDependencies": {
+    "@electron/asar": "^3.4.1",
+    "@playwright/test": "^1.58.2",
+    "@tailwindcss/postcss": "^4.0.0",
+    "@tailwindcss/typography": "^0.5.0",
+    "@types/js-yaml": "^4.0.9",
+    "builder-util-runtime": "9.5.1",
+    "colorjs.io": "^0.6.1",
+    "electron": "^42.3.0",
+    "electron-vite": "^5.0.0",
+    "esbuild": "^0.25.12",
+    "javascript-obfuscator": "^5.4.3",
+    "postcss": "^8.0.0",
+    "prettier": "^3.8.1",
+    "sharp": "^0.34.5",
+    "tailwindcss": "^4.0.0",
+    "vite": "^6.0.0",
+    "jest": "^30.2.0",
+    "ts-jest": "^29.4.6",
+    "jest-environment-jsdom": "^30.2.0",
+    "@types/node": "^24.10.13",
+    "@types/jest": "^30.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@swc/core": "^1.15.40",
+    "@electron/rebuild": "^4.0.4",
+    "@types/yauzl": "^2.10.3",
+    "@types/yazl": "^3.3.1"
+  },
+  "publicTarballs": {
+    "xlsx": {
+      "version": "0.20.3",
+      "resolved": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
+      "integrity": "sha512-oLDq3jw7AcLqKWH2AhCpVTZl8mf6X2YReP+Neh0SJUzV/BdZYjth94tG5toiMB1PPrYtxOCfaoUCkvtuH+3AJA=="
+    }
+  },
+  "scripts": {
+    "setup:public": "node scripts/public-build/desktop.mjs setup",
+    "prepare:public": "node scripts/public-build/desktop.mjs prepare",
+    "start:public": "node scripts/public-build/desktop.mjs start",
+    "build:public": "node scripts/public-build/desktop.mjs build",
+    "typecheck:public": "node scripts/public-build/desktop.mjs typecheck",
+    "test:public": "node scripts/public-build/desktop.mjs test"
+  },
+  "claude-code": {
+    "version": "2.1.293",
+    "models": [
+      {
+        "id": "claude-fable-5-1",
+        "label": "Fable 5.1",
+        "family": "claude",
+        "familyLabel": "Claude",
+        "vendor": "anthropic",
+        "sortOrder": 10,
+        "description": "Most capable Claude model, for demanding reasoning and long-horizon agentic work",
+        "contextWindow": 1000000,
+        "gatewayId": "anthropic/claude-fable-5.1",
+        "extraChargeOnly": true,
+        "extraChargeMessage": "Depending on your Claude plan, this model may require extra usage credits",
+        "showMoreOnly": false,
+        "supportedThinkingLevels": [
+          "off",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ],
+        "cursorModelId": "claude-fable-5-1"
+      },
+      {
+        "id": "opus[1m]",
+        "label": "Opus 5.5",
+        "family": "claude",
+        "familyLabel": "Claude",
+        "vendor": "anthropic",
+        "sortOrder": 20,
+        "description": "Highly capable Claude model, for agentic coding and professional knowledge work",
+        "contextWindow": 1000000,
+        "gatewayId": "anthropic/claude-opus-5.5",
+        "showMoreOnly": false,
+        "supportedThinkingLevels": [
+          "off",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ],
+        "cursorModelId": "claude-opus-5-5"
+      },
+      {
+        "id": "sonnet",
+        "label": "Sonnet 5.5",
+        "family": "claude",
+        "familyLabel": "Claude",
+        "vendor": "anthropic",
+        "sortOrder": 40,
+        "description": "Balanced Claude model, for everyday coding and tool use",
+        "contextWindow": 1000000,
+        "gatewayId": "anthropic/claude-sonnet-5.5",
+        "showMoreOnly": false,
+        "supportedThinkingLevels": [
+          "off",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ],
+        "cursorModelId": "claude-sonnet-5-5"
+      },
+      {
+        "id": "haiku",
+        "label": "Haiku 5.5",
+        "family": "claude",
+        "familyLabel": "Claude",
+        "vendor": "anthropic",
+        "sortOrder": 50,
+        "description": "Fastest, lowest-cost Claude model, for high-throughput agent tasks",
+        "contextWindow": 1000000,
+        "gatewayId": "anthropic/claude-haiku-5.5",
+        "showMoreOnly": false,
+        "supportedThinkingLevels": [
+          "off",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ],
+        "cursorModelId": "claude-haiku-5-5"
+      },
+      {
+        "id": "claude-fable-5",
+        "label": "Fable 5",
+        "family": "claude",
+        "familyLabel": "Claude",
+        "vendor": "anthropic",
+        "sortOrder": 51,
+        "description": "Previous-generation Claude model for demanding reasoning and long-horizon agentic work",
+        "contextWindow": 1000000,
+        "gatewayId": "anthropic/claude-fable-5",
+        "extraChargeOnly": true,
+        "extraChargeMessage": "Depending on your Claude plan, this model may require extra usage credits",
+        "showMoreOnly": true,
+        "supportedThinkingLevels": [
+          "off",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ],
+        "cursorModelId": "claude-fable-5"
+      },
+      {
+        "id": "claude-opus-5",
+        "label": "Opus 5",
+        "family": "claude",
+        "familyLabel": "Claude",
+        "vendor": "anthropic",
+        "sortOrder": 30,
+        "description": "Highly capable Claude model, for agentic coding and professional knowledge work",
+        "contextWindow": 1000000,
+        "gatewayId": "anthropic/claude-opus-5",
+        "showMoreOnly": true,
+        "supportedThinkingLevels": [
+          "off",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ],
+        "cursorModelId": "claude-opus-5"
+      },
+      {
+        "id": "claude-sonnet-5",
+        "label": "Sonnet 5",
+        "family": "claude",
+        "familyLabel": "Claude",
+        "vendor": "anthropic",
+        "sortOrder": 45,
+        "description": "Balanced Claude model, for everyday coding and tool use",
+        "contextWindow": 1000000,
+        "gatewayId": "anthropic/claude-sonnet-5",
+        "showMoreOnly": true,
+        "supportedThinkingLevels": [
+          "off",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ],
+        "cursorModelId": "claude-sonnet-5"
+      },
+      {
+        "id": "claude-opus-4-8",
+        "label": "Opus 4.8",
+        "family": "claude",
+        "familyLabel": "Claude",
+        "vendor": "anthropic",
+        "sortOrder": 52,
+        "description": "Previous-generation Claude model for complex agentic and professional work",
+        "contextWindow": 200000,
+        "gatewayId": "anthropic/claude-opus-4.8",
+        "showMoreOnly": true,
+        "supportedThinkingLevels": [
+          "off",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "cursorModelId": "claude-opus-4-8"
+      },
+      {
+        "id": "claude-opus-4-7",
+        "label": "Opus 4.7",
+        "family": "claude",
+        "familyLabel": "Claude",
+        "vendor": "anthropic",
+        "sortOrder": 53,
+        "description": "Previous-generation Claude model for complex agentic and professional work",
+        "contextWindow": 200000,
+        "gatewayId": "anthropic/claude-opus-4.7",
+        "showMoreOnly": true,
+        "supportedThinkingLevels": [
+          "off",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "cursorModelId": "claude-opus-4-7"
+      },
+      {
+        "id": "claude-opus-4-6",
+        "label": "Opus 4.6",
+        "family": "claude",
+        "familyLabel": "Claude",
+        "vendor": "anthropic",
+        "sortOrder": 54,
+        "description": "Previous-generation Claude model for complex agentic and professional work",
+        "contextWindow": 200000,
+        "gatewayId": "anthropic/claude-opus-4.6",
+        "showMoreOnly": true,
+        "supportedThinkingLevels": [
+          "off",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "cursorModelId": "claude-opus-4-6"
+      },
+      {
+        "id": "claude-haiku-4-5-20251001",
+        "label": "Haiku 4.5",
+        "family": "claude",
+        "familyLabel": "Claude",
+        "vendor": "anthropic",
+        "sortOrder": 55,
+        "description": "Previous-generation Claude model for fast, high-throughput agent tasks",
+        "contextWindow": 200000,
+        "gatewayId": "anthropic/claude-haiku-4.5",
+        "showMoreOnly": true,
+        "supportedThinkingLevels": [
+          "off",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "cursorModelId": "claude-haiku-4-5"
+      }
+    ],
+    "modelAliases": {
+      "fable": "claude-fable-5-1",
+      "fable[1m]": "claude-fable-5-1",
+      "opus": "opus[1m]",
+      "claude-opus-5-5": "opus[1m]",
+      "sonnet[1m]": "sonnet",
+      "claude-sonnet-5-5": "sonnet",
+      "claude-sonnet-4-5": "sonnet",
+      "claude-sonnet-4-5-20250514": "sonnet",
+      "claude-sonnet-4-5-20250929": "sonnet",
+      "claude-sonnet-4-6": "sonnet",
+      "claude-haiku-5-5": "haiku",
+      "claude-haiku-4-5": "claude-haiku-4-5-20251001"
+    }
+  },
+  "codex": {
+    "version": "0.159.0",
+    "appServerTypesDir": "packages/desktop-shared/src/node/codex-runtime/generated",
+    "models": [
+      {
+        "id": "gpt-6-astra",
+        "label": "GPT 6 Astra",
+        "family": "codex",
+        "familyLabel": "Codex",
+        "vendor": "openai",
+        "sortOrder": 40,
+        "description": "Frontier Codex model for complex coding work",
+        "contextWindow": 272000,
+        "showMoreOnly": false,
+        "supportedThinkingLevels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ],
+        "cursorModelId": "gpt-6-astra"
+      },
+      {
+        "id": "gpt-6.1-sol",
+        "label": "GPT 6.1 Sol",
+        "family": "codex",
+        "familyLabel": "Codex",
+        "vendor": "openai",
+        "sortOrder": 41,
+        "description": "Reliable Codex model for everyday coding work",
+        "contextWindow": 272000,
+        "showMoreOnly": false,
+        "supportedThinkingLevels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ],
+        "cursorModelId": "gpt-6.1-sol"
+      },
+      {
+        "id": "gpt-6-sol",
+        "label": "GPT 6 Sol",
+        "family": "codex",
+        "familyLabel": "Codex",
+        "vendor": "openai",
+        "sortOrder": 43,
+        "description": "Reliable Codex model for everyday coding work",
+        "contextWindow": 272000,
+        "showMoreOnly": true,
+        "supportedThinkingLevels": [
+          "off",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ],
+        "cursorModelId": "gpt-6-sol"
+      },
+      {
+        "id": "gpt-6-luna",
+        "label": "GPT 6 Luna",
+        "family": "codex",
+        "familyLabel": "Codex",
+        "vendor": "openai",
+        "sortOrder": 42,
+        "description": "Fast Codex model for focused coding tasks",
+        "contextWindow": 272000,
+        "gatewayId": "openai/gpt-6-luna",
+        "showMoreOnly": false,
+        "supportedThinkingLevels": [
+          "off",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "cursorModelId": "gpt-6-luna"
+      },
+      {
+        "id": "gpt-5.6-sol",
+        "label": "GPT 5.6 Sol",
+        "family": "codex",
+        "familyLabel": "Codex",
+        "vendor": "openai",
+        "sortOrder": 50,
+        "description": "Reliable Codex model for complex coding work",
+        "contextWindow": 272000,
+        "gatewayId": "openai/gpt-5.6-sol",
+        "showMoreOnly": true,
+        "supportedThinkingLevels": [
+          "off",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "cursorModelId": "gpt-5.6-sol"
+      },
+      {
+        "id": "gpt-5.6-terra",
+        "label": "GPT 5.6 Terra",
+        "family": "codex",
+        "familyLabel": "Codex",
+        "vendor": "openai",
+        "sortOrder": 60,
+        "description": "Balanced Codex model for everyday development",
+        "contextWindow": 272000,
+        "gatewayId": "openai/gpt-5.6-terra",
+        "showMoreOnly": false,
+        "supportedThinkingLevels": [
+          "off",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "cursorModelId": "gpt-5.6-terra"
+      },
+      {
+        "id": "gpt-5.6-luna",
+        "label": "GPT 5.6 Luna",
+        "family": "codex",
+        "familyLabel": "Codex",
+        "vendor": "openai",
+        "sortOrder": 70,
+        "description": "Fast Codex model for focused coding tasks",
+        "contextWindow": 272000,
+        "gatewayId": "openai/gpt-5.6-luna",
+        "showMoreOnly": true,
+        "supportedThinkingLevels": [
+          "off",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "cursorModelId": "gpt-5.6-luna"
+      },
+      {
+        "id": "gpt-5.3-codex-spark",
+        "label": "GPT 5.3-Codex-Spark",
+        "family": "codex",
+        "familyLabel": "Codex",
+        "vendor": "openai",
+        "sortOrder": 90,
+        "description": "Low-latency native Codex model",
+        "contextWindow": 128000,
+        "showMoreOnly": false,
+        "supportedThinkingLevels": [
+          "off",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "cursorModelId": "gpt-5.3-codex-spark"
+      }
+    ],
+    "modelAliases": {
+      "gpt-5.4": "gpt-6-sol",
+      "gpt-5.4-mini": "gpt-6-luna",
+      "gpt-5.5": "gpt-6.1-sol"
+    }
+  },
+  "gh-cli": {
+    "version": "2.99.0"
+  },
+  "ripgrep": {
+    "version": "15.2.0"
+  },
+  "dictate": {
+    "version": "0.2.1"
+  },
+  "rtk": {
+    "version": "0.47.0"
+  },
+  "code-graph": {
+    "grammars": {
+      "tree-sitter-typescript": "0.23.2",
+      "tree-sitter-javascript": "0.25.0",
+      "@tree-sitter-grammars/tree-sitter-markdown": "0.3.2",
+      "tree-sitter-swift": "0.7.1"
+    }
+  },
+  "delegation-file-broker": {
+    "version": "1.0.0"
+  },
+  "copilot-cli": {
+    "version": "1.0.89",
+    "artifacts": {
+      "darwin-arm64": {
+        "url": "https://registry.npmjs.org/@github/copilot-darwin-arm64/-/copilot-darwin-arm64-1.0.89.tgz",
+        "integrity": "sha512-CaBNRZ1gRgatEdlgL2l/Ykw+79sOOYhBWFh3ohifYL7XgPBLf4xnXf59WlOTRT3Ojm4RSbbu/qVwBAa/elIdPQ==",
+        "executableSha256": "97c12874d9adb9738374a9fb8a52cd724b81132ff815140f7e017bac706feba7",
+        "archiveBytes": 93479386
+      },
+      "darwin-x64": {
+        "url": "https://registry.npmjs.org/@github/copilot-darwin-x64/-/copilot-darwin-x64-1.0.89.tgz",
+        "integrity": "sha512-C+O/Rx1NuVjTiNHOEfpN2t8GyPhdc8hYuiPScggsXhQz4J2VGXp+l+249HMh/62P8bkZZS/Hze8kJjy03qemTA==",
+        "executableSha256": "82a185e0e52cb40f6f7a168e49ab78c829219c92e04a91c0892f221bd39a03f2",
+        "archiveBytes": 104996703
+      },
+      "win32-x64": {
+        "url": "https://registry.npmjs.org/@github/copilot-win32-x64/-/copilot-win32-x64-1.0.89.tgz",
+        "integrity": "sha512-m8j6ItUYVkikFPJ3TxoHl1hI6mGydynDGuqkdXXfr/Pmutj0LavlFpWhUYFR+6utjbYN5q6gpPdGxZLs6K84KA==",
+        "executableSha256": "155778dd92a2171af9b72e85a29b96dbfdc959c831f36fa18228cee667cd8a0c",
+        "archiveBytes": 93158287
+      },
+      "win32-arm64": {
+        "url": "https://registry.npmjs.org/@github/copilot-win32-arm64/-/copilot-win32-arm64-1.0.89.tgz",
+        "integrity": "sha512-+cUikLc7T7EJrzl35vcVSp+7tsjfPqVhh1llo9eewe4NJx5YyCubeAsGNQCc41o/2nBthb/mUroENFf2rmElIw==",
+        "executableSha256": "58ac03ee374eb367afdb459fb7c979aa98fd2e3c895e1fe4581c8268744d6607",
+        "archiveBytes": 93369785
+      }
+    }
+  },
+  "cursor-cli": {
+    "version": "2026.09.08-6caf4ff",
+    "artifacts": {
+      "darwin-arm64": {
+        "url": "https://downloads.cursor.com/lab/2026.09.08-6caf4ff/darwin/arm64/agent-cli-package.tar.gz",
+        "sha256": "9c456cc432adc476202a2b09c21a10944fdf484b3ca55dcbf939bbc8ce30dcbe",
+        "archiveBytes": 174183353,
+        "filesSha256": "09cfe145612202a9fa3ffae0a687dafd116aa393d2d854f030ce105a0fb6edd9"
+      },
+      "darwin-x64": {
+        "url": "https://downloads.cursor.com/lab/2026.09.08-6caf4ff/darwin/x64/agent-cli-package.tar.gz",
+        "sha256": "a783b4d5f938b3ac7a92f65054c66422d8947138897029fdc9c2e8164397bc17",
+        "archiveBytes": 181395360,
+        "filesSha256": "6ffd46c1ae30a801cfcad3e5d9f0970846a9de7c18114cacccd8ffa4a4df0501"
+      },
+      "win32-x64": {
+        "url": "https://downloads.cursor.com/lab/2026.09.08-6caf4ff/windows/x64/agent-cli-package.zip",
+        "sha256": "199e23182e9880ae41474ba5c573580740d48f2c4933e42e79ca7e2e4ba3c5be",
+        "archiveBytes": 74158619,
+        "filesSha256": "8d62f57b8aad36059325c0bd9e7b7b63a1cb4785043ef2cde8c5d27d1c6313f9"
+      },
+      "win32-arm64": {
+        "url": "https://downloads.cursor.com/lab/2026.09.08-6caf4ff/windows/arm64/agent-cli-package.zip",
+        "sha256": "1209a38e2d5102c88393e4c43d4fd5d53a6c107a290e2c425fb3adc4794e9533",
+        "archiveBytes": 72069943,
+        "filesSha256": "19d2dade30c7970f53c6a1c93f52b487eb4d3bdd3c035c6e895186bebf2b398a"
+      }
+    }
+  },
+  "opencode-cli": {
+    "version": "2.0.32",
+    "artifacts": {
+      "darwin-arm64": {
+        "url": "https://registry.npmjs.org/@opencode/cli-darwin-arm64/-/cli-darwin-arm64-2.0.32.tgz",
+        "integrity": "sha512-wASwXBsWaOAYcZrh4ZLl4oaVxPCUAGVb7zZvXBBF8TjWE4uWgY0D2tj6gn80JfcO3b/s9woM6dP/gKqYKK2EdQ==",
+        "archiveBytes": 85086919,
+        "executableSha256": "e43ec2df6f36842fd17d1a71a866acb9a84884b489988376c19bf9a7250dabbf"
+      },
+      "darwin-x64": {
+        "url": "https://registry.npmjs.org/@opencode/cli-darwin-x64-baseline/-/cli-darwin-x64-baseline-2.0.32.tgz",
+        "integrity": "sha512-r/T6QeDkYqzDHdI6VclvlJXqU6j0tbBmsP1+a1S+AyZxqEsY4vm9veFaoT5WQ/ekGH4TsAp3x0XtyF/m8eLFoQ==",
+        "archiveBytes": 90111649,
+        "executableSha256": "5de9ff73d2e46934371dd96c9f012be58b98fc0084f966e643fa89d3b6e69070"
+      },
+      "win32-arm64": {
+        "url": "https://registry.npmjs.org/@opencode/cli-windows-arm64/-/cli-windows-arm64-2.0.32.tgz",
+        "integrity": "sha512-T1UGNtrcgDoovpRD3nLqpfZoUh8+pDPlEewALD3QIUOLvuHyy4kUAFra6lLl5kitzqHN5Lm+2iQKX5F81A5hGw==",
+        "archiveBytes": 95464554,
+        "executableSha256": "5b540c6cb688b4746b3997e263d1eb608d1f3dc9edbcc36ea00284a4e4477e5b"
+      },
+      "win32-x64": {
+        "url": "https://registry.npmjs.org/@opencode/cli-windows-x64-baseline/-/cli-windows-x64-baseline-2.0.32.tgz",
+        "integrity": "sha512-8vim3HxOdy5VaL686BvwozryJCaiet5PiMIC/Ir9rP6h9m+qtd9KBV/2Hd2yuXvpq8ykNlFgHziAqwfsbkyrQg==",
+        "archiveBytes": 100022258,
+        "executableSha256": "ed3583bcdf97f0908568a857755da0493ffb9b10fce0c1d1d545037144b73799"
+      }
+    }
+  }
+}

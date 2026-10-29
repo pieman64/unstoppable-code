@@ -1,0 +1,237 @@
+{
+  "$comment": "Golden vectors for the capability-bundle canonical serialization + digest. GENERATED from canopy packages/protocol/src/capability-bundle (serializeCanonicalCapabilityBundle + sha256/base64url). This file is checked into BOTH canopy and agentic-core and MUST stay byte-identical: it is the only thing that catches canonical-serialization drift between producer and consumer.",
+  "version": 1,
+  "vectors": [
+    {
+      "name": "empty-selection",
+      "note": "No capabilities selected. mcpServers is [] — the case a record-shaped consumer schema rejects outright.",
+      "bundle": {
+        "digest": "cb:v1:Mq2pw_DeDPeNj_QMjqNr16aaE23_V1a0VaQ8BrSV3W4",
+        "payload": {
+          "version": 1,
+          "instructions": [],
+          "skills": [],
+          "mcpServers": [],
+          "provenance": {
+            "collectionIds": [],
+            "skillRefs": [],
+            "pluginRefs": [],
+            "mcpServerRefs": [],
+            "resolved": []
+          },
+          "warnings": []
+        }
+      }
+    },
+    {
+      "name": "populated-canonical-wire",
+      "note": "Post-message path: canopy sends the stored payload, i.e. the parsed canonical serialization.",
+      "bundle": {
+        "digest": "cb:v1:A4s6MS0A3vrRRXLjoUNgJ5fv9WEHJ26_fOsN1FPiIkk",
+        "payload": {
+          "version": 1,
+          "instructions": [
+            "Always answer in British English.",
+            "Cite sources."
+          ],
+          "skills": [
+            {
+              "name": "myplugin-review",
+              "description": "Reviews a diff",
+              "content": "---\nname: review\ndescription: Reviews a diff\nallowed-tools: read, grep\n---\nReview $ARGUMENTS carefully.\n",
+              "files": [
+                {
+                  "path": "data/checklist.md",
+                  "content": "- correctness\n- security\n"
+                }
+              ]
+            },
+            {
+              "name": "greet",
+              "description": "Greets a person",
+              "content": "Say hello to $ARGUMENTS.\n"
+            }
+          ],
+          "mcpServers": [
+            {
+              "name": "linear",
+              "url": "https://proxy.example.com/mcp/linear",
+              "headers": {
+                "x-canopy-proxy": "v1",
+                "x-session": "abc"
+              }
+            },
+            {
+              "name": "github",
+              "url": "https://proxy.example.com/mcp/github"
+            }
+          ],
+          "fileTrees": [
+            {
+              "root": "plugins/myplugin",
+              "entries": [
+                {
+                  "path": "agents/reviewer.md",
+                  "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "size": 128
+                },
+                {
+                  "path": "hooks/pre.sh",
+                  "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "size": 42
+                }
+              ]
+            }
+          ],
+          "provenance": {
+            "collectionIds": ["col-1", "col-2"],
+            "skillRefs": [
+              {
+                "sourceId": "cloud-custom",
+                "skillName": "greet"
+              }
+            ],
+            "pluginRefs": [
+              {
+                "marketplaceId": "mp-1",
+                "pluginName": "myplugin"
+              }
+            ],
+            "mcpServerRefs": [
+              {
+                "serverId": "srv-1",
+                "configId": "cfg-1"
+              }
+            ],
+            "resolved": [
+              {
+                "kind": "mcp",
+                "ref": "srv-1/cfg-1"
+              },
+              {
+                "kind": "plugin",
+                "ref": "mp-1/myplugin",
+                "contentHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+              },
+              {
+                "kind": "skill",
+                "ref": "cloud-custom/aaa",
+                "contentHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+              },
+              {
+                "kind": "skill",
+                "ref": "cloud-custom/greet"
+              }
+            ]
+          },
+          "warnings": ["plugin part \"commands\" could not be bundled; skipped"]
+        }
+      }
+    },
+    {
+      "name": "populated-producer-inmemory",
+      "note": "Session-start path: canopy sends the producer object VERBATIM, so provenance.resolved is unsorted and headers are unsorted. Same digest as the canonical wire vector.",
+      "bundle": {
+        "digest": "cb:v1:A4s6MS0A3vrRRXLjoUNgJ5fv9WEHJ26_fOsN1FPiIkk",
+        "payload": {
+          "version": 1,
+          "instructions": [
+            "Always answer in British English.",
+            "Cite sources."
+          ],
+          "skills": [
+            {
+              "name": "myplugin-review",
+              "description": "Reviews a diff",
+              "content": "---\nname: review\ndescription: Reviews a diff\nallowed-tools: read, grep\n---\nReview $ARGUMENTS carefully.\n",
+              "files": [
+                {
+                  "path": "data/checklist.md",
+                  "content": "- correctness\n- security\n"
+                }
+              ]
+            },
+            {
+              "name": "greet",
+              "description": "Greets a person",
+              "content": "Say hello to $ARGUMENTS.\n"
+            }
+          ],
+          "mcpServers": [
+            {
+              "name": "linear",
+              "url": "https://proxy.example.com/mcp/linear",
+              "headers": {
+                "x-session": "abc",
+                "x-canopy-proxy": "v1"
+              }
+            },
+            {
+              "name": "github",
+              "url": "https://proxy.example.com/mcp/github"
+            }
+          ],
+          "fileTrees": [
+            {
+              "root": "plugins/myplugin",
+              "entries": [
+                {
+                  "path": "agents/reviewer.md",
+                  "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "size": 128
+                },
+                {
+                  "path": "hooks/pre.sh",
+                  "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "size": 42
+                }
+              ]
+            }
+          ],
+          "provenance": {
+            "collectionIds": ["col-1", "col-2"],
+            "skillRefs": [
+              {
+                "sourceId": "cloud-custom",
+                "skillName": "greet"
+              }
+            ],
+            "pluginRefs": [
+              {
+                "marketplaceId": "mp-1",
+                "pluginName": "myplugin"
+              }
+            ],
+            "mcpServerRefs": [
+              {
+                "serverId": "srv-1",
+                "configId": "cfg-1"
+              }
+            ],
+            "resolved": [
+              {
+                "kind": "plugin",
+                "ref": "mp-1/myplugin",
+                "contentHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+              },
+              {
+                "kind": "skill",
+                "ref": "cloud-custom/greet"
+              },
+              {
+                "kind": "mcp",
+                "ref": "srv-1/cfg-1"
+              },
+              {
+                "kind": "skill",
+                "ref": "cloud-custom/aaa",
+                "contentHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+              }
+            ]
+          },
+          "warnings": ["plugin part \"commands\" could not be bundled; skipped"]
+        }
+      }
+    }
+  ]
+}

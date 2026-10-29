@@ -1,0 +1,14 @@
+{
+  "version": 2,
+  "name": "Starter Prompt Blueprint",
+  "description": "Version two Blueprint",
+  "instructions": "Help with the project.",
+  "plugins": [],
+  "customSkills": [],
+  "starterPrompts": [
+    {
+      "id": "begin",
+      "text": "Summarize this project."
+    }
+  ]
+}

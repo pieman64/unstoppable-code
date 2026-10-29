@@ -1,0 +1,35 @@
+name: GitHub Fetch Branch PR
+description: Resolve the current branch's pull request with gh and emit structured PR context.
+scope: [directory, worktree]
+inputs:
+  branch:
+    description: Optional branch name override. Defaults to the current branch.
+    required: false
+outputs:
+  status:
+    description: 'PR lookup status: found, not_found, or error.'
+  has_pr:
+    description: Whether an associated pull request was found.
+  current_branch:
+    description: Branch name used for the PR lookup.
+  pr_number:
+    description: Pull request number when a PR was found.
+  pr_url:
+    description: Pull request URL when a PR was found.
+  title:
+    description: Pull request title when a PR was found.
+  base_branch:
+    description: Pull request base branch when a PR was found.
+  head_branch:
+    description: Pull request head branch when a PR was found.
+  commit_sha:
+    description: Pull request head commit SHA when a PR was found.
+  error_message:
+    description: Error detail when lookup failed or no PR was found.
+  details_json_file:
+    description: File path containing structured PR lookup JSON.
+  summary_file:
+    description: File path containing a readable PR summary.
+runs:
+  using: node
+  main: index.js

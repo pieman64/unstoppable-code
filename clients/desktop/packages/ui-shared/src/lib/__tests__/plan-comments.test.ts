@@ -1,0 +1,67 @@
+import {
+  formatPlanCommentTime,
+  planCommentAvatarColor,
+  planCommentInitials,
+} from '../plan-comments';
+
+describe('planCommentInitials', () => {
+  it('uses first + last word initials for multi-word names', () => {
+    expect(planCommentInitials('Aaron Quirk')).toBe('AQ');
+    expect(planCommentInitials('  ada  beatrice  lovelace ')).toBe('AL');
+  });
+
+  it('uses the first two letters of a single-word name', () => {
+    expect(planCommentInitials('teammate')).toBe('TE');
+  });
+
+  it('falls back to "?" for empty input', () => {
+    expect(planCommentInitials('   ')).toBe('?');
+  });
+});
+
+describe('planCommentAvatarColor', () => {
+  it('is deterministic for the same key', () => {
+    expect(planCommentAvatarColor('user-42')).toEqual(
+      planCommentAvatarColor('user-42'),
+    );
+  });
+
+  it('returns white text on an hsl background', () => {
+    const color = planCommentAvatarColor('user-7');
+    expect(color.color).toBe('hsl(0 0% 100%)');
+    expect(color.backgroundColor).toMatch(/^hsl\(\d+ 52% 42%\)$/);
+  });
+});
+
+describe('formatPlanCommentTime', () => {
+  const now = Date.UTC(2026, 5, 19, 18, 0, 0);
+  const iso = (deltaMs: number): string =>
+    new Date(now - deltaMs).toISOString();
+
+  it('renders sub-minute times as "just now"', () => {
+    expect(formatPlanCommentTime(iso(5_000), now).relative).toBe('just now');
+  });
+
+  it('renders minute, hour, and day buckets', () => {
+    expect(formatPlanCommentTime(iso(5 * 60_000), now).relative).toBe('5m ago');
+    expect(formatPlanCommentTime(iso(3 * 3_600_000), now).relative).toBe(
+      '3h ago',
+    );
+    expect(formatPlanCommentTime(iso(2 * 86_400_000), now).relative).toBe(
+      '2d ago',
+    );
+  });
+
+  it('falls back to a short date past a week and keeps an absolute tooltip', () => {
+    const result = formatPlanCommentTime(iso(10 * 86_400_000), now);
+    expect(result.relative).not.toMatch(/ago/);
+    expect(result.absolute).not.toBe('');
+  });
+
+  it('tolerates an unparseable timestamp', () => {
+    expect(formatPlanCommentTime('not-a-date', now)).toEqual({
+      relative: '',
+      absolute: 'not-a-date',
+    });
+  });
+});

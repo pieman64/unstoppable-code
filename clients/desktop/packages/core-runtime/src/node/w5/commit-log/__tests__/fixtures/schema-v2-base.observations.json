@@ -1,0 +1,265 @@
+{
+  "base": "9501d6fdc35bcda4d02a98fadcc12400a1db7dd7",
+  "observations": {
+    "revisions": {
+      "{\"kind\":\"workspaces\"}": 2,
+      "{\"kind\":\"workspace\",\"workspaceId\":\"alpha\"}": 1,
+      "{\"kind\":\"workspace\",\"workspaceId\":\"bravo\"}": 1,
+      "{\"kind\":\"workspace\",\"workspaceId\":\"charlie\"}": 1,
+      "{\"kind\":\"workspace\",\"workspaceId\":\"unknown\"}": 0
+    },
+    "lookups": {
+      "applied": {
+        "status": "replay",
+        "commitId": 2,
+        "outcome": { "workspaceId": "alpha", "name": "Alpha" }
+      },
+      "applied:other-parameters": { "status": "key-reused" },
+      "expired": { "status": "replay-expired", "commitId": 1 },
+      "expired:other-parameters": { "status": "key-reused" },
+      "pending": {
+        "status": "replay",
+        "commitId": 3,
+        "outcome": { "workspaceId": "bravo" }
+      },
+      "pending:other-parameters": { "status": "key-reused" },
+      "conflicted": {
+        "status": "commit-recovery-required",
+        "commitId": 4,
+        "diagnostics": {
+          "conflicts": [
+            {
+              "path": "/w5-fixture/workspaces/charlie/workspace.json",
+              "expected": null,
+              "actual": "a03f2386ae06b21109577020844df367857b72c2fcce384c1896fed98a89c82b"
+            }
+          ],
+          "written": []
+        }
+      },
+      "conflicted:other-parameters": { "status": "key-reused" },
+      "live": { "status": "in-progress", "reservationId": "r-live" },
+      "live:other-parameters": { "status": "key-reused" },
+      "failed": {
+        "status": "recovery-required",
+        "reservationId": "r-failed",
+        "diagnostics": {
+          "operation": "core.workspace.create",
+          "errorName": "Error",
+          "errorCode": "EACCES"
+        }
+      },
+      "failed:other-parameters": { "status": "key-reused" },
+      "unknown": { "status": "none" },
+      "unknown:other-parameters": { "status": "none" }
+    },
+    "replays": {
+      "applied": {
+        "result": {
+          "status": "replayed",
+          "commitId": 2,
+          "outcome": { "workspaceId": "alpha", "name": "Alpha" }
+        }
+      },
+      "expired": { "result": { "status": "replay-expired", "commitId": 1 } },
+      "pending": {
+        "result": {
+          "status": "replayed",
+          "commitId": 3,
+          "outcome": { "workspaceId": "bravo" }
+        }
+      },
+      "conflicted": {
+        "error": {
+          "name": "W5CommitRefusedError",
+          "reason": "recovery-required",
+          "details": { "commitId": 4 }
+        }
+      }
+    },
+    "pendingCommits": [
+      {
+        "commitId": 3,
+        "operation": "core.workspace.create",
+        "files": [
+          {
+            "path": "/w5-fixture/workspaces/bravo/workspace.json",
+            "previousFingerprint": null,
+            "contents": "{\"name\":\"Bravo\"}"
+          }
+        ]
+      }
+    ],
+    "recoveryRequiredCommitIds": [4],
+    "recoveryRequiredCommitDiagnostics": [
+      {
+        "commitId": 4,
+        "conflictCount": 1,
+        "writtenFileCount": 0,
+        "unexpectedFailure": false
+      }
+    ],
+    "reservations": [
+      {
+        "reservationId": "r-failed",
+        "operation": "core.workspace.create",
+        "state": "recovery-required",
+        "diagnostics": {
+          "operation": "core.workspace.create",
+          "errorName": "Error",
+          "errorCode": "EACCES"
+        }
+      },
+      {
+        "reservationId": "r-live",
+        "operation": "core.workspace.create",
+        "state": "reserved",
+        "diagnostics": {
+          "kind": "local-workspace-create",
+          "workspaceId": "delta",
+          "ownedPaths": ["/w5-fixture/wörkspaces/delta"],
+          "phase": "member-import",
+          "repositories": [
+            {
+              "id": "source",
+              "role": "source",
+              "status": "completed",
+              "action": "clone",
+              "owned": true,
+              "path": "/w5-fixture/wörkspaces/delta/source"
+            },
+            {
+              "id": "member-1",
+              "role": "member",
+              "status": "started",
+              "owned": false
+            }
+          ]
+        }
+      }
+    ],
+    "snapshot": {
+      "error": {
+        "name": "W5CommitRefusedError",
+        "reason": "recovery-required",
+        "details": { "commitId": 3 }
+      }
+    },
+    "secondWriter": {
+      "error": { "name": "W5CommitLogError", "code": "WRITER_UNAVAILABLE" }
+    },
+    "liveDiagnosticsUpdate": {},
+    "interruptedReservations": 1,
+    "afterStartupRecovery": {
+      "reservations": [
+        {
+          "reservationId": "r-failed",
+          "operation": "core.workspace.create",
+          "state": "recovery-required",
+          "diagnostics": {
+            "operation": "core.workspace.create",
+            "errorName": "Error",
+            "errorCode": "EACCES"
+          }
+        },
+        {
+          "reservationId": "r-live",
+          "operation": "core.workspace.create",
+          "state": "recovery-required",
+          "diagnostics": {
+            "kind": "local-workspace-create",
+            "workspaceId": "delta",
+            "ownedPaths": ["/w5-fixture/wörkspaces/delta"],
+            "phase": "member-import",
+            "repositories": [
+              {
+                "id": "source",
+                "role": "source",
+                "status": "completed",
+                "action": "clone",
+                "owned": true,
+                "path": "/w5-fixture/wörkspaces/delta/source"
+              },
+              {
+                "id": "member-1",
+                "role": "member",
+                "status": "started",
+                "owned": false
+              }
+            ]
+          }
+        }
+      ],
+      "lookups": {
+        "applied": {
+          "status": "replay",
+          "commitId": 2,
+          "outcome": { "workspaceId": "alpha", "name": "Alpha" }
+        },
+        "applied:other-parameters": { "status": "key-reused" },
+        "expired": { "status": "replay-expired", "commitId": 1 },
+        "expired:other-parameters": { "status": "key-reused" },
+        "pending": {
+          "status": "replay",
+          "commitId": 3,
+          "outcome": { "workspaceId": "bravo" }
+        },
+        "pending:other-parameters": { "status": "key-reused" },
+        "conflicted": {
+          "status": "commit-recovery-required",
+          "commitId": 4,
+          "diagnostics": {
+            "conflicts": [
+              {
+                "path": "/w5-fixture/workspaces/charlie/workspace.json",
+                "expected": null,
+                "actual": "a03f2386ae06b21109577020844df367857b72c2fcce384c1896fed98a89c82b"
+              }
+            ],
+            "written": []
+          }
+        },
+        "conflicted:other-parameters": { "status": "key-reused" },
+        "live": {
+          "status": "recovery-required",
+          "reservationId": "r-live",
+          "diagnostics": {
+            "kind": "local-workspace-create",
+            "workspaceId": "delta",
+            "ownedPaths": ["/w5-fixture/wörkspaces/delta"],
+            "phase": "member-import",
+            "repositories": [
+              {
+                "id": "source",
+                "role": "source",
+                "status": "completed",
+                "action": "clone",
+                "owned": true,
+                "path": "/w5-fixture/wörkspaces/delta/source"
+              },
+              {
+                "id": "member-1",
+                "role": "member",
+                "status": "started",
+                "owned": false
+              }
+            ]
+          }
+        },
+        "live:other-parameters": { "status": "key-reused" },
+        "failed": {
+          "status": "recovery-required",
+          "reservationId": "r-failed",
+          "diagnostics": {
+            "operation": "core.workspace.create",
+            "errorName": "Error",
+            "errorCode": "EACCES"
+          }
+        },
+        "failed:other-parameters": { "status": "key-reused" },
+        "unknown": { "status": "none" },
+        "unknown:other-parameters": { "status": "none" }
+      }
+    }
+  }
+}

@@ -1,0 +1,1 @@
+export { WorkflowIcon } from './AppIcons';

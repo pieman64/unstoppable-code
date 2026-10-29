@@ -1,0 +1,8 @@
+{
+  "tailwind": {
+    "css": "src/renderer/src/styles/globals.css"
+  },
+  "aliases": {
+    "ui": "./src/renderer/src/components/shared"
+  }
+}

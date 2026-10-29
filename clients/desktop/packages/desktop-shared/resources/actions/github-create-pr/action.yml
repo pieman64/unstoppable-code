@@ -1,0 +1,40 @@
+name: GitHub Create PR
+description: Detect existing pull requests across the workspace and create missing PRs with gh.
+scope: worktree
+inputs:
+  pr_model:
+    description: Optional PR-generation model override. Falls back to {{BRAND_ENV_PREFIX}}_PREF_PR_GENERATION_MODEL and then Sonnet.
+    required: false
+  pr_thinking_level:
+    description: >
+      Optional thinking level override. Valid values: off, low, medium, high,
+      xhigh, max. Falls back to {{BRAND_ENV_PREFIX}}_PREF_PR_GENERATION_THINKING_LEVEL.
+    required: false
+  pr_instructions:
+    description: Optional extra PR instructions. Falls back to {{BRAND_ENV_PREFIX}}_PREF_PR_INSTRUCTIONS.
+    required: false
+  pr_instruction_mode:
+    description: Optional instruction merge mode. Use append or replace. Falls back to {{BRAND_ENV_PREFIX}}_PREF_PR_INSTRUCTION_MODE.
+    required: false
+outputs:
+  results_json:
+    description: Minified JSON array of per-repo PR creation results.
+  results_file:
+    description: File path containing the formatted per-repo results JSON array.
+  summary_file:
+    description: File path containing a readable PR summary.
+  repo_count:
+    description: Total number of discovered repos processed.
+  created_count:
+    description: Number of repos where a new PR was created.
+  existing_count:
+    description: Number of repos that already had an open PR.
+  noop_count:
+    description: Number of repos that required no PR action.
+  failed_count:
+    description: Number of repos that failed.
+  has_failures:
+    description: Whether any repo failed.
+runs:
+  using: node
+  main: index.js

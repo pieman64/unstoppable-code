@@ -1,0 +1,519 @@
+{
+  "claude": {
+    "tree": {
+      "root": {
+        "id": "parity-claude-chat",
+        "title": "Ship the API audit"
+      },
+      "complete": {
+        "hostDifference": "C",
+        "desktop": true,
+        "cloud": false
+      },
+      "rootChildIds": [
+        "toolu_01ExploreRoutes",
+        "toolu_01FixDateTest",
+        "toolu_01WatchLogs"
+      ],
+      "nodes": [
+        {
+          "id": "toolu_01CheckAuth",
+          "kind": "claude-native",
+          "parentId": "toolu_01ExploreRoutes",
+          "depth": 2,
+          "title": "Check the auth middleware",
+          "status": "completed",
+          "childIds": [],
+          "liveDescendantCount": 0,
+          "approvalPending": false,
+          "harnessId": "claude",
+          "subagentType": "general-purpose",
+          "prompt": "Report which routes in src/routes.ts skip requireAuth.",
+          "startedAt": 1792152009000,
+          "settledAt": 1792152014000,
+          "runs": [],
+          "createdAt": {
+            "hostDifference": "D",
+            "cloud": 1792152009000
+          },
+          "modelLabel": {
+            "hostDifference": "E",
+            "cloud": "Claude Sonnet 4.5"
+          }
+        },
+        {
+          "id": "toolu_01ExploreRoutes",
+          "kind": "claude-native",
+          "parentId": null,
+          "depth": 1,
+          "title": "Map the API routes",
+          "status": "completed",
+          "childIds": ["toolu_01CheckAuth"],
+          "liveDescendantCount": 0,
+          "approvalPending": false,
+          "harnessId": "claude",
+          "subagentType": "Explore",
+          "prompt": "List every route in src/routes.ts and the handler it calls.",
+          "startedAt": 1792152004000,
+          "settledAt": 1792152016000,
+          "runs": [],
+          "createdAt": {
+            "hostDifference": "D",
+            "cloud": 1792152004000
+          },
+          "modelLabel": {
+            "hostDifference": "E",
+            "cloud": "Claude Sonnet 4.5"
+          }
+        },
+        {
+          "id": "toolu_01FixDateTest",
+          "kind": "claude-native",
+          "parentId": null,
+          "depth": 1,
+          "title": "Fix the failing date test",
+          "status": "failed",
+          "childIds": [],
+          "liveDescendantCount": 0,
+          "approvalPending": false,
+          "harnessId": "claude",
+          "subagentType": "general-purpose",
+          "prompt": "Make test/date.test.ts pass without changing its assertion.",
+          "startedAt": 1792152017000,
+          "settledAt": 1792152022000,
+          "runs": [],
+          "errorMessage": "Could not make test/date.test.ts pass without changing it.",
+          "createdAt": {
+            "hostDifference": "D",
+            "cloud": 1792152017000
+          },
+          "modelLabel": {
+            "hostDifference": "E",
+            "cloud": "Claude Sonnet 4.5"
+          }
+        },
+        {
+          "id": "toolu_01WatchLogs",
+          "kind": "claude-native",
+          "parentId": null,
+          "depth": 1,
+          "title": "Watch the dev server logs",
+          "status": "completed",
+          "childIds": [],
+          "liveDescendantCount": 0,
+          "approvalPending": false,
+          "harnessId": "claude",
+          "subagentType": "general-purpose",
+          "prompt": "Tail the dev server log and report the first request.",
+          "startedAt": 1792152032000,
+          "settledAt": 1792152038000,
+          "runs": [],
+          "createdAt": {
+            "hostDifference": "D",
+            "cloud": 1792152032000
+          },
+          "modelLabel": {
+            "hostDifference": "E",
+            "cloud": "Claude Sonnet 4.5"
+          }
+        }
+      ]
+    },
+    "transcripts": {
+      "toolu_01ExploreRoutes": [
+        {
+          "kind": "task",
+          "sender": "Ship the API audit",
+          "text": "List every route in src/routes.ts and the handler it calls."
+        },
+        {
+          "kind": "text",
+          "text": "Reading the route table."
+        },
+        {
+          "kind": "tool",
+          "label": "Read routes.ts",
+          "family": "read",
+          "result": {
+            "output": "export const routes = [\n  ['/health', health],\n  ['/users', requireAuth(users)],\n];",
+            "isError": false
+          }
+        },
+        {
+          "hostDifference": "A",
+          "desktop": {
+            "kind": "tool",
+            "label": "Agent Check the auth middleware",
+            "family": "agent",
+            "result": {
+              "output": "Only /health skips requireAuth.",
+              "isError": false
+            }
+          },
+          "cloud": {
+            "kind": "agent",
+            "subagentType": "general-purpose",
+            "description": "Check the auth middleware",
+            "prompt": "Report which routes in src/routes.ts skip requireAuth.",
+            "runInBackground": false,
+            "result": "Only /health skips requireAuth.",
+            "running": false,
+            "isError": false,
+            "children": [
+              {
+                "kind": "tool",
+                "label": "Grep requireAuth in src",
+                "family": "grep",
+                "result": {
+                  "output": "src/routes.ts:3:  ['/users', requireAuth(users)],",
+                  "isError": false
+                }
+              },
+              {
+                "kind": "text",
+                "text": "Only /health skips requireAuth."
+              }
+            ]
+          }
+        },
+        {
+          "kind": "text",
+          "text": "Mapped 2 routes; only /health skips requireAuth."
+        }
+      ],
+      "toolu_01CheckAuth": [
+        {
+          "kind": "task",
+          "sender": "Map the API routes",
+          "text": "Report which routes in src/routes.ts skip requireAuth."
+        },
+        {
+          "kind": "tool",
+          "label": "Grep requireAuth in src",
+          "family": "grep",
+          "result": {
+            "output": "src/routes.ts:3:  ['/users', requireAuth(users)],",
+            "isError": false
+          }
+        },
+        {
+          "kind": "text",
+          "text": "Only /health skips requireAuth."
+        }
+      ],
+      "toolu_01FixDateTest": [
+        {
+          "kind": "task",
+          "sender": "Ship the API audit",
+          "text": "Make test/date.test.ts pass without changing its assertion."
+        },
+        {
+          "kind": "tool",
+          "label": "Run the date test npm test -- test/date.test.ts",
+          "family": "bash",
+          "result": {
+            "output": "FAIL test/date.test.ts\n  expected 2026-10-16, received 2026-10-15",
+            "isError": true
+          }
+        },
+        {
+          "kind": "text",
+          "text": "The fixture uses the host time zone, so the assertion cannot pass as written."
+        }
+      ],
+      "toolu_01WatchLogs": [
+        {
+          "kind": "task",
+          "sender": "Ship the API audit",
+          "text": "Tail the dev server log and report the first request."
+        },
+        {
+          "kind": "tool",
+          "label": "Read the dev log tail -n 20 logs/dev.log",
+          "family": "bash",
+          "result": {
+            "output": "GET /health 200 3ms",
+            "isError": false
+          }
+        },
+        {
+          "kind": "text",
+          "text": "The first request was GET /health."
+        }
+      ]
+    },
+    "backgroundTasks": [
+      {
+        "id": "toolu_01FullSuite",
+        "kind": "bash",
+        "status": "completed",
+        "title": "Run the full test suite",
+        "ownerToolUseId": "toolu_01FullSuite",
+        "parentTaskId": null,
+        "startedAt": 1792152028000,
+        "settledAt": 1792152031000,
+        "updatedAt": 1792152031000,
+        "lastDescription": "Run the full test suite",
+        "summary": "Background command \"Run the full test suite\" completed",
+        "outputLines": [
+          "PASS test/routes.test.ts",
+          "Tests: 41 passed, 41 total"
+        ],
+        "canStop": false
+      },
+      {
+        "id": "toolu_01WatchLogs",
+        "kind": "agent",
+        "status": "completed",
+        "title": "Watch the dev server logs",
+        "ownerToolUseId": "toolu_01WatchLogs",
+        "parentTaskId": null,
+        "startedAt": 1792152032000,
+        "settledAt": 1792152038000,
+        "updatedAt": 1792152038000,
+        "lastDescription": "Watch the dev server logs",
+        "summary": "The first request was GET /health.",
+        "outputLines": [],
+        "canStop": false
+      }
+    ]
+  },
+  "codex-v2": {
+    "tree": {
+      "root": {
+        "id": "parity-codex-v2-chat",
+        "title": "Lint and test in parallel"
+      },
+      "complete": {
+        "hostDifference": "C",
+        "desktop": true,
+        "cloud": false
+      },
+      "rootChildIds": [
+        "019b4051-0000-7000-8000-00000000000a",
+        "019b4051-0000-7000-8000-00000000000b"
+      ],
+      "nodes": [
+        {
+          "id": "019b4051-0000-7000-8000-00000000000a",
+          "kind": "codex-native",
+          "parentId": null,
+          "depth": 1,
+          "title": "Galileo",
+          "status": "completed",
+          "childIds": [],
+          "liveDescendantCount": 0,
+          "approvalPending": false,
+          "modelLabel": "gpt-6-sol",
+          "harnessId": "codex",
+          "thinkingLevel": "high",
+          "prompt": "",
+          "createdAt": 1792152003000,
+          "startedAt": 1792152003000,
+          "settledAt": 1792152003000,
+          "runs": []
+        },
+        {
+          "id": "019b4051-0000-7000-8000-00000000000b",
+          "kind": "codex-native",
+          "parentId": null,
+          "depth": 1,
+          "title": "Hypatia",
+          "status": "failed",
+          "childIds": [],
+          "liveDescendantCount": 0,
+          "approvalPending": false,
+          "modelLabel": "gpt-6-sol",
+          "harnessId": "codex",
+          "thinkingLevel": "medium",
+          "prompt": "",
+          "createdAt": 1792152005000,
+          "startedAt": 1792152005000,
+          "settledAt": 1792152005000,
+          "runs": [],
+          "errorMessage": "Test run failed: 1 failing test."
+        }
+      ]
+    },
+    "transcripts": {
+      "019b4051-0000-7000-8000-00000000000a": [
+        {
+          "kind": "tool",
+          "label": {
+            "hostDifference": "O",
+            "desktop": "Command npm run lint",
+            "cloud": "Bash npm run lint"
+          },
+          "family": "bash",
+          "result": {
+            "output": "0 problems",
+            "isError": false
+          }
+        },
+        {
+          "kind": "text",
+          "text": "Lint is clean."
+        }
+      ],
+      "019b4051-0000-7000-8000-00000000000b": {
+        "hostDifference": "L",
+        "desktop": [
+          {
+            "kind": "tool",
+            "label": "Command npm test",
+            "family": "bash",
+            "result": {
+              "output": "1 failing: test/date.test.ts",
+              "isError": true
+            }
+          },
+          {
+            "kind": "text",
+            "text": "The date test fails."
+          },
+          {
+            "kind": "text",
+            "text": "Error: Test run failed: 1 failing test."
+          }
+        ],
+        "cloud": [
+          {
+            "kind": "tool",
+            "label": "Bash npm test",
+            "family": "bash",
+            "result": {
+              "output": "1 failing: test/date.test.ts",
+              "isError": true
+            }
+          },
+          {
+            "kind": "text",
+            "text": "The date test fails."
+          }
+        ]
+      }
+    },
+    "backgroundTasks": []
+  },
+  "codex-v1": {
+    "tree": {
+      "root": {
+        "id": "parity-codex-v1-chat",
+        "title": "Check docs and types"
+      },
+      "complete": {
+        "hostDifference": "C",
+        "desktop": true,
+        "cloud": false
+      },
+      "rootChildIds": [
+        "019b4051-0000-7000-8000-00000000010a",
+        "019b4051-0000-7000-8000-00000000010b"
+      ],
+      "nodes": [
+        {
+          "id": "019b4051-0000-7000-8000-00000000010a",
+          "kind": "codex-native",
+          "parentId": null,
+          "depth": 1,
+          "title": "Euclid",
+          "status": "completed",
+          "childIds": [],
+          "liveDescendantCount": 0,
+          "approvalPending": false,
+          "modelLabel": "gpt-6-sol",
+          "harnessId": "codex",
+          "thinkingLevel": "high",
+          "prompt": "Check one area each and report what fails.",
+          "createdAt": 1792152003000,
+          "startedAt": 1792152003000,
+          "settledAt": 1792152003000,
+          "runs": []
+        },
+        {
+          "id": "019b4051-0000-7000-8000-00000000010b",
+          "kind": "codex-native",
+          "parentId": null,
+          "depth": 1,
+          "title": "Noether",
+          "status": "failed",
+          "childIds": [],
+          "liveDescendantCount": 0,
+          "approvalPending": false,
+          "modelLabel": "gpt-6-sol",
+          "harnessId": "codex",
+          "thinkingLevel": "high",
+          "prompt": "Check one area each and report what fails.",
+          "createdAt": 1792152003000,
+          "startedAt": 1792152003000,
+          "settledAt": 1792152003000,
+          "runs": [],
+          "errorMessage": "Type check failed with 1 error."
+        }
+      ]
+    },
+    "transcripts": {
+      "019b4051-0000-7000-8000-00000000010a": {
+        "hostDifference": "N",
+        "desktop": [
+          {
+            "kind": "task",
+            "sender": "Check docs and types",
+            "text": "Check one area each and report what fails."
+          },
+          {
+            "kind": "tool",
+            "label": "Command npm run docs:check",
+            "family": "bash",
+            "result": {
+              "output": "All links resolve.",
+              "isError": false
+            }
+          },
+          {
+            "kind": "text",
+            "text": "The docs build."
+          }
+        ],
+        "cloud": [
+          {
+            "kind": "task",
+            "sender": "Check docs and types",
+            "text": "Check one area each and report what fails."
+          }
+        ]
+      },
+      "019b4051-0000-7000-8000-00000000010b": {
+        "hostDifference": "N",
+        "desktop": [
+          {
+            "kind": "task",
+            "sender": "Check docs and types",
+            "text": "Check one area each and report what fails."
+          },
+          {
+            "kind": "tool",
+            "label": "Command npm run typecheck",
+            "family": "bash",
+            "result": {
+              "output": "src/date.ts(4,7): error TS2322",
+              "isError": true
+            }
+          },
+          {
+            "kind": "text",
+            "text": "Error: Type check failed with 1 error."
+          }
+        ],
+        "cloud": [
+          {
+            "kind": "task",
+            "sender": "Check docs and types",
+            "text": "Check one area each and report what fails."
+          }
+        ]
+      }
+    },
+    "backgroundTasks": []
+  }
+}

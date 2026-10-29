@@ -1,0 +1,30 @@
+name: Planner
+description: Generate an implementation plan from the approved spec.
+log_format_hint: agent
+inputs:
+  model:
+    description: Optional Claude model override.
+    required: false
+outputs:
+  text_response:
+    description: Implementation plan.
+    value: ${{ steps.plan.outputs.text_response }}
+  transcript_file:
+    description: Planner transcript file.
+    value: ${{ steps.plan.outputs.transcript_file }}
+runs:
+  using: composite
+  steps:
+    - id: plan
+      uses: builtin/agent-prompt
+      with:
+        model: ${{ inputs.model }}
+        permission_preset: read_only
+        prompt: |
+          Generate an implementation plan for the current task.
+
+          Include:
+          1. ordered steps
+          2. files or modules likely involved
+          3. verification checkpoints
+          4. rollback or risk notes where relevant

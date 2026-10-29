@@ -1,0 +1,129 @@
+/** @jest-environment jsdom */
+// Hook action speed serialization. Chat actions keep the configuration
+// composer's exact speed with its derived boolean; pipeline actions keep their
+// boolean input (Use default, Fast, Regular) and never offer Ultra fast.
+import { act, useState, type JSX } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import type { ConfigurationChatComposerProps } from '@/components/shared/ConfigurationChatComposer.types';
+import type { EditableHooks } from '@/lib/editableHooks';
+import { HookActionEditor } from '../HookActionEditor';
+
+Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true);
+
+let composerProps: ConfigurationChatComposerProps | undefined;
+jest.mock('@/components/shared/ConfigurationChatComposer', () => ({
+  ConfigurationChatComposer: (props: ConfigurationChatComposerProps): null => {
+    composerProps = props;
+    return null;
+  },
+}));
+jest.mock('@/lib/hookPipelineOptions', () => ({
+  ...jest.requireActual<object>('@/lib/hookPipelineOptions'),
+  loadHookPipelineOptions: (): Promise<never[]> => Promise.resolve([]),
+}));
+
+describe('HookActionEditor Codex speed', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let latest: EditableHooks;
+
+  beforeEach(() => {
+    composerProps = undefined;
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  async function renderHooks(initial: EditableHooks): Promise<void> {
+    latest = initial;
+    function Harness(): JSX.Element {
+      const [hooks, setHooks] = useState(initial);
+      return (
+        <HookActionEditor
+          hooks={hooks}
+          onChange={(updater) =>
+            setHooks((current) => {
+              latest = updater(current);
+              return latest;
+            })
+          }
+          allowDisable={false}
+          pluginSelectionMode="portable"
+        />
+      );
+    }
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+    });
+  }
+
+  it('hands a saved Ultra fast chat speed to the composer unchanged', async () => {
+    await renderHooks({
+      'pr:create': [
+        {
+          uiId: 'chat-hook',
+          type: 'chat',
+          prompt: 'Review',
+          modelConfig: { speed: 'ultrafast', fastMode: false },
+        },
+      ],
+    });
+    expect(composerProps?.value.modelConfig).toEqual({
+      speed: 'ultrafast',
+      fastMode: false,
+    });
+  });
+
+  it('stores each composer speed change with its derived boolean', async () => {
+    await renderHooks({
+      'pr:create': [{ uiId: 'chat-hook', type: 'chat', prompt: 'Review' }],
+    });
+    for (const modelConfig of [
+      { speed: 'ultrafast' as const, fastMode: false },
+      { speed: 'fast' as const, fastMode: true },
+      {},
+    ]) {
+      const props = composerProps;
+      if (!props) throw new Error('Composer did not render');
+      await act(async () => {
+        props.onChange({ ...props.value, modelConfig });
+        await Promise.resolve();
+      });
+      expect(latest['pr:create']?.[0]).toMatchObject({ modelConfig });
+    }
+  });
+
+  it('keeps pipeline hooks on Use default, Fast, and Regular', async () => {
+    await renderHooks({
+      'pr:create': [
+        {
+          uiId: 'pipeline-hook',
+          type: 'pipeline',
+          source: 'bundled',
+          id: 'review',
+        },
+      ],
+    });
+    const speed = (): HTMLButtonElement | undefined =>
+      Array.from(container.querySelectorAll('button')).find((button) =>
+        button.getAttribute('aria-label')?.startsWith('Speed: '),
+      );
+    const seen: string[] = [];
+    for (let index = 0; index < 3; index += 1) {
+      seen.push(speed()?.textContent ?? '');
+      await act(async () => {
+        speed()?.click();
+        await Promise.resolve();
+      });
+    }
+    expect(seen).toEqual(['Use default', 'Fast', 'Regular']);
+    expect(container.textContent).not.toContain('Ultra fast');
+    expect(speed()?.textContent).toBe('Use default');
+  });
+});

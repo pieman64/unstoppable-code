@@ -1,0 +1,197 @@
+import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
+import {
+  type ChatStateSnapshot,
+  type CoworkWorkEntriesFile,
+  type SidebarItem,
+  type WorktreeData,
+  type WorkspaceConfigFile,
+} from '@canopy/desktop-shared/types';
+import type { CanopyQueryOptions } from '@canopy/core-runtime';
+import { getActiveDesktopRuntime } from '../canopy-runtime/desktop-runtime';
+import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
+import { readWorkEntriesFileStrict } from '../lib/cowork-work-entries';
+import { resolveCoworkWorkspaceId } from '../lib/cowork-migration-map';
+import { DiscoveryError } from './errors';
+
+export type LegacyReadAuthority = 'ok' | 'absent' | 'unreadable' | 'partial';
+
+export interface LegacyAuthoritySnapshot {
+  authority: LegacyReadAuthority;
+  indexAuthority?: LegacyReadAuthority;
+  ownerMalformed?: boolean;
+}
+
+export interface ProjectInventorySnapshot {
+  items: SidebarItem[];
+  /** Aggregate authority includes every project's manifests. */
+  authority: LegacyReadAuthority;
+  /** Index-only authority, falling back to the aggregate for older adapters. */
+  indexAuthority: LegacyReadAuthority;
+  ownerMalformed: boolean;
+}
+
+export interface ProjectConfigSnapshot {
+  config: WorkspaceConfigFile;
+  authority: LegacyReadAuthority;
+}
+
+/** The trusted agent-discovery caller, with exactly one read grant. */
+export function readOptions(
+  grant: CanopyCallerDescriptor['grants'][number],
+): CanopyQueryOptions {
+  return {
+    caller: {
+      principalId: 'local-desktop-user',
+      clientInstanceId: 'project-discovery-service',
+      authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+      interfaceKind: 'mcp',
+      grants: [grant],
+    },
+  };
+}
+
+function readAuthority(response: object): LegacyAuthoritySnapshot | null {
+  if (!('legacyAuthority' in response)) return null;
+  const raw = response.legacyAuthority;
+  if (typeof raw !== 'object' || raw === null || !('authority' in raw))
+    return null;
+  const authority = raw.authority;
+  if (
+    authority !== 'ok' &&
+    authority !== 'absent' &&
+    authority !== 'unreadable' &&
+    authority !== 'partial'
+  ) {
+    return null;
+  }
+  return {
+    authority,
+    ...('indexAuthority' in raw &&
+    (raw.indexAuthority === 'ok' ||
+      raw.indexAuthority === 'absent' ||
+      raw.indexAuthority === 'unreadable' ||
+      raw.indexAuthority === 'partial')
+      ? { indexAuthority: raw.indexAuthority }
+      : {}),
+    ...('ownerMalformed' in raw && raw.ownerMalformed === true
+      ? { ownerMalformed: true }
+      : {}),
+  };
+}
+
+function sourceReadFailed(message: string): DiscoveryError {
+  return new DiscoveryError('execution_failed', message);
+}
+
+/** Read the compatibility workspace inventory through the authorized dispatcher. */
+export async function readProjectInventory(): Promise<ProjectInventorySnapshot> {
+  const response =
+    await getActiveDesktopRuntime().queryWorkspaceListForLegacyIpc(
+      {},
+      readOptions('core.workspace.read'),
+    );
+  const authority = readAuthority(response);
+  if (!authority) {
+    throw sourceReadFailed('Project inventory could not be read.');
+  }
+  const indexAuthority = authority.indexAuthority ?? authority.authority;
+  if (indexAuthority === 'unreadable') {
+    throw sourceReadFailed('Project inventory could not be read.');
+  }
+  if (
+    indexAuthority !== 'absent' &&
+    !Array.isArray(response.legacyResult.items)
+  ) {
+    throw sourceReadFailed('Project inventory could not be read.');
+  }
+  return {
+    items: indexAuthority === 'absent' ? [] : response.legacyResult.items,
+    authority: authority.authority,
+    indexAuthority,
+    ownerMalformed: authority.ownerMalformed === true,
+  };
+}
+
+/** Read one trusted workspace configuration; never use its owner field as authorization. */
+export async function readProjectConfig(
+  projectId: string,
+): Promise<WorkspaceConfigFile> {
+  return (await readProjectConfigSnapshot(projectId)).config;
+}
+
+export async function readProjectConfigSnapshot(
+  projectId: string,
+): Promise<ProjectConfigSnapshot> {
+  const response =
+    await getActiveDesktopRuntime().queryWorkspaceGetForLegacyIpc(
+      { workspaceId: resolveCoworkWorkspaceId(projectId) },
+      readOptions('core.workspace.read'),
+    );
+  const authority = readAuthority(response);
+  if (
+    !authority ||
+    (authority.authority !== 'ok' && authority.authority !== 'absent') ||
+    authority.ownerMalformed === true
+  ) {
+    throw sourceReadFailed('Project configuration could not be read.');
+  }
+  return { config: response.legacyResult, authority: authority.authority };
+}
+
+/** Read a scoped worktree list; only an authoritative absent file means empty. */
+export async function readProjectWorktrees(
+  projectId: string,
+): Promise<WorktreeData[]> {
+  const workspaceId = resolveCoworkWorkspaceId(projectId);
+  const response =
+    await getActiveDesktopRuntime().queryWorktreeListForLegacyIpc(
+      { scope: { workspaceId } },
+      readOptions('core.worktree.read'),
+    );
+  const authority = readAuthority(response);
+  if (
+    !authority ||
+    (authority.authority !== 'ok' && authority.authority !== 'absent')
+  ) {
+    throw sourceReadFailed('Project worktrees could not be read.');
+  }
+  if (authority.authority === 'absent') return [];
+  if (Array.isArray(response.legacyResult)) return response.legacyResult;
+  throw sourceReadFailed('Project worktrees could not be read.');
+}
+
+/** Strict registry-only read. A failure is intentionally left for the caller to type. */
+export async function readProjectEntries(
+  projectId: string,
+): Promise<CoworkWorkEntriesFile> {
+  return readWorkEntriesFileStrict(resolveCoworkWorkspaceId(projectId));
+}
+
+/** One runtime snapshot for an authorized task; transcript/session data is not read. */
+export async function readTaskSnapshot(
+  projectId: string,
+  taskId: string,
+): Promise<ChatStateSnapshot> {
+  const response = await getActiveDesktopRuntime().queryChatStateForLegacyIpc(
+    {
+      scope: {
+        workspaceId: resolveCoworkWorkspaceId(projectId),
+        worktreeId: taskId,
+      },
+    },
+    readOptions('core.chat.read'),
+  );
+  const snapshot = response.legacyResult;
+  if (snapshot.recoveryError !== undefined) {
+    throw sourceReadFailed('Task runtime snapshot could not be read.');
+  }
+  if (
+    snapshot.projectId !== resolveCoworkWorkspaceId(projectId) ||
+    snapshot.worktreeId !== taskId
+  ) {
+    throw sourceReadFailed(
+      'Task runtime snapshot did not match the requested task.',
+    );
+  }
+  return snapshot;
+}

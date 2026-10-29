@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      /*
+       * Options against criteria. Each cell is a glyph and a few words, so
+       * the verdict survives without color. The recommended column is
+       * marked in its header, not by tinting the whole column.
+       */
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+        table-layout: fixed;
+      }
+      th,
+      td {
+        padding: 8px 12px 8px 0;
+        text-align: left;
+        vertical-align: top;
+        border-bottom: 1px solid var(--line-primary);
+      }
+      thead th {
+        font-weight: 600;
+      }
+      tbody th {
+        width: 26%;
+        color: var(--fg-secondary);
+        font-weight: 500;
+      }
+      .pick {
+        display: inline-block;
+        margin-left: 6px;
+        padding: 0 6px;
+        border-radius: var(--radius-sm);
+        background: var(--bg-accent-muted);
+        color: var(--fg-accent);
+        font-size: 11px;
+        font-weight: 500;
+      }
+      .yes::before,
+      .part::before,
+      .no::before {
+        display: inline-block;
+        width: 1.3em;
+        font-weight: 600;
+      }
+      .yes::before {
+        content: '✓';
+        color: var(--fg-positive);
+      }
+      .part::before {
+        content: '~';
+        color: var(--fg-attention);
+      }
+      .no::before {
+        content: '✕';
+        color: var(--fg-destructive);
+      }
+      @media (max-width: 480px) {
+        tbody th {
+          width: 30%;
+        }
+        th,
+        td {
+          padding-right: 8px;
+          font-size: 12px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <table>
+      <thead>
+        <tr>
+          <td></td>
+          <th scope="col">
+            Postgres queue <span class="pick">Recommended</span>
+          </th>
+          <th scope="col">Redis streams</th>
+          <th scope="col">Managed queue</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <th scope="row">New infrastructure</th>
+          <td class="yes">None</td>
+          <td class="part">One cluster</td>
+          <td class="no">Vendor and network setup</td>
+        </tr>
+        <tr>
+          <th scope="row">Exactly-once jobs</th>
+          <td class="yes">Transactional</td>
+          <td class="part">With consumer groups</td>
+          <td class="part">At-least-once</td>
+        </tr>
+        <tr>
+          <th scope="row">Throughput</th>
+          <td class="part">About 2k jobs/s</td>
+          <td class="yes">50k jobs/s and up</td>
+          <td class="yes">Elastic</td>
+        </tr>
+        <tr>
+          <th scope="row">Monthly cost</th>
+          <td class="yes">$0 extra</td>
+          <td class="part">About $180</td>
+          <td class="no">About $900</td>
+        </tr>
+      </tbody>
+    </table>
+  </body>
+</html>

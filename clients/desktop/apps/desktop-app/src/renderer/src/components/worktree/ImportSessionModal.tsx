@@ -1,0 +1,653 @@
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type JSX,
+} from 'react';
+import type {
+  ChatSessionImportInspectResponse,
+  ChatSessionImportRepoSummary,
+  SessionCloudExportSummary,
+} from '@canopy/desktop-shared/types';
+import { Notice, BusyLabel } from '@canopy/ui-shared/components';
+import { DialogModal } from '../shared';
+import { LoadingSpinner } from '../shared/loading/spinners/LoadingSpinner';
+import { useGitHubStore } from '@/stores/githubStore';
+import { extractIpcErrorMessage } from '@/lib/errors';
+
+interface ImportSessionModalProps {
+  workspaceId: string;
+  onClose: () => void;
+}
+
+interface RepoSummaryListProps {
+  repos: ChatSessionImportRepoSummary[];
+}
+
+type ImportSessionPhase =
+  | 'list'
+  | 'inspecting'
+  | 'ready'
+  | 'importing'
+  | 'complete';
+
+const CLOUD_EXPORT_PAGE_SIZE = 25;
+const SEARCH_DEBOUNCE_MS = 300;
+
+function formatExportedAt(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function formatByteSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return unitIndex === 0
+    ? `${Math.round(value)} ${units[unitIndex]}`
+    : `${value.toFixed(1)} ${units[unitIndex]}`;
+}
+
+function formatProvider(
+  provider: ChatSessionImportInspectResponse['manifestSummary']['provider'],
+): string {
+  if (provider === 'claude') return 'Claude';
+  if (provider === 'codex') return 'Codex';
+  if (provider === 'ollama') return 'Ollama';
+  return 'Unspecified';
+}
+
+async function discardStagedImport(exportId: string): Promise<void> {
+  if (!window.api.chat.discardSessionImport) return;
+  await window.api.chat.discardSessionImport({ exportId });
+}
+
+function RepoSummaryList({ repos }: RepoSummaryListProps): JSX.Element {
+  return (
+    <ul className="space-y-1 text-xs fg-secondary">
+      {repos.map((repo, index) => (
+        <li
+          key={`${repo.remoteUrl ?? repo.name}-${index}`}
+          className="rounded-md bg-secondary/25 px-2.5 py-2"
+        >
+          <div className="font-medium fg-primary">{repo.name}</div>
+          {repo.remoteUrl && (
+            <div className="mt-0.5 break-all">{repo.remoteUrl}</div>
+          )}
+          {repo.branchName && (
+            <div className="mt-0.5">Branch: {repo.branchName}</div>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+export function ImportSessionModal({
+  workspaceId,
+  onClose,
+}: ImportSessionModalProps): JSX.Element {
+  const [phase, setPhase] = useState<ImportSessionPhase>('list');
+  const [exports, setExports] = useState<SessionCloudExportSummary[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [isLoadingList, setIsLoadingList] = useState(true);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(
+    null,
+  );
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [inspection, setInspection] =
+    useState<ChatSessionImportInspectResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [importWarnings, setImportWarnings] = useState<string[]>([]);
+  const [installMissingCapabilities, setInstallMissingCapabilities] =
+    useState(true);
+  const mountedRef = useRef(true);
+  const listRequestIdRef = useRef(0);
+  const stagedExportIdRef = useRef<string | null>(null);
+  const addToast = useGitHubStore((state) => state.addToast);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedSearch(search.trim());
+    }, SEARCH_DEBOUNCE_MS);
+    return (): void => window.clearTimeout(timer);
+  }, [search]);
+
+  const loadExports = useCallback(
+    async (cursor?: string): Promise<void> => {
+      const requestId = listRequestIdRef.current + 1;
+      listRequestIdRef.current = requestId;
+      if (cursor) {
+        setIsLoadingMore(true);
+      } else {
+        setIsLoadingList(true);
+      }
+      setError(null);
+      try {
+        const response = await window.api.chat.listSessionExports({
+          limit: CLOUD_EXPORT_PAGE_SIZE,
+          ...(cursor ? { cursor } : {}),
+          ...(debouncedSearch ? { q: debouncedSearch } : {}),
+        });
+        if (!mountedRef.current || listRequestIdRef.current !== requestId) {
+          return;
+        }
+        setExports((current) =>
+          cursor ? [...current, ...response.data] : response.data,
+        );
+        setNextCursor(response.nextCursor);
+      } catch (listError: unknown) {
+        if (!mountedRef.current || listRequestIdRef.current !== requestId) {
+          return;
+        }
+        if (!cursor) {
+          setExports([]);
+          setNextCursor(null);
+        }
+        setError(extractIpcErrorMessage(listError));
+      } finally {
+        if (mountedRef.current && listRequestIdRef.current === requestId) {
+          setIsLoadingList(false);
+          setIsLoadingMore(false);
+        }
+      }
+    },
+    [debouncedSearch],
+  );
+
+  useEffect(() => {
+    void loadExports();
+  }, [loadExports]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return (): void => {
+      mountedRef.current = false;
+      listRequestIdRef.current += 1;
+      const exportId = stagedExportIdRef.current;
+      stagedExportIdRef.current = null;
+      if (exportId) {
+        void discardStagedImport(exportId).catch(() => undefined);
+      }
+    };
+  }, []);
+
+  const inspectExport = useCallback(
+    async (exportId: string): Promise<void> => {
+      setPhase('inspecting');
+      setInspection(null);
+      setError(null);
+      setImportWarnings([]);
+      setConfirmingDeleteId(null);
+      try {
+        const response = await window.api.chat.inspectSessionImport({
+          workspaceId,
+          exportId,
+        });
+        if (!mountedRef.current) {
+          await discardStagedImport(exportId);
+          return;
+        }
+        stagedExportIdRef.current = exportId;
+        setInspection(response);
+        setPhase('ready');
+      } catch (inspectError: unknown) {
+        if (!mountedRef.current) return;
+        setError(extractIpcErrorMessage(inspectError));
+        setPhase('list');
+      }
+    },
+    [workspaceId],
+  );
+
+  const handleDeleteExport = useCallback(
+    async (exportId: string): Promise<void> => {
+      if (confirmingDeleteId !== exportId) {
+        setConfirmingDeleteId(exportId);
+        return;
+      }
+      setDeletingId(exportId);
+      setError(null);
+      try {
+        await window.api.chat.deleteSessionExport({ exportId });
+        if (!mountedRef.current) return;
+        setExports((current) =>
+          current.filter((exportItem) => exportItem.id !== exportId),
+        );
+        setConfirmingDeleteId(null);
+      } catch (deleteError: unknown) {
+        if (mountedRef.current) {
+          setError(extractIpcErrorMessage(deleteError));
+        }
+      } finally {
+        if (mountedRef.current) setDeletingId(null);
+      }
+    },
+    [confirmingDeleteId],
+  );
+
+  const discardCurrentStaging = useCallback(async (): Promise<void> => {
+    const exportId = stagedExportIdRef.current;
+    if (!exportId) return;
+    await discardStagedImport(exportId);
+    if (stagedExportIdRef.current === exportId) {
+      stagedExportIdRef.current = null;
+    }
+  }, []);
+
+  const handleChooseAnother = useCallback(async (): Promise<void> => {
+    setError(null);
+    try {
+      await discardCurrentStaging();
+    } catch (discardError: unknown) {
+      setError(extractIpcErrorMessage(discardError));
+      return;
+    }
+    if (!mountedRef.current) return;
+    setInspection(null);
+    setImportWarnings([]);
+    setPhase('list');
+  }, [discardCurrentStaging]);
+
+  const handleClose = useCallback(async (): Promise<void> => {
+    try {
+      await discardCurrentStaging();
+    } catch {
+      // App shutdown also clears the staging registry. Closing the modal must
+      // not be held hostage by a best-effort cleanup failure.
+    }
+    if (mountedRef.current) onClose();
+  }, [discardCurrentStaging, onClose]);
+
+  const warnings = useMemo(
+    (): string[] =>
+      Array.from(new Set([...(inspection?.warnings ?? []), ...importWarnings])),
+    [importWarnings, inspection?.warnings],
+  );
+
+  const handleImport = useCallback(async (): Promise<void> => {
+    if (!inspection || inspection.match === 'mismatch') return;
+
+    setPhase('importing');
+    setError(null);
+    try {
+      const response = await window.api.chat.importSession({
+        exportId: inspection.exportId,
+        workspaceId,
+        installMissing: installMissingCapabilities,
+      });
+      if (!mountedRef.current) return;
+      setImportWarnings(response.warnings);
+      setPhase('complete');
+      if (!response.stagingRetained) {
+        stagedExportIdRef.current = null;
+      }
+      if (response.warnings.length === 0) {
+        addToast('Session imported.', 'success', undefined, {
+          category: 'Chat',
+          projectId: response.projectId,
+          worktreeId: response.worktreeId,
+          chatId: response.chatId,
+        });
+        onClose();
+      } else {
+        for (const warning of response.warnings) {
+          addToast(warning, 'warning', undefined, {
+            category: 'Chat',
+            projectId: response.projectId,
+            worktreeId: response.worktreeId,
+            chatId: response.chatId,
+          });
+        }
+      }
+    } catch (importError: unknown) {
+      if (!mountedRef.current) return;
+      setError(extractIpcErrorMessage(importError));
+      setPhase('ready');
+    }
+  }, [addToast, inspection, installMissingCapabilities, onClose, workspaceId]);
+
+  const isBusy = phase === 'inspecting' || phase === 'importing';
+  const isMismatch = inspection?.match === 'mismatch';
+  const capabilityReadiness = inspection?.capabilityReadiness ?? [];
+
+  return (
+    <DialogModal
+      onClose={isBusy ? (): void => {} : (): void => void handleClose()}
+      title="Import session"
+      subtitle="Move a chat and its working changes into this project"
+      titleId="import-session-modal-title"
+      maxWidth="2xl"
+      closeOnBackdrop={!isBusy}
+      dataTestId="import-session-modal"
+    >
+      <div className="max-h-[75vh] space-y-4 overflow-y-auto px-5 py-4 text-s fg-primary">
+        <Notice intent="attention" role="none" title="Exports are not redacted">
+          They hold the full transcript and uncommitted repository changes, are
+          private to your account, and leave out unpushed commits.
+        </Notice>
+
+        {phase === 'list' && (
+          <div className="space-y-3" data-testid="import-session-cloud-list">
+            <label className="block space-y-1.5">
+              <span className="text-xs font-medium fg-secondary">
+                Search exports
+              </span>
+              <input
+                type="search"
+                value={search}
+                onChange={(event): void => setSearch(event.target.value)}
+                placeholder="Search by session title"
+                data-testid="import-session-cloud-search"
+                className="focus-ring w-full rounded-lg border bg-card px-3 py-2 text-s fg-primary placeholder:fg-secondary"
+              />
+            </label>
+
+            {isLoadingList ? (
+              <div className="flex items-center justify-center gap-2 py-10 text-s fg-secondary">
+                <LoadingSpinner tone="accent" /> Loading exports…
+              </div>
+            ) : exports.length === 0 ? (
+              <div className="rounded-lg border border-dashed px-4 py-8 text-center text-s fg-secondary">
+                {debouncedSearch
+                  ? 'No session exports match this search.'
+                  : 'No session exports are available for this account.'}
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {exports.map((exportItem) => (
+                  <div
+                    key={exportItem.id}
+                    data-testid={`import-session-cloud-row-${exportItem.id}`}
+                    className="flex items-stretch gap-2 rounded-lg border bg-secondary/10 p-2"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => void inspectExport(exportItem.id)}
+                      className="focus-ring min-w-0 flex-1 rounded-md px-2 py-1.5 text-left hover:bg-secondary/40"
+                    >
+                      <div className="truncate text-s font-medium fg-primary">
+                        {exportItem.title}
+                      </div>
+                      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs fg-secondary">
+                        <span>{formatExportedAt(exportItem.createdAt)}</span>
+                        <span>{formatByteSize(exportItem.sizeBytes)}</span>
+                        <span>{exportItem.workspaceName}</span>
+                        <span>
+                          {exportItem.repos.length}{' '}
+                          {exportItem.repos.length === 1
+                            ? 'repository'
+                            : 'repositories'}
+                        </span>
+                      </div>
+                    </button>
+                    <button
+                      type="button"
+                      data-testid={`import-session-cloud-delete-${exportItem.id}`}
+                      onClick={() => void handleDeleteExport(exportItem.id)}
+                      disabled={deletingId === exportItem.id}
+                      className={`focus-ring shrink-0 rounded-md px-2.5 text-xs disabled:cursor-not-allowed disabled:opacity-50 ${
+                        confirmingDeleteId === exportItem.id
+                          ? 'bg-destructive fg-emphasis'
+                          : 'fg-secondary hover:bg-destructive-subtle hover:fg-destructive'
+                      }`}
+                    >
+                      {deletingId === exportItem.id
+                        ? 'Deleting…'
+                        : confirmingDeleteId === exportItem.id
+                          ? 'Confirm delete'
+                          : 'Delete'}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {nextCursor && !isLoadingList && (
+              <button
+                type="button"
+                onClick={() => void loadExports(nextCursor)}
+                disabled={isLoadingMore}
+                className="focus-ring w-full rounded-lg border px-3 py-2 text-xs font-medium fg-primary hover:bg-secondary/30 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <BusyLabel busy={isLoadingMore}>Load more</BusyLabel>
+              </button>
+            )}
+          </div>
+        )}
+
+        {phase === 'inspecting' && (
+          <div className="flex items-center justify-center gap-2 py-10 text-s fg-secondary">
+            <LoadingSpinner tone="accent" /> Inspecting export…
+          </div>
+        )}
+
+        {inspection && phase !== 'inspecting' && (
+          <>
+            <div
+              className="grid gap-3 md:grid-cols-2"
+              data-testid="import-session-bundle-summary"
+            >
+              <section className="space-y-2 rounded-lg border bg-secondary/10 p-3">
+                <h3 className="text-xs font-semibold fg-secondary ">
+                  Exported session
+                </h3>
+                <div className="text-s font-medium break-words">
+                  {inspection.manifestSummary.title}
+                </div>
+                <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs fg-secondary">
+                  <dt>Provider</dt>
+                  <dd className="fg-primary">
+                    {formatProvider(inspection.manifestSummary.provider)}
+                  </dd>
+                  <dt>Exported</dt>
+                  <dd className="fg-primary">
+                    {formatExportedAt(inspection.manifestSummary.exportedAt)}
+                  </dd>
+                  <dt>Project</dt>
+                  <dd className="fg-primary">
+                    {inspection.manifestSummary.workspaceType === 'multi-repo'
+                      ? 'Multi-repo'
+                      : inspection.manifestSummary.workspaceType === 'cowork'
+                        ? 'Cowork'
+                        : 'Single-repo'}
+                  </dd>
+                </dl>
+                <RepoSummaryList repos={inspection.manifestSummary.repos} />
+              </section>
+
+              <section className="space-y-2 rounded-lg border bg-secondary/10 p-3">
+                <h3 className="text-xs font-semibold fg-secondary ">
+                  Destination project
+                </h3>
+                <div className="text-s font-medium break-words">
+                  {inspection.workspaceSummary.workspaceName}
+                </div>
+                <div className="text-xs fg-secondary">
+                  {inspection.workspaceSummary.workspaceType === 'cowork'
+                    ? 'Cowork project'
+                    : `${inspection.workspaceSummary.repoCount} ${
+                        inspection.workspaceSummary.repoCount === 1
+                          ? 'repository'
+                          : 'repositories'
+                      }`}
+                </div>
+                <RepoSummaryList repos={inspection.workspaceSummary.repos} />
+              </section>
+            </div>
+
+            <Notice
+              intent={isMismatch ? 'destructive' : 'positive'}
+              data-testid="import-session-compatibility-status"
+              title={
+                inspection.match === 'exact'
+                  ? inspection.manifestSummary.workspaceType === 'cowork'
+                    ? 'Compatible Cowork project'
+                    : 'Exact repository match'
+                  : inspection.match === 'superset'
+                    ? 'Compatible repository superset'
+                    : inspection.workspaceTypeCompatible
+                      ? 'Repository mismatch'
+                      : 'Project type mismatch'
+              }
+            >
+              {inspection.match === 'exact'
+                ? inspection.manifestSummary.workspaceType === 'cowork'
+                  ? 'The session will be imported into a new Work Entry in this Cowork project.'
+                  : 'The destination contains exactly the repositories in this bundle.'
+                : inspection.match === 'superset'
+                  ? 'The destination contains every bundled repository plus additional repositories.'
+                  : inspection.workspaceTypeCompatible
+                    ? 'Import is blocked because the destination is missing required repositories.'
+                    : 'Cowork exports require a Cowork destination, and git-backed exports require a git-backed destination.'}
+            </Notice>
+
+            {isMismatch &&
+              inspection.workspaceTypeCompatible &&
+              inspection.missingRepos.length > 0 && (
+                // The compatibility notice above already announces the
+                // mismatch; this list only itemizes it, so it stays polite.
+                <Notice intent="destructive" role="status">
+                  <ul
+                    data-testid="import-session-missing-repos"
+                    className="space-y-2"
+                  >
+                    {inspection.missingRepos.map((repo, index) => (
+                      <li key={`${repo.remoteUrl ?? repo.name}-${index}`}>
+                        <div className="font-medium">{repo.name}</div>
+                        <div className="mt-0.5 break-all fg-secondary">
+                          {repo.remoteUrl ?? 'No remote URL recorded'}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </Notice>
+              )}
+
+            <div
+              data-testid="import-session-warnings"
+              className={warnings.length > 0 ? 'space-y-2' : 'hidden'}
+            >
+              {warnings.map((warning) => (
+                <Notice key={warning} intent="attention">
+                  {warning}
+                </Notice>
+              ))}
+            </div>
+
+            {capabilityReadiness.length > 0 && (
+              <section
+                className="space-y-2 rounded-lg border bg-secondary/10 p-3"
+                data-testid="import-session-capability-readiness"
+              >
+                <h3 className="text-s font-medium fg-primary">
+                  Capabilities and setup
+                </h3>
+                <ul className="space-y-1.5">
+                  {capabilityReadiness.map((capability) => (
+                    <li
+                      key={`${capability.kind}:${capability.name}`}
+                      className="text-xs"
+                    >
+                      <span className="fg-primary">{capability.name}</span>{' '}
+                      <span className="fg-secondary">
+                        {capability.kind === 'mcp' ? 'MCP server' : 'Plugin'} ·{' '}
+                        {capability.status === 'available'
+                          ? 'Available'
+                          : capability.installable
+                            ? 'Will be installed'
+                            : 'Needs setup'}
+                      </span>
+                      {capability.setupHint && (
+                        <span className="block fg-secondary">
+                          {capability.setupHint}
+                        </span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+                {capabilityReadiness.some(
+                  (capability) =>
+                    capability.status === 'missing' && capability.installable,
+                ) && (
+                  <label className="flex items-center gap-2 text-xs fg-primary">
+                    <input
+                      type="checkbox"
+                      checked={installMissingCapabilities}
+                      onChange={(event) =>
+                        setInstallMissingCapabilities(event.target.checked)
+                      }
+                      data-testid="import-session-install-missing"
+                      className="h-4 w-4 rounded"
+                    />
+                    Install missing plugins with the session
+                  </label>
+                )}
+                <p className="text-xs fg-secondary">
+                  Missing setup is reported but does not block import.
+                </p>
+              </section>
+            )}
+          </>
+        )}
+
+        {phase === 'importing' && (
+          <div className="flex items-center gap-2 rounded-lg border bg-secondary/20 p-3 text-xs fg-secondary">
+            <LoadingSpinner tone="accent" /> Creating the destination worktree,
+            applying changes, and restoring provider context…
+          </div>
+        )}
+
+        {phase === 'complete' && (
+          <Notice intent="positive">
+            The session was imported and opened. Review the warnings above
+            before continuing.
+          </Notice>
+        )}
+
+        {error && <Notice intent="destructive">{error}</Notice>}
+
+        <div className="flex items-center justify-end gap-2 border-t pt-4">
+          {inspection && phase === 'ready' && (
+            <button
+              type="button"
+              onClick={() => void handleChooseAnother()}
+              className="focus-ring rounded-lg px-3 py-2 text-xs fg-secondary hover:fg-primary"
+            >
+              Choose another export
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => void handleClose()}
+            disabled={isBusy}
+            className="focus-ring rounded-lg px-3 py-2 text-xs fg-secondary hover:fg-primary disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {phase === 'complete' ? 'Done' : 'Cancel'}
+          </button>
+          {inspection && phase !== 'complete' && (
+            <button
+              type="button"
+              data-testid="import-session-confirm"
+              onClick={() => void handleImport()}
+              disabled={isBusy || isMismatch}
+              className="focus-ring rounded-lg bg-accent px-3 py-2 text-xs font-medium fg-emphasis disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {phase === 'importing' ? 'Importing…' : 'Import session'}
+            </button>
+          )}
+        </div>
+      </div>
+    </DialogModal>
+  );
+}

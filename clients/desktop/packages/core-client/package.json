@@ -1,0 +1,18 @@
+{
+  "name": "@canopy/core-client",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Canopy core daemon client: browser-safe facade, with Node bindings under src/node/.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./node": "./src/node/index.ts"
+  },
+  "dependencies": {
+    "@canopy/core-transport": "workspace:*",
+    "@canopy/protocol": "workspace:*"
+  }
+}

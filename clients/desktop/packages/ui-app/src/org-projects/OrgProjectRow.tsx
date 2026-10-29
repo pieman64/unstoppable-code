@@ -1,0 +1,201 @@
+'use client';
+
+// ---------------------------------------------------------------------------
+// One organization project row, shared by the Add project dialog's catalog
+// and the organization Projects settings page so both lists read the same.
+// The row is frameless: the list around it owns borders and dividers.
+// ---------------------------------------------------------------------------
+
+import type { JSX, KeyboardEvent, ReactNode, SyntheticEvent } from 'react';
+import { StatusPill } from '@canopy/ui-shared';
+import { formatRelativeTime } from '@canopy/ui-shared/lib';
+import { CHAT_LABEL } from '@canopy/protocol';
+import type {
+  OrgProjectRepositoryVisibility,
+  OrgProjectSummary,
+} from '@canopy/protocol/org-projects';
+
+const VISIBILITY_LABEL: Record<OrgProjectRepositoryVisibility, string> = {
+  PUBLIC: 'Public',
+  PRIVATE: 'Private',
+  INTERNAL: 'Internal',
+};
+
+/** The row's name: the GitHub repository, like GitHub's own list (CAN-3489). */
+/**
+ * The list grid for rows with `columns`: text, the middle column (from `sm`
+ * up), and the actions. Each column is as wide as its widest cell, so the
+ * access summaries and actions line up from row to row.
+ */
+export const ORG_PROJECT_ROW_COLUMNS_CLASS =
+  'grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 sm:grid-cols-[minmax(0,1fr)_auto_auto]';
+
+function orgProjectRowName(project: OrgProjectSummary): string {
+  return project.repository?.name ?? project.name;
+}
+
+export interface OrgProjectRowProps {
+  readonly project: OrgProjectSummary;
+  /** Test-id prefix: `add-workspace-org-catalog` or `team-projects`. */
+  readonly testIdPrefix: string;
+  /** The row's title; the repository name by default (CAN-3489). */
+  readonly name?: string;
+  /**
+   * The host's session-replay block token for the name and description; ''
+   * when the host has none. A privacy marker, not styling.
+   */
+  readonly replayBlock?: string;
+  /** The line under the name; the repository's GitHub description by default. */
+  readonly description?: string | null;
+  /** Extra pills after the visibility pills (Archived, Hidden, Stale). */
+  readonly pills?: ReactNode;
+  /** Drops the "Only you" pill when the list's heading already says it. */
+  readonly hidePrivatePill?: boolean;
+  /** Leading status text of the "status · Updated …" line, or null. */
+  readonly status?: string | null;
+  /** Optional column between the text and the actions (the access summary). */
+  readonly middle?: ReactNode;
+  /** Right-side controls (Add / Added, or Set up / Open and the ⋯ menu). */
+  readonly actions?: ReactNode;
+  /** Makes the row activatable (the settings page opens the editor). */
+  readonly onActivate?: (() => void) | undefined;
+  readonly disabled?: boolean;
+  readonly busy?: boolean;
+  /**
+   * Lays the row on its list's grid (`ORG_PROJECT_ROW_COLUMNS_CLASS`) instead
+   * of sizing each row's columns to its own content.
+   */
+  readonly columns?: boolean;
+}
+
+function joinClasses(...classes: string[]): string {
+  return classes.filter(Boolean).join(' ');
+}
+
+function stop(event: SyntheticEvent): void {
+  event.stopPropagation();
+}
+
+export function OrgProjectRow({
+  project,
+  testIdPrefix,
+  name = orgProjectRowName(project),
+  replayBlock = '',
+  description = project.repository?.description ?? null,
+  pills,
+  hidePrivatePill = false,
+  status = null,
+  middle,
+  actions,
+  onActivate,
+  disabled = false,
+  busy,
+  columns = false,
+}: OrgProjectRowProps): JSX.Element {
+  const visibility = project.repository?.visibility ?? null;
+  const updatedAt = project.repository?.updatedAt ?? null;
+  const activatable = onActivate !== undefined;
+  const hasMiddle = middle !== undefined && middle !== null;
+  const hasActions = actions !== undefined && actions !== null;
+  const activate = (): void => {
+    if (!disabled) onActivate?.();
+  };
+  return (
+    <div
+      data-testid={`${testIdPrefix}-row-${project.id}`}
+      aria-busy={busy}
+      className={joinClasses(
+        columns
+          ? 'col-span-full grid grid-cols-subgrid items-center py-2'
+          : 'flex items-center gap-3 py-2',
+        activatable
+          ? 'focus-ring cursor-pointer rounded-sm hover:bg-subtle'
+          : '',
+      )}
+      {...(activatable
+        ? {
+            role: 'button',
+            tabIndex: disabled ? -1 : 0,
+            'aria-label': name,
+            'aria-disabled': disabled || undefined,
+            onClick: activate,
+            onKeyDown: (event: KeyboardEvent<HTMLDivElement>): void => {
+              if (event.target !== event.currentTarget) return;
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                activate();
+              }
+            },
+          }
+        : {})}
+    >
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-center gap-2">
+          <span
+            data-testid={`${testIdPrefix}-name-${project.id}`}
+            className={joinClasses('truncate text-s fg-primary', replayBlock)}
+          >
+            {name}
+          </span>
+          {visibility && (
+            <StatusPill
+              data-testid={`${testIdPrefix}-visibility-${project.id}`}
+            >
+              {VISIBILITY_LABEL[visibility]}
+            </StatusPill>
+          )}
+          {project.visibility === 'private' && !hidePrivatePill && (
+            <span
+              data-testid={`${testIdPrefix}-private-${project.id}`}
+              className="shrink-0 rounded-md bg-secondary px-1.5 text-xs fg-secondary"
+            >
+              Only you
+            </span>
+          )}
+          {pills}
+        </div>
+        {project.kind === 'COWORK' && (
+          <div className="truncate text-xs fg-secondary">{CHAT_LABEL}</div>
+        )}
+        {description && (
+          <div
+            data-testid={`${testIdPrefix}-description-${project.id}`}
+            className={joinClasses(
+              'line-clamp-2 text-xs fg-secondary',
+              replayBlock,
+            )}
+          >
+            {description}
+          </div>
+        )}
+        {(status !== null || updatedAt) && (
+          <div className="truncate text-xs fg-tertiary">
+            {status !== null && <span className="fg-secondary">{status}</span>}
+            {status !== null && updatedAt && ' · '}
+            {updatedAt && (
+              <span data-testid={`${testIdPrefix}-updated-${project.id}`}>
+                Updated {formatRelativeTime(updatedAt)}
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+      {/* On the list grid, every row keeps its cells so columns hold. */}
+      {(hasMiddle || columns) && (
+        <div className="hidden shrink-0 text-xs fg-secondary sm:block">
+          {middle}
+        </div>
+      )}
+      {(hasActions || columns) && (
+        // Controls never activate the row around them.
+        <div
+          className="flex shrink-0 items-center justify-end gap-2"
+          onClick={stop}
+          onKeyDown={stop}
+        >
+          {actions}
+        </div>
+      )}
+    </div>
+  );
+}

@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "surface": "desktop",
+  "brand": "unstoppable-code",
+  "workspaces": [
+    "apps/desktop-app",
+    "packages/protocol",
+    "packages/artifact-crypto",
+    "packages/plugin-interop",
+    "packages/agent-actions",
+    "packages/agent-transcript",
+    "packages/core-runtime",
+    "packages/core-platform",
+    "packages/core-transport",
+    "packages/core-client",
+    "packages/desktop-shared",
+    "packages/desktop-instrumentation",
+    "packages/ui-shared",
+    "packages/ui-rich",
+    "packages/app-core",
+    "packages/app-state",
+    "packages/ui-app",
+    "packages/pipeline-interop",
+    "packages/mcp-oauth-core"
+  ],
+  "excludedDistributionHelpers": [
+    "desktop-cli",
+    "native-dictation-binary"
+  ],
+  "distribution": false,
+  "excludedTestScopes": [
+    "three private installer configuration tests",
+    "six Linux identity comparisons against private installer configuration",
+    "hosted Portal header assertions and omitted daemon/VM consumer audit rows",
+    "hosted web org-project source audit rows and registration handler test",
+    "hosted web font checks and thinking vocabulary source audit root",
+    "hosted web settings capsule source audit rows",
+    "hosted Portal pinned-script header assertions",
+    "mobile label-mirror suite",
+    "four daemon host filesystem integrations requiring apps/core-daemon",
+    "three turn-state harness suites requiring recorder fixtures and planning docs",
+    "private repository review-track fixture integration test",
+    "desktop CLI journal, memory, and Ollama source audit rows",
+    "hosted web settings capsule audit rows",
+    "APT publisher configuration comparison requiring private release scripts"
+  ]
+}

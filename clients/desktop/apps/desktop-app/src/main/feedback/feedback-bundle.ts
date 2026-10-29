@@ -1,0 +1,2236 @@
+import { createReadStream, type Dirent, type Stats } from 'node:fs';
+import {
+  lstat,
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  type FileHandle,
+} from 'node:fs/promises';
+import {
+  cpus,
+  homedir,
+  hostname,
+  release,
+  totalmem,
+  type,
+  version,
+} from 'node:os';
+import {
+  basename,
+  dirname,
+  join,
+  posix,
+  relative,
+  resolve,
+  sep,
+} from 'node:path';
+import { createInterface } from 'node:readline';
+import { pipeline } from 'node:stream/promises';
+import { app } from 'electron';
+import { BRAND } from '@canopy/brand/current';
+import { hostPlatformOperatingSystem } from '@canopy/core-platform';
+import { ZipFile } from 'yazl';
+import {
+  COWORK_HOME_WORKTREE_ID,
+  FEEDBACK_AREAS,
+  MODEL_HARNESS_OVERRIDES_VERSION,
+  STANDALONE_CHAT_PROJECT_ID,
+  getModelHarnessAssignmentSnapshot,
+  type FeedbackArea,
+  type FeedbackPrepareRequest,
+  type FeedbackPrepareResponse,
+  type FeedbackWorkspaceSelection,
+} from '@canopy/desktop-shared/types';
+import type {
+  AgentAuditEntry,
+  AgentAuditEventType,
+} from '@canopy/desktop-shared/types/observability';
+import {
+  AGENT_AUDIT_EVENT_TYPES,
+  parseAgentAuditEventType,
+} from '@canopy/desktop-shared/types/observability';
+import {
+  getAgentObservabilityAuditDir,
+  getAgentObservabilityDiagnosticsDir,
+  getAgentObservabilitySnapshotPath,
+  getAgentObservabilityTranscriptFilePath,
+  getBundlesIndexFilePath,
+  // Legacy `standalone-chat/{project}` path helpers. Kept only for bundling
+  // the legacy `projects.json`/`project.json` files — those have no
+  // new-layout equivalent (settings now live on the workspace's
+  // `CoworkSidebarItem`); post-migration these simply add nothing to the
+  // bundle. Live chat data (tabs/history) is bundled from the migrated
+  // workspace layout below.
+  getChatProjectProjectFilePath,
+  getChatProjectsFilePath,
+  getDataDir,
+  getHookInvocationsDir,
+  getMcpServersIndexFilePath,
+  getPipelinePluginPreferencesFilePath,
+  getPreferencesFilePath,
+  getWorkspaceChatHistoryConversationFilePath,
+  getWorkspaceChatHistoryMetaFilePath,
+  getWorkspaceChatHistoryRootDir,
+  getWorkspaceChatHistorySummaryFilePath,
+  getWorkspaceChatTabsFilePath,
+  getWorkspaceConfigPath,
+  getWorkspaceIndexFilePath,
+  getWorkspaceTrackedPlansFilePath,
+  getWorkspaceWorktreesFilePath,
+  getWorktreeSummaryFilePath,
+  getWorkspaceScriptRunDir,
+} from '../lib/paths';
+import { resolveCoworkWorkspaceId } from '../lib/cowork-migration-map';
+import { listWorkEntryIds } from '../lib/cowork-work-entries';
+import { isCoworkWorkspace } from '../lib/workspace-registry';
+import { validateId } from '../lib/validation';
+import { flushMainProcessLogging } from '../lib/main-process-logging';
+import type { MainLogFlushResult } from '../lib/async-main-log-sink';
+
+export const MAX_FILE_BYTES = 25 * 1024 * 1024;
+const MAX_OUTPUT_FILENAME_ATTEMPTS = 100;
+const FEEDBACK_VERSION = 1;
+const MAIN_LOG_FEEDBACK_FLUSH_TIMEOUT_MS = 1000;
+const SENSITIVE_TOP_LEVEL_ZIP_PARTS: ReadonlySet<string> = new Set<string>([
+  'secure',
+  'repos',
+  'plugin-cache',
+  'chat-plugins',
+  'attachments',
+]);
+const SENSITIVE_ANY_DEPTH_ZIP_PARTS: ReadonlySet<string> = new Set<string>([
+  'artifacts',
+  'foreign-activity-ledger.json',
+]);
+/**
+ * Which audit event types contribute a transcript sidecar to a worktree-scoped
+ * feedback bundle, and which to a chat-scoped one.
+ *
+ * These are exhaustive `Record`s rather than `Set` literals on purpose: a new
+ * `AgentAuditEventType` is a compile error here, forcing an explicit
+ * include/exclude decision. As `Set`s they were silently incomplete — a new
+ * event type seeded a transcript that no bundle ever collected, which is how
+ * `chat_handoff_summary` transcripts were initially dropped.
+ */
+const TRANSCRIPT_WORKTREE_EVENT_INCLUSION: Record<
+  AgentAuditEventType,
+  boolean
+> = {
+  worktree_chat: true,
+  chat_summary: true,
+  chat_handoff_summary: true,
+  archive_summary: true,
+  standalone_chat: false,
+  app_advisor: false,
+  pipeline_editor: false,
+  pipeline_agent_turn: false,
+  pipeline_advisor: false,
+  pr_generation: false,
+  pr_split_planning: false,
+  commit_message_generation: false,
+  branch_naming: false,
+  cron_generation: false,
+  automation_if_command_generation: false,
+  worktree_summary: false,
+  worktree_plan_chat: false,
+  worktree_plan_diagram: false,
+  code_review_annotations: false,
+  code_review_diagram: false,
+  local_memory_consolidation: false,
+  local_memory_chat_profile: false,
+  skill_suggestion_scan: false,
+  managed_delegation: false,
+};
+
+const TRANSCRIPT_CHAT_EVENT_INCLUSION: Record<AgentAuditEventType, boolean> = {
+  standalone_chat: true,
+  app_advisor: true,
+  archive_summary: true,
+  chat_summary: true,
+  chat_handoff_summary: true,
+  worktree_chat: false,
+  pipeline_editor: false,
+  pipeline_agent_turn: false,
+  pipeline_advisor: false,
+  pr_generation: false,
+  pr_split_planning: false,
+  commit_message_generation: false,
+  branch_naming: false,
+  cron_generation: false,
+  automation_if_command_generation: false,
+  worktree_summary: false,
+  worktree_plan_chat: false,
+  worktree_plan_diagram: false,
+  code_review_annotations: false,
+  code_review_diagram: false,
+  local_memory_consolidation: false,
+  local_memory_chat_profile: false,
+  skill_suggestion_scan: false,
+  managed_delegation: false,
+};
+
+function includedTranscriptEvents(
+  inclusion: Record<AgentAuditEventType, boolean>,
+): ReadonlySet<AgentAuditEventType> {
+  return new Set<AgentAuditEventType>(
+    AGENT_AUDIT_EVENT_TYPES.filter((eventType) => inclusion[eventType]),
+  );
+}
+
+const TRANSCRIPT_WORKTREE_EVENTS: ReadonlySet<AgentAuditEventType> =
+  includedTranscriptEvents(TRANSCRIPT_WORKTREE_EVENT_INCLUSION);
+const TRANSCRIPT_CHAT_EVENTS: ReadonlySet<AgentAuditEventType> =
+  includedTranscriptEvents(TRANSCRIPT_CHAT_EVENT_INCLUSION);
+
+type SkippedReason =
+  | 'missing'
+  | 'symlink'
+  | 'too-large'
+  | 'inaccessible'
+  | 'out-of-root'
+  | 'policy-excluded';
+
+interface SkippedFile {
+  path: string;
+  reason: SkippedReason;
+}
+
+interface FeedbackManifest {
+  version: 1;
+  preparedAt: string;
+  description: string;
+  area: FeedbackArea;
+  workspaceSelections: FeedbackWorkspaceSelection[];
+  chatProjectIds: string[];
+  includeChatDetails: boolean;
+  includePipelineExecutions: boolean;
+  app: {
+    version: string;
+    runtimeMode: 'dev' | 'prod';
+    platform: NodeJS.Platform;
+    arch: string;
+    electron: string | undefined;
+    node: string;
+  };
+  machine: {
+    hostname: string;
+    osType: string;
+    osRelease: string;
+    osVersion: string;
+    totalMemoryBytes: number;
+    cpuCount: number;
+  };
+  modelHarnessAssignments: {
+    persistenceSchemaVersion: 1;
+    revision: number;
+    assignments: Record<
+      string,
+      {
+        source: string;
+        harness: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode';
+        defaultHarness: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode';
+        configurable: boolean;
+        overridden: boolean;
+      }
+    >;
+  };
+  includedFiles: string[];
+  skippedFiles: SkippedFile[];
+}
+
+interface NormalizedFeedbackRequest {
+  description: string;
+  area: FeedbackArea;
+  workspaceSelections: FeedbackWorkspaceSelection[];
+  chatProjectIds: string[];
+  includeChatDetails: boolean;
+  includePipelineExecutions: boolean;
+}
+
+interface AddFileOptions {
+  sourceRoot: string;
+  allowChatContent?: boolean;
+  allowTranscript?: boolean;
+  excludedZipPathPrefixes?: readonly string[];
+}
+
+interface ReservedFeedbackOutput {
+  filename: string;
+  outputPath: string;
+  fileHandle: FileHandle;
+}
+
+type LstatResult =
+  | { status: 'ok'; stats: Stats }
+  | { status: 'missing' }
+  | { status: 'inaccessible' };
+
+interface PipelineExecutionSnapshot {
+  id: string;
+  pipelineId: string;
+  pipelineName: string;
+  status: string;
+  startedAt: string;
+  sourcePath: string;
+  stateFilename: string;
+  executionDirName: string;
+  completedAt?: string;
+  eventName?: string;
+  projectId?: string;
+  worktreeId?: string;
+  planId?: string;
+  planModified?: boolean;
+  hasPlan?: boolean;
+  hasReport?: boolean;
+  rerunSourceId?: string;
+  parentExecutionId?: string;
+  parentStepId?: string;
+  parentAttempt?: number;
+  parentIteration?: number;
+  hidden?: boolean;
+  triggerSource?: unknown;
+}
+
+interface PipelineExecutionSummarySnapshot {
+  id: string;
+  pipeline_id: string;
+  pipeline_name: string;
+  status: string;
+  started_at: string;
+  completed_at?: string;
+  event_name?: string;
+  project_id?: string;
+  worktree_id?: string;
+  plan_id?: string;
+  plan_modified?: boolean;
+  has_plan?: boolean;
+  has_report?: boolean;
+  rerun_source_id?: string;
+  parent_execution_id?: string;
+  parent_step_id?: string;
+  parent_attempt?: number;
+  parent_iteration?: number;
+  hidden?: boolean;
+  trigger_source?: unknown;
+}
+
+class FeedbackBundleBuilder {
+  private readonly zip = new ZipFile();
+  private readonly included = new Set<string>();
+  private readonly reserved = new Set<string>();
+  private readonly skipped: SkippedFile[] = [];
+
+  includedFiles(): string[] {
+    return Array.from(this.included).sort();
+  }
+
+  skippedFiles(): SkippedFile[] {
+    return [...this.skipped];
+  }
+
+  async addFileIfSafe(
+    sourcePath: string,
+    zipPath: string,
+    options: AddFileOptions,
+  ): Promise<void> {
+    const normalizedZipPath = normalizeZipPath(zipPath);
+    if (normalizedZipPath === null) {
+      this.recordSkipped(zipPath, 'out-of-root');
+      return;
+    }
+    if (!isPathWithinRoot(sourcePath, options.sourceRoot)) {
+      this.recordSkipped(normalizedZipPath, 'out-of-root');
+      return;
+    }
+    if (!isAllowedZipPath(normalizedZipPath, options)) {
+      this.recordSkipped(normalizedZipPath, 'policy-excluded');
+      return;
+    }
+    if (!this.reservePath(normalizedZipPath)) {
+      return;
+    }
+
+    const fileStatResult = await safeLstat(sourcePath);
+    if (fileStatResult.status === 'inaccessible') {
+      this.releasePath(normalizedZipPath);
+      this.recordSkipped(normalizedZipPath, 'inaccessible');
+      return;
+    }
+    if (fileStatResult.status === 'missing') {
+      this.releasePath(normalizedZipPath);
+      this.recordSkipped(normalizedZipPath, 'missing');
+      return;
+    }
+    const fileStat = fileStatResult.stats;
+    if (fileStat.isSymbolicLink()) {
+      this.releasePath(normalizedZipPath);
+      this.recordSkipped(normalizedZipPath, 'symlink');
+      return;
+    }
+    if (!fileStat.isFile()) {
+      this.releasePath(normalizedZipPath);
+      return;
+    }
+    if (fileStat.size > MAX_FILE_BYTES) {
+      this.releasePath(normalizedZipPath);
+      this.recordSkipped(normalizedZipPath, 'too-large');
+      return;
+    }
+
+    this.zip.addReadStream(createReadStream(sourcePath), normalizedZipPath, {
+      mtime: fileStat.mtime,
+      mode: fileStat.mode,
+      size: fileStat.size,
+    });
+    this.included.add(normalizedZipPath);
+  }
+
+  async addDirectoryIfSafe(
+    sourceDir: string,
+    zipDir: string,
+    options: AddFileOptions,
+  ): Promise<void> {
+    const normalizedZipDir = normalizeZipPath(zipDir);
+    if (normalizedZipDir === null) {
+      this.recordSkipped(zipDir, 'out-of-root');
+      return;
+    }
+    if (!isPathWithinRoot(sourceDir, options.sourceRoot)) {
+      this.recordSkipped(normalizedZipDir, 'out-of-root');
+      return;
+    }
+    if (!isAllowedZipPath(normalizedZipDir, options)) {
+      this.recordSkipped(normalizedZipDir, 'policy-excluded');
+      return;
+    }
+    if (!this.reservePath(normalizedZipDir)) {
+      return;
+    }
+
+    const dirStatResult = await safeLstat(sourceDir);
+    if (dirStatResult.status === 'inaccessible') {
+      this.releasePath(normalizedZipDir);
+      this.recordSkipped(normalizedZipDir, 'inaccessible');
+      return;
+    }
+    if (dirStatResult.status === 'missing') {
+      this.releasePath(normalizedZipDir);
+      this.recordSkipped(normalizedZipDir, 'missing');
+      return;
+    }
+    const dirStat = dirStatResult.stats;
+    if (dirStat.isSymbolicLink()) {
+      this.releasePath(normalizedZipDir);
+      this.recordSkipped(normalizedZipDir, 'symlink');
+      return;
+    }
+    if (!dirStat.isDirectory()) {
+      this.releasePath(normalizedZipDir);
+      return;
+    }
+
+    let entries: Dirent<string>[];
+    try {
+      entries = await readdir(sourceDir, { withFileTypes: true });
+    } catch {
+      this.releasePath(normalizedZipDir);
+      this.recordSkipped(normalizedZipDir, 'inaccessible');
+      return;
+    }
+
+    await Promise.all(
+      entries.map(async (entry) => {
+        const childSource = join(sourceDir, entry.name);
+        const childZipPath = posix.join(normalizedZipDir, entry.name);
+        if (entry.isSymbolicLink()) {
+          this.recordSkipped(childZipPath, 'symlink');
+          return;
+        }
+        if (entry.isDirectory()) {
+          await this.addDirectoryIfSafe(childSource, childZipPath, options);
+          return;
+        }
+        if (entry.isFile()) {
+          await this.addFileIfSafe(childSource, childZipPath, options);
+        }
+      }),
+    );
+  }
+
+  addManifest(manifest: FeedbackManifest): void {
+    this.zip.addBuffer(
+      Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, 'utf8'),
+      'feedback.json',
+    );
+  }
+
+  addGeneratedJson(zipPath: string, value: unknown): void {
+    const normalizedZipPath = normalizeZipPath(zipPath);
+    if (normalizedZipPath === null) {
+      this.recordSkipped(zipPath, 'out-of-root');
+      return;
+    }
+    if (!isAllowedZipPath(normalizedZipPath, { sourceRoot: '' })) {
+      this.recordSkipped(normalizedZipPath, 'policy-excluded');
+      return;
+    }
+    if (!this.reservePath(normalizedZipPath)) {
+      return;
+    }
+    this.zip.addBuffer(
+      Buffer.from(`${JSON.stringify(value, null, 2)}\n`, 'utf8'),
+      normalizedZipPath,
+    );
+    this.included.add(normalizedZipPath);
+  }
+
+  async writeTo(fileHandle: FileHandle): Promise<void> {
+    const output = fileHandle.createWriteStream();
+    const streamDone = pipeline(this.zip.outputStream, output);
+    this.zip.end();
+    await streamDone;
+  }
+
+  recordSkipped(path: string, reason: SkippedReason): void {
+    this.skipped.push({ path, reason });
+  }
+
+  private reservePath(path: string): boolean {
+    if (this.reserved.has(path)) {
+      return false;
+    }
+    this.reserved.add(path);
+    return true;
+  }
+
+  private releasePath(path: string): void {
+    this.reserved.delete(path);
+  }
+}
+
+/**
+ * Where the produced diagnostics zip should be written.
+ * - `downloads`: the user's Downloads directory (the offline export path).
+ * - `temp`: the OS temp directory, used by the feedback-submit flow which reads
+ *   the bytes for upload and then deletes the file.
+ */
+export type FeedbackBundleDestination = 'downloads' | 'temp';
+
+export interface PrepareFeedbackBundleOptions {
+  destination?: FeedbackBundleDestination;
+}
+
+export async function prepareFeedbackBundle(
+  request: FeedbackPrepareRequest,
+  options?: PrepareFeedbackBundleOptions,
+): Promise<FeedbackPrepareResponse> {
+  const destination: FeedbackBundleDestination =
+    options?.destination ?? 'downloads';
+  const normalized = normalizeRequest(request);
+  const preparedAtDate = new Date();
+  const preparedAt = preparedAtDate.toISOString();
+  const builder = new FeedbackBundleBuilder();
+  let reservedOutput: ReservedFeedbackOutput | null = null;
+
+  try {
+    await collectFeedbackFiles(builder, normalized);
+    const harnessSnapshot = getModelHarnessAssignmentSnapshot();
+    builder.addManifest({
+      version: FEEDBACK_VERSION,
+      preparedAt,
+      description: normalized.description,
+      area: normalized.area,
+      workspaceSelections: normalized.workspaceSelections,
+      chatProjectIds: normalized.chatProjectIds,
+      includeChatDetails: normalized.includeChatDetails,
+      includePipelineExecutions: normalized.includePipelineExecutions,
+      app: {
+        version: app.getVersion(),
+        runtimeMode: app.isPackaged ? 'prod' : 'dev',
+        platform: hostPlatformOperatingSystem(),
+        arch: process.arch,
+        electron: process.versions.electron,
+        node: process.versions.node,
+      },
+      machine: {
+        hostname: hostname(),
+        osType: type(),
+        osRelease: release(),
+        osVersion: version(),
+        totalMemoryBytes: totalmem(),
+        cpuCount: cpus().length,
+      },
+      modelHarnessAssignments: {
+        persistenceSchemaVersion: MODEL_HARNESS_OVERRIDES_VERSION,
+        revision: harnessSnapshot.revision,
+        assignments: Object.fromEntries(
+          harnessSnapshot.assignments.map((assignment) => [
+            assignment.modelId,
+            {
+              source: assignment.source,
+              harness: assignment.harness,
+              defaultHarness: assignment.defaultHarness,
+              configurable: assignment.configurable,
+              overridden: assignment.overridden,
+            },
+          ]),
+        ),
+      },
+      includedFiles: builder.includedFiles(),
+      skippedFiles: builder.skippedFiles(),
+    });
+    reservedOutput = await reserveFeedbackOutput(preparedAtDate, destination);
+    try {
+      await builder.writeTo(reservedOutput.fileHandle);
+    } finally {
+      await closeFileHandle(reservedOutput.fileHandle);
+    }
+  } catch (error) {
+    if (reservedOutput !== null) {
+      await closeReservedOutput(reservedOutput);
+    }
+    throw error;
+  }
+
+  if (reservedOutput === null) {
+    throw new Error('Feedback bundle output was not prepared');
+  }
+  const filename = reservedOutput.filename;
+  const outputPath = reservedOutput.outputPath;
+  const outputStat = await stat(outputPath);
+  return {
+    filename,
+    absolutePath: outputPath,
+    createdAt: preparedAt,
+    sizeBytes: outputStat.size,
+  };
+}
+
+async function reserveFeedbackOutput(
+  preparedAtDate: Date,
+  destination: FeedbackBundleDestination,
+): Promise<ReservedFeedbackOutput> {
+  const outputDir =
+    destination === 'temp' ? app.getPath('temp') : app.getPath('downloads');
+  await mkdir(outputDir, { recursive: true });
+  const timestamp = formatFeedbackTimestamp(preparedAtDate);
+
+  for (let attempt = 0; attempt < MAX_OUTPUT_FILENAME_ATTEMPTS; attempt += 1) {
+    const filename = formatFeedbackFilename(timestamp, attempt);
+    const outputPath = join(outputDir, filename);
+    try {
+      return {
+        filename,
+        outputPath,
+        fileHandle: await open(outputPath, 'wx'),
+      };
+    } catch (error) {
+      if (getErrorCode(error) === 'EEXIST') {
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  throw new Error('Could not reserve a feedback bundle filename');
+}
+
+function formatFeedbackFilename(timestamp: string, attempt: number): string {
+  const prefix = `${BRAND.internalName}-feedback`;
+  if (attempt === 0) {
+    return `${prefix}-${timestamp}.zip`;
+  }
+  return `${prefix}-${timestamp}-${attempt}.zip`;
+}
+
+async function closeReservedOutput(
+  reservedOutput: ReservedFeedbackOutput,
+): Promise<void> {
+  await closeFileHandle(reservedOutput.fileHandle);
+  await rm(reservedOutput.outputPath, { force: true });
+}
+
+async function closeFileHandle(fileHandle: FileHandle): Promise<void> {
+  try {
+    await fileHandle.close();
+  } catch {
+    // The handle may already be closed after a stream failure.
+  }
+}
+
+function normalizeRequest(
+  request: FeedbackPrepareRequest,
+): NormalizedFeedbackRequest {
+  const description = request.description.trim();
+  if (description.length === 0) {
+    throw new Error('Feedback description is required');
+  }
+  if (!FEEDBACK_AREAS.includes(request.area)) {
+    throw new Error(`Invalid feedback area: ${request.area}`);
+  }
+
+  const workspaceSelections = request.workspaceSelections ?? [];
+  const chatProjectIds = request.chatProjectIds ?? [];
+
+  for (const selection of workspaceSelections) {
+    validateId(selection.workspaceId, 'workspaceId');
+    for (const worktreeId of selection.worktreeIds) {
+      validateId(worktreeId, 'worktreeId');
+    }
+  }
+  for (const chatProjectId of chatProjectIds) {
+    validateId(chatProjectId, 'chatProjectId');
+  }
+
+  const scopedWorkspaceSelections =
+    request.area === 'worktrees' ? workspaceSelections : [];
+  const scopedChatProjectIds = request.area === 'chat' ? chatProjectIds : [];
+  const scopedIncludeChatDetails =
+    (request.area === 'worktrees' || request.area === 'chat') &&
+    (request.includeChatDetails ?? false);
+  const scopedIncludePipelineExecutions =
+    request.area === 'worktrees' &&
+    (request.includePipelineExecutions ?? false);
+
+  return {
+    description,
+    area: request.area,
+    workspaceSelections: scopedWorkspaceSelections,
+    chatProjectIds: scopedChatProjectIds,
+    includeChatDetails: scopedIncludeChatDetails,
+    includePipelineExecutions: scopedIncludePipelineExecutions,
+  };
+}
+
+async function collectFeedbackFiles(
+  builder: FeedbackBundleBuilder,
+  request: NormalizedFeedbackRequest,
+): Promise<void> {
+  await includeCoreDiagnostics(builder);
+  await includeAppLogs(builder);
+  if (request.area === 'pipelines') {
+    await includePipelineDiagnostics(builder);
+  }
+  if (request.area === 'plugins') {
+    await includePluginDiagnostics(builder);
+  }
+  await includeWorkspaceDiagnostics(
+    builder,
+    request.workspaceSelections,
+    request.includeChatDetails,
+  );
+  await includeChatProjectMetadata(builder, request.chatProjectIds);
+
+  if (request.area === 'worktrees') {
+    await includeWorktreePipelineDiagnostics(
+      builder,
+      request.workspaceSelections,
+      request.includePipelineExecutions,
+    );
+  }
+
+  if (request.area === 'worktrees' && request.includeChatDetails) {
+    await includeWorktreeChatDetails(builder, request.workspaceSelections);
+  }
+  if (request.area === 'chat' && request.includeChatDetails) {
+    await includeStandaloneChatDetails(builder, request.chatProjectIds);
+  }
+}
+
+async function includeCoreDiagnostics(
+  builder: FeedbackBundleBuilder,
+): Promise<void> {
+  const dataDir = getDataDir();
+  await builder.addDirectoryIfSafe(
+    getAgentObservabilityDiagnosticsDir(),
+    dataRelativeZipPath(getAgentObservabilityDiagnosticsDir()),
+    { sourceRoot: dataDir },
+  );
+  await builder.addDirectoryIfSafe(
+    getAgentObservabilityAuditDir(),
+    dataRelativeZipPath(getAgentObservabilityAuditDir()),
+    { sourceRoot: dataDir },
+  );
+  await builder.addFileIfSafe(
+    getAgentObservabilitySnapshotPath(),
+    dataRelativeZipPath(getAgentObservabilitySnapshotPath()),
+    { sourceRoot: dataDir },
+  );
+  await builder.addFileIfSafe(
+    getPreferencesFilePath(),
+    dataRelativeZipPath(getPreferencesFilePath()),
+    { sourceRoot: dataDir },
+  );
+  await builder.addFileIfSafe(
+    getWorkspaceIndexFilePath(),
+    dataRelativeZipPath(getWorkspaceIndexFilePath()),
+    { sourceRoot: dataDir },
+  );
+}
+
+type FeedbackMainLogFence =
+  | { status: 'settled'; result: MainLogFlushResult }
+  | { status: 'timed_out' }
+  | { status: 'failed' };
+
+/** Finite admission fence only: feedback must never close the running logger. */
+async function awaitFeedbackMainLogFence(): Promise<FeedbackMainLogFence> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<FeedbackMainLogFence>((resolve) => {
+    timer = setTimeout(
+      () => resolve({ status: 'timed_out' }),
+      MAIN_LOG_FEEDBACK_FLUSH_TIMEOUT_MS,
+    );
+  });
+  try {
+    const fence = flushMainProcessLogging().then(
+      (result): FeedbackMainLogFence => ({ status: 'settled', result }),
+      (): FeedbackMainLogFence => ({ status: 'failed' }),
+    );
+    return await Promise.race([fence, timeout]);
+  } catch {
+    // Do not expose arbitrary logger errors or silently qualify an incomplete tail.
+    return { status: 'failed' };
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+async function includeAppLogs(builder: FeedbackBundleBuilder): Promise<void> {
+  const platform = hostPlatformOperatingSystem();
+  if (platform !== 'darwin' && platform !== 'linux') {
+    return;
+  }
+  if (platform === 'darwin') {
+    await includeMacDiagnosticReports(builder);
+  }
+
+  const uiLogDirName = `${BRAND.internalName}-ui`;
+  // Startup registers the actual logger directory, including E2E isolation.
+  const appUiLog = join(app.getPath('logs'), 'main.log');
+  const zipPath = posix.join('system-logs', uiLogDirName, 'main.log');
+  const fence = await awaitFeedbackMainLogFence();
+  // Archived alongside the log and listed in feedback.json includedFiles.
+  // Settled means pre-call attempts finished, not lossless/fsync/atomic capture.
+  builder.addGeneratedJson(
+    posix.join('system-logs', uiLogDirName, 'main-log-flush.json'),
+    {
+      version: 1,
+      logPath: zipPath,
+      timeoutMs: MAIN_LOG_FEEDBACK_FLUSH_TIMEOUT_MS,
+      scope: 'pre-collection-admission',
+      ...fence,
+    },
+  );
+  // Keep useful existing bytes even if the finite fence did not settle.
+  // The sidecar records that the pending tail was not qualified.
+  await builder.addFileIfSafe(appUiLog, zipPath, {
+    sourceRoot: dirname(appUiLog),
+  });
+}
+
+async function includeMacDiagnosticReports(
+  builder: FeedbackBundleBuilder,
+): Promise<void> {
+  const diagnosticReportsDir = join(
+    getFeedbackHomeDir(),
+    'Library',
+    'Logs',
+    'DiagnosticReports',
+  );
+  let diagnosticEntries: Dirent<string>[];
+  try {
+    diagnosticEntries = await readdir(diagnosticReportsDir, {
+      withFileTypes: true,
+    });
+  } catch {
+    diagnosticEntries = [];
+  }
+  await Promise.all(
+    diagnosticEntries.map(async (entry) => {
+      if (!entry.isFile()) {
+        return;
+      }
+      if (!isCanopyDiagnosticReport(entry.name)) {
+        return;
+      }
+      const sourcePath = join(diagnosticReportsDir, entry.name);
+      let reportContents: string;
+      try {
+        reportContents = await readFile(sourcePath, 'utf8');
+      } catch {
+        return;
+      }
+      if (!isCanopyDiagnosticReport(entry.name, reportContents)) {
+        return;
+      }
+      await builder.addFileIfSafe(
+        sourcePath,
+        posix.join('system-logs', 'DiagnosticReports', entry.name),
+        { sourceRoot: diagnosticReportsDir },
+      );
+    }),
+  );
+}
+
+function getFeedbackHomeDir(): string {
+  return process.env.NODE_ENV === 'test'
+    ? (process.env.FEEDBACK_BUNDLE_HOME_DIR_FOR_TEST ?? homedir())
+    : homedir();
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * macOS names a crash report after the PROCESS name, as
+ * `<process>-<YYYY-MM-DD>-<HHMMSS>...ips`. Two process families matter, and
+ * they are named from the packaged desktop product name:
+ *
+ * - Main process: `Contents/MacOS/<displayName>[ (Flavor)]`.
+ * - Helper processes use
+ *   `<displayName>[ (Flavor)] Helper (<Type>)` — e.g.
+ *   `Unstoppable Code (Internal) Helper (Renderer)`.
+ *
+ * Two ways to get this wrong, both of which have been hit:
+ *
+ * 1. Matching unanchored sweeps other vendors in. These files are uploaded in
+ *    a user feedback bundle, so over-matching is a privacy leak.
+ * 2. Omitting the flavor segment drops every helper report from internal and
+ *    RC builds — the dogfood channels.
+ *
+ * So: the date separator is always required and the optional ` (Flavor)`
+ * segment is allowed on the stable package name.
+ */
+function buildDiagnosticReportPattern(displayName: string): RegExp {
+  const flavor = '(?: \\([^)]*\\))?';
+  if (displayName.length === 0) {
+    return /(?!)/;
+  }
+  return new RegExp(
+    `^${escapeRegExp(displayName)}${flavor}(?: Helper${flavor})?-`,
+  );
+}
+
+function hasActiveBrandBundleId(reportContents: string): boolean {
+  const header = reportContents.split(/\r?\n/, 1)[0];
+  try {
+    const parsed: unknown = JSON.parse(header);
+    if (!isRecord(parsed)) {
+      return false;
+    }
+    const bundleId =
+      typeof parsed.bundleID === 'string' ? parsed.bundleID.trim() : '';
+    const brandedBundleId = escapeRegExp(BRAND.appId);
+    return new RegExp(
+      `^${brandedBundleId}(?:\\.(?:dev|rc))?(?:\\.helper(?:\\.(?:EH|GPU|NP|Plugin|Renderer))?)?$`,
+    ).test(bundleId);
+  } catch {
+    return false;
+  }
+}
+
+export function isCanopyDiagnosticReport(
+  filename: string,
+  reportContents?: string,
+): boolean {
+  if (!filename.endsWith('.ips')) {
+    return false;
+  }
+  const matchesProcessName = buildDiagnosticReportPattern(
+    BRAND.displayName,
+  ).test(filename);
+  if (!matchesProcessName || reportContents === undefined) {
+    return matchesProcessName;
+  }
+  // Filenames are only a candidate filter: generic product names can collide
+  // with another Electron app's helper family. The first JSON line in a macOS
+  // .ips report carries bundleID, which provides the ownership boundary before
+  // the file is added to an uploaded feedback archive.
+  return hasActiveBrandBundleId(reportContents);
+}
+
+async function includePipelineDiagnostics(
+  builder: FeedbackBundleBuilder,
+): Promise<void> {
+  const dataDir = getDataDir();
+  const executionsDir = getPipelineExecutionsDir();
+  let entries: Dirent<string>[];
+  try {
+    entries = await readdir(executionsDir, { withFileTypes: true });
+  } catch {
+    await builder.addDirectoryIfSafe(executionsDir, 'pipeline-executions', {
+      sourceRoot: dataDir,
+    });
+    return;
+  }
+
+  await Promise.all(
+    entries.map(async (entry) => {
+      const sourcePath = join(executionsDir, entry.name);
+      if (entry.isFile() && entry.name === 'index.json') {
+        await builder.addFileIfSafe(
+          sourcePath,
+          posix.join('pipeline-executions', entry.name),
+          { sourceRoot: dataDir },
+        );
+        return;
+      }
+      if (entry.isFile() && entry.name.endsWith('.json')) {
+        await addSanitizedPipelineExecutionState(
+          builder,
+          sourcePath,
+          posix.join('pipeline-executions', entry.name),
+        );
+        return;
+      }
+      if (entry.isDirectory()) {
+        await builder.addDirectoryIfSafe(
+          sourcePath,
+          posix.join('pipeline-executions', entry.name),
+          { sourceRoot: dataDir },
+        );
+      }
+    }),
+  );
+}
+
+async function includeWorktreePipelineDiagnostics(
+  builder: FeedbackBundleBuilder,
+  selections: FeedbackWorkspaceSelection[],
+  includeFullExecutions: boolean,
+): Promise<void> {
+  const selectedWorktrees = buildSelectedWorktreeMap(selections);
+  if (selectedWorktrees.size === 0) {
+    return;
+  }
+
+  const snapshots = await readPipelineExecutionSnapshots();
+  const selectedExecutions = selectPipelineExecutionsForWorktrees(
+    snapshots,
+    selectedWorktrees,
+  );
+
+  builder.addGeneratedJson('pipeline-executions/summary.json', {
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    executionCount: selectedExecutions.length,
+    executions: selectedExecutions.map(toPipelineExecutionSummarySnapshot),
+  });
+
+  if (!includeFullExecutions) {
+    return;
+  }
+
+  const dataDir = getDataDir();
+  const executionsDir = getPipelineExecutionsDir();
+  await Promise.all(
+    selectedExecutions.map(async (execution) => {
+      await addSanitizedPipelineExecutionState(
+        builder,
+        execution.sourcePath,
+        posix.join('pipeline-executions', execution.stateFilename),
+      );
+      await builder.addDirectoryIfSafe(
+        join(executionsDir, execution.executionDirName),
+        posix.join('pipeline-executions', execution.executionDirName),
+        { sourceRoot: dataDir },
+      );
+    }),
+  );
+}
+
+function buildSelectedWorktreeMap(
+  selections: FeedbackWorkspaceSelection[],
+): Map<string, Set<string>> {
+  const selectedWorktrees = new Map<string, Set<string>>();
+  for (const selection of selections) {
+    if (selection.worktreeIds.length === 0) {
+      continue;
+    }
+    selectedWorktrees.set(
+      selection.workspaceId,
+      new Set(selection.worktreeIds),
+    );
+  }
+  return selectedWorktrees;
+}
+
+async function readPipelineExecutionSnapshots(): Promise<
+  PipelineExecutionSnapshot[]
+> {
+  const executionsDir = getPipelineExecutionsDir();
+  let entries: Dirent<string>[];
+  try {
+    entries = await readdir(executionsDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  const snapshots = await Promise.all(
+    entries
+      .filter(
+        (entry) =>
+          entry.isFile() &&
+          entry.name.endsWith('.json') &&
+          entry.name !== 'index.json',
+      )
+      .map(async (entry) => {
+        const sourcePath = join(executionsDir, entry.name);
+        return readPipelineExecutionSnapshot(
+          sourcePath,
+          entry.name,
+          entry.name.slice(0, -'.json'.length),
+        );
+      }),
+  );
+
+  return snapshots
+    .filter(
+      (snapshot): snapshot is PipelineExecutionSnapshot => snapshot !== null,
+    )
+    .sort((left, right) => {
+      const startedDiff =
+        new Date(right.startedAt).getTime() -
+        new Date(left.startedAt).getTime();
+      if (startedDiff !== 0) {
+        return startedDiff;
+      }
+      return right.id.localeCompare(left.id);
+    });
+}
+
+async function readPipelineExecutionSnapshot(
+  sourcePath: string,
+  stateFilename: string,
+  executionDirName: string,
+): Promise<PipelineExecutionSnapshot | null> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await readFile(sourcePath, 'utf8'));
+  } catch {
+    return null;
+  }
+  return parsePipelineExecutionSnapshot(
+    parsed,
+    sourcePath,
+    stateFilename,
+    executionDirName,
+  );
+}
+
+function parsePipelineExecutionSnapshot(
+  value: unknown,
+  sourcePath: string,
+  stateFilename: string,
+  executionDirName: string,
+): PipelineExecutionSnapshot | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const id = readStringField(value, 'id');
+  const pipelineId = readStringField(value, 'pipeline_id');
+  const status = readStringField(value, 'status');
+  const startedAt = readStringField(value, 'started_at');
+  if (
+    id === undefined ||
+    pipelineId === undefined ||
+    status === undefined ||
+    startedAt === undefined
+  ) {
+    return null;
+  }
+
+  const pipelineSnapshot = readRecordField(value, 'pipeline_snapshot');
+  const pipelineName =
+    pipelineSnapshot !== undefined
+      ? readStringField(pipelineSnapshot, 'name')
+      : undefined;
+  const planHashBefore = readStringField(value, 'plan_hash_before');
+  const planHashAfter = readStringField(value, 'plan_hash_after');
+  const reportOutputs = readRecordField(value, 'report_outputs');
+
+  return {
+    id,
+    pipelineId,
+    pipelineName: pipelineName ?? pipelineId,
+    status,
+    startedAt,
+    sourcePath,
+    stateFilename,
+    executionDirName,
+    completedAt: readStringField(value, 'completed_at'),
+    eventName: readStringField(value, 'event_name'),
+    projectId: readStringField(value, 'project_id'),
+    worktreeId: readStringField(value, 'worktree_id'),
+    planId:
+      readStringField(value, 'planId') ?? readStringField(value, 'plan_id'),
+    planModified:
+      planHashBefore !== undefined && planHashAfter !== undefined
+        ? planHashBefore !== planHashAfter
+        : undefined,
+    hasPlan: planHashAfter !== undefined ? true : undefined,
+    hasReport: reportOutputsHasReport(reportOutputs) ? true : undefined,
+    rerunSourceId: readStringField(value, 'rerun_source_id'),
+    parentExecutionId: readStringField(value, 'parent_execution_id'),
+    parentStepId: readStringField(value, 'parent_step_id'),
+    parentAttempt: readNumberField(value, 'parent_attempt'),
+    parentIteration: readNumberField(value, 'parent_iteration'),
+    hidden: readBooleanField(value, 'hidden'),
+    triggerSource: sanitizeTriggerSource(value.trigger_source),
+  };
+}
+
+function selectPipelineExecutionsForWorktrees(
+  snapshots: PipelineExecutionSnapshot[],
+  selectedWorktrees: Map<string, Set<string>>,
+): PipelineExecutionSnapshot[] {
+  const selectedIds = new Set<string>();
+  const childrenByParentId = new Map<string, PipelineExecutionSnapshot[]>();
+
+  for (const snapshot of snapshots) {
+    if (snapshot.parentExecutionId !== undefined) {
+      const existing = childrenByParentId.get(snapshot.parentExecutionId) ?? [];
+      existing.push(snapshot);
+      childrenByParentId.set(snapshot.parentExecutionId, existing);
+    }
+    if (matchesSelectedWorktree(snapshot, selectedWorktrees)) {
+      selectedIds.add(snapshot.id);
+    }
+  }
+
+  const queue = Array.from(selectedIds);
+  for (let index = 0; index < queue.length; index += 1) {
+    const executionId = queue[index];
+    if (executionId === undefined) {
+      continue;
+    }
+    for (const child of childrenByParentId.get(executionId) ?? []) {
+      if (selectedIds.has(child.id)) {
+        continue;
+      }
+      selectedIds.add(child.id);
+      queue.push(child.id);
+    }
+  }
+
+  return snapshots.filter((snapshot) => selectedIds.has(snapshot.id));
+}
+
+function matchesSelectedWorktree(
+  snapshot: PipelineExecutionSnapshot,
+  selectedWorktrees: Map<string, Set<string>>,
+): boolean {
+  if (snapshot.projectId === undefined || snapshot.worktreeId === undefined) {
+    return false;
+  }
+  return (
+    selectedWorktrees.get(snapshot.projectId)?.has(snapshot.worktreeId) === true
+  );
+}
+
+function toPipelineExecutionSummarySnapshot(
+  snapshot: PipelineExecutionSnapshot,
+): PipelineExecutionSummarySnapshot {
+  return {
+    id: snapshot.id,
+    pipeline_id: snapshot.pipelineId,
+    pipeline_name: snapshot.pipelineName,
+    status: snapshot.status,
+    started_at: snapshot.startedAt,
+    completed_at: snapshot.completedAt,
+    event_name: snapshot.eventName,
+    project_id: snapshot.projectId,
+    worktree_id: snapshot.worktreeId,
+    plan_id: snapshot.planId,
+    plan_modified: snapshot.planModified,
+    has_plan: snapshot.hasPlan,
+    has_report: snapshot.hasReport,
+    rerun_source_id: snapshot.rerunSourceId,
+    parent_execution_id: snapshot.parentExecutionId,
+    parent_step_id: snapshot.parentStepId,
+    parent_attempt: snapshot.parentAttempt,
+    parent_iteration: snapshot.parentIteration,
+    hidden: snapshot.hidden,
+    trigger_source: snapshot.triggerSource,
+  };
+}
+
+function reportOutputsHasReport(
+  reportOutputs: Record<string, unknown> | undefined,
+): boolean {
+  if (reportOutputs === undefined) {
+    return false;
+  }
+  return (
+    readStringField(reportOutputs, 'report_file') !== undefined ||
+    readStringField(reportOutputs, 'report_json_file') !== undefined
+  );
+}
+
+async function includePluginDiagnostics(
+  builder: FeedbackBundleBuilder,
+): Promise<void> {
+  const dataDir = getDataDir();
+  await builder.addFileIfSafe(
+    getBundlesIndexFilePath(),
+    dataRelativeZipPath(getBundlesIndexFilePath()),
+    { sourceRoot: dataDir },
+  );
+  await builder.addFileIfSafe(
+    getMcpServersIndexFilePath(),
+    dataRelativeZipPath(getMcpServersIndexFilePath()),
+    { sourceRoot: dataDir },
+  );
+  await builder.addFileIfSafe(
+    getPipelinePluginPreferencesFilePath(),
+    dataRelativeZipPath(getPipelinePluginPreferencesFilePath()),
+    { sourceRoot: dataDir },
+  );
+}
+
+async function includeWorkspaceDiagnostics(
+  builder: FeedbackBundleBuilder,
+  selections: FeedbackWorkspaceSelection[],
+  includeChatDetails: boolean,
+): Promise<void> {
+  const dataDir = getDataDir();
+  await Promise.all(
+    selections.map(async (selection) => {
+      await builder.addFileIfSafe(
+        getWorkspaceConfigPath(selection.workspaceId),
+        dataRelativeZipPath(getWorkspaceConfigPath(selection.workspaceId)),
+        { sourceRoot: dataDir },
+      );
+      await addWorkspaceWorktreesDiagnostics(
+        builder,
+        getWorkspaceWorktreesFilePath(selection.workspaceId),
+        dataRelativeZipPath(
+          getWorkspaceWorktreesFilePath(selection.workspaceId),
+        ),
+        includeChatDetails,
+      );
+      await Promise.all(
+        selection.worktreeIds.map(async (worktreeId) => {
+          await builder.addDirectoryIfSafe(
+            getWorkspaceScriptRunDir(selection.workspaceId, worktreeId),
+            dataRelativeZipPath(
+              getWorkspaceScriptRunDir(selection.workspaceId, worktreeId),
+            ),
+            { sourceRoot: dataDir },
+          );
+          await builder.addDirectoryIfSafe(
+            getHookInvocationsDir(selection.workspaceId, worktreeId),
+            dataRelativeZipPath(
+              getHookInvocationsDir(selection.workspaceId, worktreeId),
+            ),
+            { sourceRoot: dataDir },
+          );
+        }),
+      );
+    }),
+  );
+}
+
+async function addWorkspaceWorktreesDiagnostics(
+  builder: FeedbackBundleBuilder,
+  sourcePath: string,
+  zipPath: string,
+  includeChatDetails: boolean,
+): Promise<void> {
+  if (includeChatDetails) {
+    await builder.addFileIfSafe(sourcePath, zipPath, {
+      sourceRoot: getDataDir(),
+      allowChatContent: true,
+    });
+    return;
+  }
+
+  const normalizedZipPath = normalizeZipPath(zipPath);
+  if (
+    normalizedZipPath === null ||
+    !isPathWithinRoot(sourcePath, getDataDir())
+  ) {
+    builder.recordSkipped(zipPath, 'out-of-root');
+    return;
+  }
+  const fileStatResult = await safeLstat(sourcePath);
+  if (fileStatResult.status !== 'ok') {
+    builder.recordSkipped(normalizedZipPath, fileStatResult.status);
+    return;
+  }
+  if (fileStatResult.stats.isSymbolicLink()) {
+    builder.recordSkipped(normalizedZipPath, 'symlink');
+    return;
+  }
+  if (!fileStatResult.stats.isFile()) {
+    return;
+  }
+  if (fileStatResult.stats.size > MAX_FILE_BYTES) {
+    builder.recordSkipped(normalizedZipPath, 'too-large');
+    return;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await readFile(sourcePath, 'utf8'));
+  } catch {
+    builder.recordSkipped(normalizedZipPath, 'inaccessible');
+    return;
+  }
+  const sanitized = sanitizeWorktreesChatBadgeContent(parsed);
+  if (sanitized === null) {
+    builder.recordSkipped(normalizedZipPath, 'inaccessible');
+    return;
+  }
+  builder.addGeneratedJson(normalizedZipPath, sanitized);
+}
+
+function sanitizeWorktreesChatBadgeContent(value: unknown): unknown {
+  if (!isRecord(value) || !Array.isArray(value.worktrees)) {
+    return null;
+  }
+  const worktrees: unknown[] = value.worktrees;
+  return {
+    version: readNumberField(value, 'version') ?? 1,
+    worktrees: worktrees.flatMap((worktree) => {
+      if (!isRecord(worktree)) {
+        return [];
+      }
+      if (!('chatBadges' in worktree)) {
+        return [worktree];
+      }
+      const chatBadges = readRecordField(worktree, 'chatBadges');
+      const safeWorktree = Object.fromEntries(
+        Object.entries(worktree).filter(([key]) => key !== 'chatBadges'),
+      );
+      if (chatBadges === undefined) {
+        return [safeWorktree];
+      }
+      return [
+        {
+          ...safeWorktree,
+          chatBadges: {
+            version: readNumberField(chatBadges, 'version') ?? 1,
+            unreadChats: sanitizeChatBadgeRefs(chatBadges.unreadChats),
+            approvalChats: sanitizeChatBadgeRefs(chatBadges.approvalChats),
+            needsHydration:
+              readBooleanField(chatBadges, 'needsHydration') ?? false,
+            updatedAt: readStringField(chatBadges, 'updatedAt') ?? '',
+          },
+        },
+      ];
+    }),
+  };
+}
+
+function sanitizeChatBadgeRefs(value: unknown): unknown[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const refs: unknown[] = value;
+  return refs.flatMap((ref) => {
+    if (!isRecord(ref)) return [];
+    const chatId = readStringField(ref, 'chatId');
+    if (chatId === undefined) return [];
+    const providerType = readStringField(ref, 'providerType');
+    return [{ chatId, ...(providerType ? { providerType } : {}) }];
+  });
+}
+
+async function includeChatProjectMetadata(
+  builder: FeedbackBundleBuilder,
+  chatProjectIds: string[],
+): Promise<void> {
+  if (chatProjectIds.length === 0) {
+    return;
+  }
+  const dataDir = getDataDir();
+  await builder.addFileIfSafe(
+    getChatProjectsFilePath(),
+    dataRelativeZipPath(getChatProjectsFilePath()),
+    { sourceRoot: dataDir },
+  );
+  await Promise.all(
+    chatProjectIds.map(async (chatProjectId) => {
+      await builder.addFileIfSafe(
+        getChatProjectProjectFilePath(chatProjectId),
+        dataRelativeZipPath(getChatProjectProjectFilePath(chatProjectId)),
+        { sourceRoot: dataDir },
+      );
+    }),
+  );
+}
+
+/** Preserve raw canonical evidence, including interrupted transactions. */
+async function includeCanonicalChatDetails(
+  builder: FeedbackBundleBuilder,
+  root: string,
+  scopeId: string,
+): Promise<void> {
+  validateId(scopeId, 'chat storage scope');
+  const dataDir = getDataDir();
+  const manifest = join(root, 'chat-storage-manifests', `${scopeId}.json`);
+  const directory = join(root, 'chat-storage-v2', scopeId);
+  const options = {
+    sourceRoot: dataDir,
+    allowChatContent: true,
+    excludedZipPathPrefixes: [
+      dataRelativeZipPath(join(directory, 'visual-staging')),
+    ],
+  };
+  await builder.addFileIfSafe(manifest, dataRelativeZipPath(manifest), options);
+  await builder.addDirectoryIfSafe(
+    directory,
+    dataRelativeZipPath(directory),
+    options,
+  );
+}
+
+async function includeWorktreeChatDetails(
+  builder: FeedbackBundleBuilder,
+  selections: FeedbackWorkspaceSelection[],
+): Promise<void> {
+  const dataDir = getDataDir();
+  const selectedWorktrees = new Map<string, Set<string>>();
+  await Promise.all(
+    selections.map(async (selection) => {
+      if (selection.worktreeIds.length === 0) {
+        return;
+      }
+      selectedWorktrees.set(
+        selection.workspaceId,
+        new Set(selection.worktreeIds),
+      );
+      await Promise.all(
+        selection.worktreeIds.map(async (worktreeId) => {
+          await includeCanonicalChatDetails(
+            builder,
+            dirname(
+              dirname(
+                getWorkspaceChatTabsFilePath(selection.workspaceId, worktreeId),
+              ),
+            ),
+            worktreeId,
+          );
+          await builder.addFileIfSafe(
+            getWorkspaceChatTabsFilePath(selection.workspaceId, worktreeId),
+            dataRelativeZipPath(
+              getWorkspaceChatTabsFilePath(selection.workspaceId, worktreeId),
+            ),
+            { sourceRoot: dataDir, allowChatContent: true },
+          );
+          await builder.addFileIfSafe(
+            getWorktreeSummaryFilePath(selection.workspaceId, worktreeId),
+            dataRelativeZipPath(
+              getWorktreeSummaryFilePath(selection.workspaceId, worktreeId),
+            ),
+            { sourceRoot: dataDir },
+          );
+          await builder.addFileIfSafe(
+            getWorkspaceTrackedPlansFilePath(selection.workspaceId, worktreeId),
+            dataRelativeZipPath(
+              getWorkspaceTrackedPlansFilePath(
+                selection.workspaceId,
+                worktreeId,
+              ),
+            ),
+            { sourceRoot: dataDir },
+          );
+        }),
+      );
+    }),
+  );
+
+  await includeMatchingTranscripts(builder, (entry) => {
+    if (entry.projectId === undefined || entry.worktreeId === undefined) {
+      return false;
+    }
+    const scopedWorktrees = selectedWorktrees.get(entry.projectId);
+    return (
+      scopedWorktrees !== undefined &&
+      scopedWorktrees.has(entry.worktreeId) &&
+      TRANSCRIPT_WORKTREE_EVENTS.has(entry.eventType)
+    );
+  });
+}
+
+async function addSanitizedPipelineExecutionState(
+  builder: FeedbackBundleBuilder,
+  sourcePath: string,
+  zipPath: string,
+): Promise<void> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await readFile(sourcePath, 'utf8'));
+  } catch {
+    builder.recordSkipped(zipPath, 'inaccessible');
+    return;
+  }
+  if (!isRecord(parsed)) {
+    builder.recordSkipped(zipPath, 'inaccessible');
+    return;
+  }
+  builder.addGeneratedJson(zipPath, sanitizePipelineExecutionState(parsed));
+}
+
+function sanitizePipelineExecutionState(
+  value: Record<string, unknown>,
+): Record<string, unknown> {
+  const pipelineSnapshot = readRecordField(value, 'pipeline_snapshot');
+  const pipelineName =
+    pipelineSnapshot !== undefined
+      ? readStringField(pipelineSnapshot, 'name')
+      : undefined;
+  const sanitized: Record<string, unknown> = {};
+
+  setRecordValue(sanitized, 'version', readNumberField(value, 'version'));
+  setRecordValue(sanitized, 'id', readStringField(value, 'id'));
+  setRecordValue(
+    sanitized,
+    'pipeline_id',
+    readStringField(value, 'pipeline_id'),
+  );
+  setRecordValue(sanitized, 'pipeline_name', pipelineName);
+  setRecordValue(sanitized, 'status', readStringField(value, 'status'));
+  setRecordValue(sanitized, 'started_at', readStringField(value, 'started_at'));
+  setRecordValue(
+    sanitized,
+    'completed_at',
+    readStringField(value, 'completed_at'),
+  );
+  setRecordValue(sanitized, 'event_name', readStringField(value, 'event_name'));
+  setRecordValue(sanitized, 'project_id', readStringField(value, 'project_id'));
+  setRecordValue(
+    sanitized,
+    'worktree_id',
+    readStringField(value, 'worktree_id'),
+  );
+  setRecordValue(
+    sanitized,
+    'plan_id',
+    readStringField(value, 'planId') ?? readStringField(value, 'plan_id'),
+  );
+  setRecordValue(sanitized, 'error', readStringField(value, 'error'));
+  setRecordValue(
+    sanitized,
+    'rerun_source_id',
+    readStringField(value, 'rerun_source_id'),
+  );
+  setRecordValue(
+    sanitized,
+    'parent_execution_id',
+    readStringField(value, 'parent_execution_id'),
+  );
+  setRecordValue(
+    sanitized,
+    'parent_step_id',
+    readStringField(value, 'parent_step_id'),
+  );
+  setRecordValue(
+    sanitized,
+    'parent_attempt',
+    readNumberField(value, 'parent_attempt'),
+  );
+  setRecordValue(
+    sanitized,
+    'parent_iteration',
+    readNumberField(value, 'parent_iteration'),
+  );
+  setRecordValue(sanitized, 'hidden', readBooleanField(value, 'hidden'));
+  setRecordValue(
+    sanitized,
+    'trigger_source',
+    sanitizeTriggerSource(value.trigger_source),
+  );
+  setRecordValue(sanitized, 'jobs', sanitizePipelineJobs(value.jobs));
+
+  return sanitized;
+}
+
+function sanitizeTriggerSource(
+  value: unknown,
+): Record<string, unknown> | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const sanitized: Record<string, unknown> = {};
+  setRecordValue(sanitized, 'type', readStringField(value, 'type'));
+  setRecordValue(sanitized, 'name', readStringField(value, 'name'));
+  setRecordValue(sanitized, 'event_name', readStringField(value, 'event_name'));
+  return sanitized;
+}
+
+function sanitizePipelineJobs(
+  value: unknown,
+): Record<string, unknown> | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const jobs: Record<string, unknown> = {};
+  for (const [jobId, job] of Object.entries(value)) {
+    if (isRecord(job)) {
+      jobs[jobId] = sanitizePipelineJob(job);
+    }
+  }
+  return jobs;
+}
+
+function sanitizePipelineJob(
+  value: Record<string, unknown>,
+): Record<string, unknown> {
+  const sanitized: Record<string, unknown> = {};
+  setRecordValue(sanitized, 'status', readStringField(value, 'status'));
+  setRecordValue(sanitized, 'conclusion', readStringField(value, 'conclusion'));
+  setRecordValue(sanitized, 'outcome', readStringField(value, 'outcome'));
+  setRecordValue(sanitized, 'started_at', readStringField(value, 'started_at'));
+  setRecordValue(
+    sanitized,
+    'completed_at',
+    readStringField(value, 'completed_at'),
+  );
+  setRecordValue(
+    sanitized,
+    'retry_count',
+    readNumberField(value, 'retry_count'),
+  );
+  setRecordValue(
+    sanitized,
+    'iteration_count',
+    readNumberField(value, 'iteration_count'),
+  );
+  setRecordValue(
+    sanitized,
+    'report_outputs',
+    sanitizeReportOutputs(value.report_outputs),
+  );
+  setRecordValue(sanitized, 'steps', sanitizePipelineSteps(value.steps));
+  setRecordValue(
+    sanitized,
+    'retry_history',
+    sanitizePipelineAttempts(value.retry_history),
+  );
+  setRecordValue(
+    sanitized,
+    'iteration_history',
+    sanitizePipelineAttempts(value.iteration_history),
+  );
+  return sanitized;
+}
+
+function sanitizePipelineSteps(
+  value: unknown,
+): Record<string, unknown> | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const steps: Record<string, unknown> = {};
+  for (const [stepId, step] of Object.entries(value)) {
+    if (isRecord(step)) {
+      steps[stepId] = sanitizePipelineStep(step);
+    }
+  }
+  return steps;
+}
+
+function sanitizePipelineStep(
+  value: Record<string, unknown>,
+): Record<string, unknown> {
+  const sanitized: Record<string, unknown> = {};
+  setRecordValue(sanitized, 'status', readStringField(value, 'status'));
+  setRecordValue(sanitized, 'conclusion', readStringField(value, 'conclusion'));
+  setRecordValue(sanitized, 'outcome', readStringField(value, 'outcome'));
+  setRecordValue(sanitized, 'started_at', readStringField(value, 'started_at'));
+  setRecordValue(
+    sanitized,
+    'completed_at',
+    readStringField(value, 'completed_at'),
+  );
+  setRecordValue(sanitized, 'exit_code', readNumberField(value, 'exit_code'));
+  setRecordValue(sanitized, 'error', readStringField(value, 'error'));
+  setRecordValue(
+    sanitized,
+    'log_file',
+    sanitizePipelinePath(readStringField(value, 'log_file')),
+  );
+  setRecordValue(
+    sanitized,
+    'log_format_hint',
+    readStringField(value, 'log_format_hint'),
+  );
+  setRecordValue(
+    sanitized,
+    'agent_provider',
+    readStringField(value, 'agent_provider'),
+  );
+  setRecordValue(
+    sanitized,
+    'agent_model',
+    readStringField(value, 'agent_model'),
+  );
+  setRecordValue(
+    sanitized,
+    'report_outputs',
+    sanitizeReportOutputs(value.report_outputs),
+  );
+  return sanitized;
+}
+
+function sanitizePipelineAttempts(value: unknown): unknown[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const attempts: unknown[] = [];
+  for (const attempt of value) {
+    if (isRecord(attempt)) {
+      attempts.push(sanitizePipelineAttempt(attempt));
+    }
+  }
+  return attempts;
+}
+
+function sanitizePipelineAttempt(
+  value: Record<string, unknown>,
+): Record<string, unknown> {
+  const sanitized: Record<string, unknown> = {};
+  setRecordValue(sanitized, 'attempt', readNumberField(value, 'attempt'));
+  setRecordValue(sanitized, 'iteration', readNumberField(value, 'iteration'));
+  setRecordValue(sanitized, 'status', readStringField(value, 'status'));
+  setRecordValue(sanitized, 'conclusion', readStringField(value, 'conclusion'));
+  setRecordValue(sanitized, 'outcome', readStringField(value, 'outcome'));
+  setRecordValue(sanitized, 'started_at', readStringField(value, 'started_at'));
+  setRecordValue(
+    sanitized,
+    'completed_at',
+    readStringField(value, 'completed_at'),
+  );
+  setRecordValue(sanitized, 'steps', sanitizePipelineSteps(value.steps));
+  return sanitized;
+}
+
+function sanitizeReportOutputs(
+  value: unknown,
+): Record<string, unknown> | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const sanitized: Record<string, unknown> = {};
+  setRecordValue(
+    sanitized,
+    'report_file',
+    sanitizePipelinePath(readStringField(value, 'report_file')),
+  );
+  setRecordValue(
+    sanitized,
+    'report_json_file',
+    sanitizePipelinePath(readStringField(value, 'report_json_file')),
+  );
+  return sanitized;
+}
+
+function sanitizePipelinePath(value: string | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (isPathWithinRoot(value, getPipelineExecutionsDir())) {
+    return dataRelativeZipPath(value);
+  }
+
+  const normalizedZipPath = normalizeZipPath(toZipPath(value));
+  if (
+    normalizedZipPath !== null &&
+    (normalizedZipPath === 'pipeline-executions' ||
+      normalizedZipPath.startsWith('pipeline-executions/'))
+  ) {
+    return normalizedZipPath;
+  }
+
+  return posix.basename(value.split('\\').join('/'));
+}
+
+async function includeStandaloneChatDetails(
+  builder: FeedbackBundleBuilder,
+  chatProjectIds: string[],
+): Promise<void> {
+  const dataDir = getDataDir();
+  await Promise.all(
+    chatProjectIds.map(async (chatProjectId) => {
+      const workspaceId = resolveCoworkWorkspaceId(chatProjectId);
+      // One tab file per work entry, plus the legacy pre-entry home.json.
+      const tabWorktreeIds = [
+        ...(await listWorkEntryIds(workspaceId)),
+        COWORK_HOME_WORKTREE_ID,
+      ];
+      for (const worktreeId of tabWorktreeIds) {
+        const chatTabsFilePath = getWorkspaceChatTabsFilePath(
+          workspaceId,
+          worktreeId,
+        );
+        await includeCanonicalChatDetails(
+          builder,
+          dirname(dirname(chatTabsFilePath)),
+          worktreeId,
+        );
+        await builder.addFileIfSafe(
+          chatTabsFilePath,
+          dataRelativeZipPath(chatTabsFilePath),
+          { sourceRoot: dataDir, allowChatContent: true },
+        );
+      }
+      await includeStandaloneChatHistory(builder, chatProjectId);
+    }),
+  );
+
+  const selectedProjectIds = new Set(chatProjectIds);
+  await includeMatchingTranscripts(builder, (entry) => {
+    if (!TRANSCRIPT_CHAT_EVENTS.has(entry.eventType)) {
+      return false;
+    }
+    // Pre-migration transcripts are wire-shaped as
+    // (projectId=sentinel, worktreeId=conceptual chat-project id). New
+    // cowork turns are wire-shaped as
+    // (projectId=cowork workspace id, worktreeId=workEntryId — 'home' before
+    // Work Entries), so the conceptual id to match against
+    // `selectedProjectIds` lives in `projectId` instead.
+    if (
+      entry.projectId === STANDALONE_CHAT_PROJECT_ID &&
+      entry.worktreeId !== undefined &&
+      selectedProjectIds.has(entry.worktreeId)
+    ) {
+      return true;
+    }
+    return (
+      entry.projectId !== undefined &&
+      isCoworkWorkspace(entry.projectId) &&
+      selectedProjectIds.has(entry.projectId)
+    );
+  });
+}
+
+async function includeStandaloneChatHistory(
+  builder: FeedbackBundleBuilder,
+  chatProjectId: string,
+): Promise<void> {
+  const dataDir = getDataDir();
+  const workspaceId = resolveCoworkWorkspaceId(chatProjectId);
+  const historyDir = getWorkspaceChatHistoryRootDir(workspaceId);
+  let entries: Dirent<string>[];
+  try {
+    entries = await readdir(historyDir, { withFileTypes: true });
+  } catch {
+    await builder.addDirectoryIfSafe(
+      historyDir,
+      dataRelativeZipPath(historyDir),
+      {
+        sourceRoot: dataDir,
+      },
+    );
+    return;
+  }
+
+  await Promise.all(
+    entries.map(async (entry) => {
+      if (!entry.isDirectory()) {
+        return;
+      }
+      try {
+        validateId(entry.name, 'chatId');
+      } catch {
+        builder.recordSkipped(
+          posix.join(dataRelativeZipPath(historyDir), entry.name),
+          'inaccessible',
+        );
+        return;
+      }
+      const metaFilePath = getWorkspaceChatHistoryMetaFilePath(
+        workspaceId,
+        entry.name,
+      );
+      await builder.addFileIfSafe(
+        metaFilePath,
+        dataRelativeZipPath(metaFilePath),
+        { sourceRoot: dataDir },
+      );
+      const summaryFilePath = getWorkspaceChatHistorySummaryFilePath(
+        workspaceId,
+        entry.name,
+      );
+      await builder.addFileIfSafe(
+        summaryFilePath,
+        dataRelativeZipPath(summaryFilePath),
+        { sourceRoot: dataDir },
+      );
+      const conversationFilePath = getWorkspaceChatHistoryConversationFilePath(
+        workspaceId,
+        entry.name,
+      );
+      await includeCanonicalChatDetails(
+        builder,
+        dirname(conversationFilePath),
+        entry.name,
+      );
+      await builder.addFileIfSafe(
+        conversationFilePath,
+        dataRelativeZipPath(conversationFilePath),
+        { sourceRoot: dataDir, allowChatContent: true },
+      );
+    }),
+  );
+}
+
+async function includeMatchingTranscripts(
+  builder: FeedbackBundleBuilder,
+  matches: (entry: AgentAuditEntry) => boolean,
+): Promise<void> {
+  const auditDir = getAgentObservabilityAuditDir();
+  let entries: Dirent<string>[];
+  try {
+    entries = await readdir(auditDir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.jsonl')) {
+      continue;
+    }
+    const auditPath = join(auditDir, entry.name);
+    let lines: AsyncIterable<string>;
+    try {
+      lines = createInterface({
+        input: createReadStream(auditPath, { encoding: 'utf8' }),
+        crlfDelay: Infinity,
+      });
+    } catch {
+      continue;
+    }
+    try {
+      for await (const line of lines) {
+        if (line.trim().length === 0) {
+          continue;
+        }
+        const auditEntry = parseAuditEntry(line);
+        if (
+          auditEntry === null ||
+          !auditEntry.hasTranscript ||
+          !matches(auditEntry)
+        ) {
+          continue;
+        }
+        try {
+          const transcriptPath = getAgentObservabilityTranscriptFilePath({
+            id: auditEntry.id,
+            eventType: auditEntry.eventType,
+            startedAt: auditEntry.startedAt,
+          });
+          await builder.addFileIfSafe(
+            transcriptPath,
+            dataRelativeZipPath(transcriptPath),
+            { sourceRoot: getDataDir(), allowTranscript: true },
+          );
+        } catch {
+          continue;
+        }
+      }
+    } catch {
+      continue;
+    }
+  }
+}
+
+function parseAuditEntry(line: string): AgentAuditEntry | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (!isAuditEntry(parsed)) {
+    return null;
+  }
+  return parsed;
+}
+
+function isAuditEntry(value: unknown): value is AgentAuditEntry {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  if (
+    !('id' in value) ||
+    !('eventType' in value) ||
+    !('startedAt' in value) ||
+    !('hasTranscript' in value)
+  ) {
+    return false;
+  }
+  return (
+    typeof value.id === 'string' &&
+    typeof value.eventType === 'string' &&
+    parseAgentAuditEventType(value.eventType) !== null &&
+    typeof value.startedAt === 'string' &&
+    typeof value.hasTranscript === 'boolean'
+  );
+}
+
+function getPipelineExecutionsDir(): string {
+  return join(getDataDir(), 'pipeline-executions');
+}
+
+function dataRelativeZipPath(sourcePath: string): string {
+  return toZipPath(relative(getDataDir(), sourcePath));
+}
+
+function toZipPath(pathValue: string): string {
+  return pathValue.split(sep).join(posix.sep);
+}
+
+function normalizeZipPath(zipPath: string): string | null {
+  const normalized = posix.normalize(zipPath.split('\\').join('/'));
+  if (
+    normalized.length === 0 ||
+    normalized === '.' ||
+    normalized.startsWith('/') ||
+    normalized === '..' ||
+    normalized.startsWith('../') ||
+    normalized.includes('/../')
+  ) {
+    return null;
+  }
+  return normalized;
+}
+
+function isPathWithinRoot(sourcePath: string, sourceRoot: string): boolean {
+  const resolvedPath = resolve(sourcePath);
+  const resolvedRoot = resolve(sourceRoot);
+  return (
+    resolvedPath === resolvedRoot ||
+    resolvedPath.startsWith(`${resolvedRoot}${sep}`)
+  );
+}
+
+function isAllowedZipPath(zipPath: string, options: AddFileOptions): boolean {
+  if (
+    options.excludedZipPathPrefixes?.some(
+      (prefix) => zipPath === prefix || zipPath.startsWith(`${prefix}/`),
+    )
+  )
+    return false;
+  const parts = zipPath.split('/');
+  const firstPart = parts[0];
+  if (firstPart !== undefined && SENSITIVE_TOP_LEVEL_ZIP_PARTS.has(firstPart)) {
+    return false;
+  }
+  if (parts.some((part) => SENSITIVE_ANY_DEPTH_ZIP_PARTS.has(part))) {
+    return false;
+  }
+  if (basename(zipPath) === 'mcp-oauth-tokens.json') {
+    return false;
+  }
+  if (
+    (basename(zipPath) === 'conversation.json' ||
+      basename(zipPath) === 'chat-tabs.json' ||
+      parts.includes('chat-storage-v2') ||
+      parts.includes('chat-storage-manifests')) &&
+    options.allowChatContent !== true
+  ) {
+    return false;
+  }
+  if (
+    (zipPath === 'agent-observability/transcripts' ||
+      zipPath.startsWith('agent-observability/transcripts/')) &&
+    options.allowTranscript !== true
+  ) {
+    return false;
+  }
+  return !isSqlitePath(zipPath);
+}
+
+function isSqlitePath(zipPath: string): boolean {
+  return (
+    zipPath.endsWith('.sqlite') ||
+    zipPath.endsWith('.sqlite-shm') ||
+    zipPath.endsWith('.sqlite-wal') ||
+    zipPath.endsWith('.db') ||
+    zipPath.endsWith('.db-shm') ||
+    zipPath.endsWith('.db-wal')
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function readRecordField(
+  record: Record<string, unknown>,
+  key: string,
+): Record<string, unknown> | undefined {
+  const value = record[key];
+  return isRecord(value) ? value : undefined;
+}
+
+function readStringField(
+  record: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  const value = record[key];
+  return typeof value === 'string' ? value : undefined;
+}
+
+function readNumberField(
+  record: Record<string, unknown>,
+  key: string,
+): number | undefined {
+  const value = record[key];
+  return typeof value === 'number' && Number.isFinite(value)
+    ? value
+    : undefined;
+}
+
+function readBooleanField(
+  record: Record<string, unknown>,
+  key: string,
+): boolean | undefined {
+  const value = record[key];
+  return typeof value === 'boolean' ? value : undefined;
+}
+
+function setRecordValue(
+  record: Record<string, unknown>,
+  key: string,
+  value: unknown,
+): void {
+  if (value !== undefined) {
+    record[key] = value;
+  }
+}
+
+async function safeLstat(sourcePath: string): Promise<LstatResult> {
+  try {
+    return { status: 'ok', stats: await lstat(sourcePath) };
+  } catch (error) {
+    const code = getErrorCode(error);
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      return { status: 'missing' };
+    }
+    return { status: 'inaccessible' };
+  }
+}
+
+function getErrorCode(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null) {
+    return undefined;
+  }
+  if (!('code' in error)) {
+    return undefined;
+  }
+  return typeof error.code === 'string' ? error.code : undefined;
+}
+
+function formatFeedbackTimestamp(date: Date): string {
+  return date.toISOString().replace(/[-:]/g, '').replace('.', '');
+}

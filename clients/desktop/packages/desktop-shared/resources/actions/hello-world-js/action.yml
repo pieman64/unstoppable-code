@@ -1,0 +1,13 @@
+name: Hello World (Node.js)
+description: A simple hello world action using Node.js execution.
+inputs:
+  message:
+    description: A message to include in the output
+    required: false
+    default: ""
+outputs:
+  timestamp:
+    description: Timestamp tag in the format <timestamp>-js
+runs:
+  using: node
+  main: hello-world.js

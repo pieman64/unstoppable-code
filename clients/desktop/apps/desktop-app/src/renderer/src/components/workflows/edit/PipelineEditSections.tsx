@@ -1,0 +1,183 @@
+import { useMemo, useState, type JSX } from 'react';
+import type {
+  PipelineInfo,
+  PipelineTriggerType,
+} from '@canopy/desktop-shared/types/pipeline';
+import {
+  EMPTY_WORKFLOW_RUN_FILTERS,
+  PipelineTriggers,
+  type WorkflowRunFilters,
+} from '@canopy/ui-app/workflows';
+import { Notice } from '@canopy/ui-shared/components';
+import { useExecutionFeedStore } from '@/lib/workflows/execution-feed';
+import {
+  automationsRunningPipeline,
+  hooksRunningPipeline,
+  pipelineStartKinds,
+  runsForPipeline,
+} from '@/lib/workflows/pipeline-automations';
+import type { WorkflowEditTarget } from '@/lib/workflows/edit-target';
+import { useNavigationStore } from '@/stores/navigationStore';
+import { useProjectsStore } from '@/stores/projectsStore';
+import type { AutomationsPageBodyApi } from '../../pages/AutomationsPage';
+import { useWorkflowRunFeed } from '../runs/useWorkflowRunFeed';
+import {
+  useWorkflowRunRowActions,
+  WorkflowRunsList,
+} from '../runs/WorkflowRunsList';
+
+export interface PipelineTriggerSectionProps {
+  readonly pipeline: PipelineInfo;
+  /** Every pipeline the Library lists, for the automation-to-pipeline match. */
+  readonly pipelines: readonly PipelineInfo[];
+  readonly automations: AutomationsPageBodyApi;
+  /** This pipeline's shell target; an opened automation's Back returns here. */
+  readonly returnTo: WorkflowEditTarget;
+  /** The triggers the pipeline declares, unsaved edits included. */
+  readonly triggerTypes: readonly PipelineTriggerType[] | undefined;
+  /** Opens where the declared triggers are edited; absent when read-only. */
+  readonly onEditTriggers?: () => void;
+}
+
+/**
+ * A pipeline's Trigger section (CAN-4072): what can start it. Its declared
+ * triggers, the hooks in any project that run it, and the automations that
+ * run it. Hook and automation rows open where each is configured; an opened
+ * automation's Back returns to this section.
+ */
+export function PipelineTriggerSection({
+  pipeline,
+  pipelines,
+  automations,
+  returnTo,
+  triggerTypes,
+  onEditTriggers,
+}: PipelineTriggerSectionProps): JSX.Element {
+  const projects = useProjectsStore((state) => state.projects);
+  const hooks = useMemo(
+    () => hooksRunningPipeline(projects, pipeline),
+    [pipeline, projects],
+  );
+  const automationRows = useMemo(
+    () =>
+      automationsRunningPipeline(automations.activities, pipeline, {
+        pipelines,
+      }).map((row) => ({
+        key: row.activity.id,
+        name: row.activity.name,
+        scheduleText: row.scheduleText,
+        enabled: row.enabled,
+      })),
+    [automations.activities, pipeline, pipelines],
+  );
+  return (
+    <PipelineTriggers
+      starts={pipelineStartKinds(triggerTypes)}
+      hooks={hooks}
+      automations={automationRows}
+      onOpenHook={(row): void => {
+        const hook = hooks.find((entry) => entry.key === row.key);
+        if (!hook) return;
+        useNavigationStore.getState().openWorkspaceSettings({
+          workspaceId: hook.projectId,
+          initialTab: 'hooks',
+        });
+      }}
+      onOpenAutomation={(row): void =>
+        useNavigationStore.getState().openAutomationEdit({
+          activityId: row.key,
+          returnTo: { ...returnTo, section: 'trigger' },
+        })
+      }
+      {...(onEditTriggers ? { onEditStarts: onEditTriggers } : {})}
+    />
+  );
+}
+
+export interface PipelineRunsSectionProps {
+  readonly pipeline: PipelineInfo;
+  readonly pipelines: readonly PipelineInfo[];
+  readonly automations: AutomationsPageBodyApi;
+}
+
+/**
+ * A pipeline's Runs section (CAN-4072): the Workflows Runs feed narrowed to
+ * this pipeline's runs and the automation runs that started them. Its search
+ * and filters are its own, so the Runs tab keeps what it had.
+ */
+export function PipelineRunsSection({
+  pipeline,
+  pipelines,
+  automations,
+}: PipelineRunsSectionProps): JSX.Element {
+  const feed = useWorkflowRunFeed({
+    activities: automations.activities,
+    recentRuns: automations.recentRuns,
+    scope: automations.scope,
+    automationsLoading: automations.loading,
+  });
+  const executions = useExecutionFeedStore((state) => state.executions);
+  const rows = useMemo(
+    () =>
+      runsForPipeline(feed.rows, pipeline, {
+        pipelines,
+        activities: automations.activities,
+        executions,
+      }).map((row) =>
+        // The Library is the page behind this shell, so Open in Library
+        // would only reset its filters.
+        row.actions.includes('open-library')
+          ? {
+              ...row,
+              actions: row.actions.filter(
+                (action) => action !== 'open-library',
+              ),
+            }
+          : row,
+      ),
+    [automations.activities, executions, feed.rows, pipeline, pipelines],
+  );
+  const [query, setQuery] = useState('');
+  const [filters, setFilters] = useState<WorkflowRunFilters>(
+    EMPTY_WORKFLOW_RUN_FILTERS,
+  );
+  const rowActions = useWorkflowRunRowActions(feed);
+  const hasMore =
+    feed.hasMore && (filters.kind === null || filters.kind === 'automation');
+
+  return (
+    <div
+      ref={rowActions.dialogAnchorRef}
+      className="flex flex-col gap-4"
+      data-testid="pipeline-runs-section"
+    >
+      {feed.error !== null && (
+        <Notice intent="destructive" data-testid="workflows-runs-error">
+          Pipeline runs could not be loaded. Automation runs are still listed.
+        </Notice>
+      )}
+      <WorkflowRunsList
+        rows={rows}
+        loading={feed.loading}
+        query={query}
+        onQueryChange={setQuery}
+        filters={filters}
+        onFiltersChange={setFilters}
+        kinds={['pipeline', 'automation']}
+        onOpen={rowActions.openRow}
+        onAction={rowActions.handleAction}
+        busyKeys={rowActions.busyKeys}
+        hasMore={hasMore}
+        loadingMore={feed.loadingMore}
+        onLoadMore={feed.loadMore}
+        emptyState={
+          <p className="text-s fg-tertiary" data-testid="workflow-edit-no-runs">
+            {/* Older pages may still hold this pipeline's runs. */}
+            {hasMore ? 'No recent runs' : 'No runs yet'}
+          </p>
+        }
+      />
+      {rowActions.dialogs}
+    </div>
+  );
+}

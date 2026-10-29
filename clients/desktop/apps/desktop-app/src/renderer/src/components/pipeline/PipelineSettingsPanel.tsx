@@ -1,0 +1,462 @@
+import type { JSX } from 'react';
+import type {
+  Pipeline,
+  PipelineDefaults,
+  PipelineExecutionScope,
+  PipelineInfo,
+  PipelineInputDef,
+  PipelineModelAlias,
+  PipelinePluginCollection,
+  PipelineScalar,
+  PipelineTriggerType,
+  RunDefaults,
+  ShellType,
+} from '@canopy/desktop-shared/types/pipeline';
+import { PipelineRelatedSections } from './PipelineRelatedSections';
+import {
+  getTriggerInputDefs,
+  getTriggerTypes,
+  setTriggerInputDefs,
+  setTriggerTypes,
+} from '@canopy/desktop-shared/types/pipeline';
+import {
+  readPipelineScopeSelection,
+  toPipelineScopeValue,
+} from '@/lib/pipelineExecutionScope';
+import { FormField } from './shared/FormField';
+import { TextField } from './shared/TextField';
+import { TextAreaField } from './shared/TextAreaField';
+import { SelectField } from './shared/SelectField';
+import { KeyValueEditor } from './shared/KeyValueEditor';
+import { TriggerInputsEditor } from './settings/TriggerInputsEditor';
+import { PluginCollectionsEditor } from './settings/PluginCollectionsEditor';
+import { ModelAliasesEditor } from './settings/ModelAliasesEditor';
+import { pt } from '@/lib/platform-text';
+import { uiText } from '@/lib/ui-text';
+import type {
+  EntryDetailReturnContext,
+  PipelineReturnTarget,
+} from '@/stores/navigationStore';
+import {
+  PIPELINE_SHELL_OPTIONS,
+  type PipelineShellOption,
+} from './pipeline-shell-options';
+import { brand } from '@/lib/brand';
+import { Tooltip } from '@canopy/ui-shared';
+import { CloseIcon as AppCatalogCloseIcon } from '@canopy/ui-shared/icons/AppIcons';
+
+interface PipelineSettingsPanelProps {
+  pipeline: Pipeline;
+  onUpdateField: (field: keyof Pipeline, value: unknown) => void;
+  onUpdateDefaults: (defaults: PipelineDefaults) => void;
+  onUpdateEnv: (env: Record<string, PipelineScalar>) => void;
+  onClose?: () => void;
+  readonly?: boolean;
+  /** Saved identity of the open pipeline; null for unsaved drafts. */
+  pipelineInfo?: PipelineInfo | null;
+  /** Project directory when editing a project pipeline. */
+  cwd?: string;
+  relatedDataRevision: number;
+  returnToEntryId?: string;
+  returnToEntryContext?: EntryDetailReturnContext;
+  returnToPipeline?: PipelineReturnTarget;
+  returnToMarketplace?: PipelineReturnTarget['returnToMarketplace'];
+  onRelatedNavigate: (
+    navigate: (savedPipelineInfo?: PipelineInfo) => void,
+  ) => void;
+}
+
+interface TriggerOption {
+  type: PipelineTriggerType;
+  label: string;
+  hint: string;
+}
+
+interface ExecutionScopeOption {
+  scope: PipelineExecutionScope;
+  label: string;
+  hint: string;
+}
+
+// NOTE: This is the *execution* scope (where a pipeline can be shown/run), not
+// the Cloud *sharing* scope (Private/Team/Organization). The label is
+// deliberately "Execution Scope" so it never collides with the sharing-scope
+// UI.
+const EXECUTION_SCOPE_OPTIONS: ExecutionScopeOption[] = [
+  {
+    scope: 'global',
+    label: 'Global',
+    hint: 'Run anywhere, independent of a directory or worktree',
+  },
+  {
+    scope: 'directory',
+    label: 'Directory',
+    hint: 'Run against a plain directory (also available in worktrees)',
+  },
+  {
+    scope: 'worktree',
+    label: 'Worktree',
+    hint: 'Run only inside a managed worktree',
+  },
+];
+
+const TRIGGER_OPTIONS: TriggerOption[] = [
+  {
+    type: 'dispatch',
+    label: 'Dispatch',
+    hint: 'Manually triggered via the UI or API',
+  },
+  {
+    type: 'plan_ready',
+    label: 'Plan ready',
+    hint: 'Triggered when an agent plan is ready to run through a pipeline',
+  },
+  {
+    type: 'task_ready',
+    label: 'Task ready',
+    hint: 'Triggered when a task definition is ready to be planned',
+  },
+];
+
+function buildShellOptions(): PipelineShellOption[] {
+  return [
+    { value: '', label: pt(uiText.pipelineShell.unsetDefault) },
+    ...PIPELINE_SHELL_OPTIONS,
+  ];
+}
+
+export function PipelineSettingsPanel({
+  pipeline,
+  onUpdateField,
+  onUpdateDefaults,
+  onUpdateEnv,
+  onClose,
+  readonly = false,
+  pipelineInfo = null,
+  cwd,
+  relatedDataRevision,
+  returnToEntryId,
+  returnToEntryContext,
+  returnToPipeline,
+  returnToMarketplace,
+  onRelatedNavigate,
+}: PipelineSettingsPanelProps): JSX.Element {
+  const run: RunDefaults = pipeline.defaults?.run ?? {};
+  const activeTriggerTypes = getTriggerTypes(pipeline.on);
+  const selectedScopes = readPipelineScopeSelection(pipeline.scope);
+
+  function toggleExecutionScope(
+    scope: PipelineExecutionScope,
+    checked: boolean,
+  ): void {
+    const next = checked
+      ? [...selectedScopes, scope]
+      : selectedScopes.filter((s) => s !== scope);
+    // Enforce at least one scope selected: refuse to clear the final scope.
+    if (next.length === 0) return;
+    onUpdateField('scope', toPipelineScopeValue(next));
+  }
+
+  function updateRunDefault<K extends keyof RunDefaults>(
+    key: K,
+    value: RunDefaults[K],
+  ): void {
+    const updatedRun: RunDefaults = { ...run, [key]: value };
+    const hasShell: boolean = Boolean(updatedRun.shell);
+    const hasWorkDir: boolean = Boolean(updatedRun.working_directory);
+    if (!hasShell && !hasWorkDir) {
+      onUpdateDefaults({});
+    } else {
+      onUpdateDefaults({ run: updatedRun });
+    }
+  }
+
+  function updateTriggerInputs(
+    type: PipelineTriggerType,
+    inputs: Record<string, PipelineInputDef>,
+  ): void {
+    onUpdateField('on', setTriggerInputDefs(pipeline.on, type, inputs));
+  }
+
+  function updatePluginCollections(
+    next: PipelinePluginCollection[] | undefined,
+  ): void {
+    onUpdateField('plugin_collections', next);
+  }
+
+  function updateModelAliases(next: PipelineModelAlias[] | undefined): void {
+    onUpdateField('model_aliases', next);
+  }
+
+  return (
+    <div className="h-full flex flex-col bg-card">
+      <div className="flex items-center justify-between px-4 py-3 border-b shrink-0">
+        <h2 className="text-s font-semibold fg-primary">Pipeline settings</h2>
+        {onClose && (
+          <Tooltip label="Close settings">
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close settings"
+              className="p-1.5 fg-secondary hover:fg-primary transition-colors rounded-md hover:bg-secondary"
+            >
+              <AppCatalogCloseIcon width="14" height="14" />
+            </button>
+          </Tooltip>
+        )}
+      </div>
+
+      <div className="flex-1 overflow-auto">
+        <div className="px-4 py-5 space-y-8">
+          {/* General */}
+          <section>
+            <h3 className="text-s font-semibold fg-primary mb-4">General</h3>
+            <div className="space-y-4">
+              <FormField label="Name">
+                <TextField
+                  value={pipeline.name}
+                  onChange={(e) => onUpdateField('name', e.target.value)}
+                  placeholder="Pipeline name"
+                  disabled={readonly}
+                />
+              </FormField>
+              <FormField label="Version" hint="Semantic version string">
+                <TextField
+                  value={pipeline.version || ''}
+                  onChange={(e) => onUpdateField('version', e.target.value)}
+                  placeholder="2.0"
+                  disabled={readonly}
+                />
+              </FormField>
+              <FormField label="Description">
+                <TextAreaField
+                  value={pipeline.description || ''}
+                  onChange={(e) => onUpdateField('description', e.target.value)}
+                  placeholder="Describe what this pipeline does…"
+                  rows={3}
+                  disabled={readonly}
+                />
+              </FormField>
+              <FormField label="Icon" hint="Emoji or icon name">
+                <TextField
+                  value={pipeline.icon || ''}
+                  onChange={(e) => onUpdateField('icon', e.target.value)}
+                  placeholder="⚡"
+                  disabled={readonly}
+                />
+              </FormField>
+            </div>
+          </section>
+
+          {/* Triggers */}
+          <section>
+            <h3 className="text-s font-semibold fg-primary mb-4">Triggers</h3>
+            <div className="space-y-2">
+              {TRIGGER_OPTIONS.map((trigger) => {
+                const isActive = activeTriggerTypes.includes(trigger.type);
+                return (
+                  <label
+                    key={trigger.type}
+                    data-testid={`pipeline-trigger-row-${trigger.type}`}
+                    className={`flex items-start gap-3 p-3 rounded-lg border ${
+                      readonly ? 'opacity-70' : 'cursor-pointer hover:bg-subtle'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isActive}
+                      disabled={readonly}
+                      onChange={(): void => {
+                        const updated = isActive
+                          ? activeTriggerTypes.filter((t) => t !== trigger.type)
+                          : [...activeTriggerTypes, trigger.type];
+                        onUpdateField(
+                          'on',
+                          setTriggerTypes(pipeline.on, updated),
+                        );
+                      }}
+                      className="mt-0.5 accent-accent"
+                    />
+                    <div>
+                      <div className="text-s font-medium fg-primary">
+                        {trigger.label}
+                      </div>
+                      <div className="text-xs fg-secondary">{trigger.hint}</div>
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+          </section>
+
+          {/* Execution Scope */}
+          <section data-testid="pipeline-execution-scope">
+            <h3 className="text-s font-semibold fg-primary mb-1">
+              Execution scope
+            </h3>
+            <p className="text-xs fg-secondary mb-4">
+              Controls where this pipeline can be shown and run.
+            </p>
+            <div className="space-y-2">
+              {EXECUTION_SCOPE_OPTIONS.map((option) => {
+                const isSelected = selectedScopes.includes(option.scope);
+                // Prevent unchecking the final scope so at least one always
+                // remains selected.
+                const isLastSelected =
+                  isSelected && selectedScopes.length === 1;
+                const disabled = readonly || isLastSelected;
+                return (
+                  <label
+                    key={option.scope}
+                    data-testid={`pipeline-execution-scope-row-${option.scope}`}
+                    className={`flex items-start gap-3 p-3 rounded-lg border ${
+                      disabled ? 'opacity-70' : 'cursor-pointer hover:bg-subtle'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      disabled={disabled}
+                      data-testid={`pipeline-execution-scope-${option.scope}`}
+                      onChange={(event): void =>
+                        toggleExecutionScope(option.scope, event.target.checked)
+                      }
+                      className="mt-0.5 accent-accent"
+                    />
+                    <div>
+                      <div className="text-s font-medium fg-primary">
+                        {option.label}
+                      </div>
+                      <div className="text-xs fg-secondary">{option.hint}</div>
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+          </section>
+
+          {/* Trigger Inputs */}
+          {activeTriggerTypes.length > 0 && (
+            <section>
+              <h3 className="text-s font-semibold fg-primary mb-1">
+                Trigger inputs
+              </h3>
+              <p className="text-xs fg-secondary mb-4">
+                Inputs are collected from the user when the pipeline is
+                triggered and made available to steps as{' '}
+                <code>{brand.internalName}.inputs.&lt;name&gt;</code>.
+              </p>
+              <div className="space-y-5">
+                {activeTriggerTypes.map((triggerType) => (
+                  <TriggerInputsEditor
+                    key={triggerType}
+                    triggerType={triggerType}
+                    inputs={getTriggerInputDefs(pipeline.on, triggerType) ?? {}}
+                    onChange={(next) => updateTriggerInputs(triggerType, next)}
+                    readonly={readonly}
+                  />
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* Plugin Collections */}
+          <section>
+            <h3 className="text-s font-semibold fg-primary mb-1">
+              Plugin collections
+            </h3>
+            <p className="text-xs fg-secondary mb-4">
+              Named sets of shareable skills and marketplace plugins that agent
+              steps can opt into via <code>with.plugin_collection_id</code>.
+            </p>
+            <PluginCollectionsEditor
+              collections={pipeline.plugin_collections ?? []}
+              onChange={updatePluginCollections}
+              readonly={readonly}
+            />
+          </section>
+
+          {/* Model Aliases */}
+          <section>
+            <h3 className="text-s font-semibold fg-primary mb-1">
+              Model aliases
+            </h3>
+            <p className="text-xs fg-secondary mb-4">
+              Named model choices that agent steps can use via{' '}
+              <code>with.model</code>. Aliases can provide pipeline defaults,
+              point to a local agent, or require configuration at dispatch.
+            </p>
+            <ModelAliasesEditor
+              aliases={pipeline.model_aliases ?? []}
+              pluginCollections={pipeline.plugin_collections ?? []}
+              onChange={updateModelAliases}
+              readonly={readonly}
+            />
+          </section>
+
+          {/* Environment Variables */}
+          <section>
+            <h3 className="text-s font-semibold fg-primary mb-4">
+              Environment variables
+            </h3>
+            <KeyValueEditor
+              value={pipeline.env || {}}
+              onChange={onUpdateEnv}
+              readonly={readonly}
+            />
+          </section>
+
+          {/* Run Defaults */}
+          <section>
+            <h3 className="text-s font-semibold fg-primary mb-4">
+              Run defaults
+            </h3>
+            <div className="space-y-4">
+              <FormField label="Shell" hint="Default shell for run steps">
+                <SelectField
+                  value={run.shell || ''}
+                  onChange={(e) =>
+                    updateRunDefault(
+                      'shell',
+                      (e.target.value || undefined) as ShellType | undefined,
+                    )
+                  }
+                  options={buildShellOptions()}
+                  disabled={readonly}
+                />
+              </FormField>
+              <FormField
+                label="Working directory"
+                hint="Default working directory for run steps"
+              >
+                <TextField
+                  value={run.working_directory || ''}
+                  onChange={(e) =>
+                    updateRunDefault(
+                      'working_directory',
+                      e.target.value || undefined,
+                    )
+                  }
+                  placeholder="./"
+                  disabled={readonly}
+                />
+              </FormField>
+            </div>
+          </section>
+
+          <PipelineRelatedSections
+            pipeline={pipeline}
+            pipelineInfo={pipelineInfo}
+            cwd={cwd}
+            refreshKey={relatedDataRevision}
+            returnToEntryId={returnToEntryId}
+            returnToEntryContext={returnToEntryContext}
+            returnToPipeline={returnToPipeline}
+            returnToMarketplace={returnToMarketplace}
+            onNavigate={onRelatedNavigate}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}

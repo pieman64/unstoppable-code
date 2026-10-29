@@ -1,0 +1,23 @@
+{
+  "pluginName": "default-mcp-plugin",
+  "category": "Development Tools",
+  "warnings": [],
+  "files": [
+    {
+      "path": "canopy-compatibility.json",
+      "content": "{\n  \"canopyCompatibilityVersion\": 5,\n  \"sourcePluginName\": \"default-mcp-plugin\",\n  \"sourceVersion\": \"1.0.0:mcp-true\",\n  \"sourceLastUpdatedAt\": \"2026-08-26T12:00:00.000Z\"\n}"
+    },
+    {
+      "path": "local/.codex-plugin/plugin.json",
+      "content": "{\n  \"name\": \"default-mcp-plugin\",\n  \"version\": \"1.0.0\",\n  \"description\": \"Uses the default MCP declaration\",\n  \"mcpServers\": \"./.mcp.json\",\n  \"interface\": {\n    \"displayName\": \"Default Mcp Plugin\",\n    \"shortDescription\": \"Uses the default MCP declaration\",\n    \"category\": \"Development Tools\"\n  }\n}"
+    },
+    {
+      "path": "local/.mcp.json",
+      "content": "{\n  \"mcpServers\": {\n    \"default-server\": {\n      \"command\": \"python\",\n      \"args\": [\n        \"<CACHE_ROOT>/golden-market/default-mcp-plugin/local/server.py\"\n      ],\n      \"cwd\": \"<CACHE_ROOT>/golden-market/default-mcp-plugin/local\",\n      \"env\": {\n        \"PLUGIN_ROOT\": \"<CACHE_ROOT>/golden-market/default-mcp-plugin/local\"\n      }\n    }\n  }\n}"
+    },
+    {
+      "path": "local/README.md",
+      "content": "# Generated Codex Plugin\n\nThis compatibility projection was generated for `default-mcp-plugin`.\n\n## Projected Skills\n\nNo skills were projected for this plugin.\n\n## Compatibility Notes\n\nNo compatibility notes.\n"
+    }
+  ]
+}

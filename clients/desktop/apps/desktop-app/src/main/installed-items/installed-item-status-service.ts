@@ -1,0 +1,676 @@
+import {
+  aggregateInstalledItemStatus,
+  installedItemKey,
+  normalizeInstalledItemRef,
+  SetInstalledItemStatusRequestSchema,
+  UninstallInstalledItemRequestSchema,
+  type InstalledItemRef,
+  type InstalledItemTarget,
+  type InstalledItemSnapshot,
+  type InstalledItemSnapshotEntry,
+  type InstalledItemMutationResult,
+  type SetInstalledItemStatusRequest,
+  type UninstallInstalledItemRequest,
+  type InstalledItemStatus,
+} from '@canopy/protocol/installed-items';
+import type { PreferencesData } from '@canopy/desktop-shared/types';
+import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+
+export type ParkedCodexPlugin = NonNullable<
+  PreferencesData['parkedCodexPlugins']
+>[number];
+export interface InstalledItemRecord {
+  ref: InstalledItemRef;
+  /** Selection identity differs from connection identity for account MCP. */
+  selectionRef?: { serverId: string; configId: string };
+  enabled: boolean;
+  removable: boolean;
+  reason?: string;
+  claudeIds?: string[];
+  claudeEnabled?: boolean;
+  codex?: Omit<ParkedCodexPlugin, 'state' | 'key'>;
+  codexEnabled?: boolean;
+}
+export interface InstalledItemStatusPort {
+  readPreferences(this: void): Promise<PreferencesData>;
+  updatePreferences(
+    this: void,
+    update: (
+      current: PreferencesData,
+    ) => Partial<PreferencesData> | Promise<Partial<PreferencesData>>,
+  ): Promise<PreferencesData>;
+  list(this: void): Promise<InstalledItemRecord[]>;
+  deviceServerIds?(this: void): readonly string[];
+  canonical(this: void, ref: InstalledItemRef): Promise<InstalledItemRef>;
+  serialize<T>(this: void, operation: () => Promise<T>): Promise<T>;
+  setClaudeEnabled(this: void, id: string, enabled: boolean): Promise<void>;
+  parkCodex(this: void, pluginId: string): Promise<void>;
+  restoreCodex(this: void, record: ParkedCodexPlugin): Promise<void>;
+  setMcpEnabled(
+    this: void,
+    ref: InstalledItemRef,
+    enabled: boolean,
+  ): Promise<void>;
+  remove(this: void, record: InstalledItemRecord): Promise<void>;
+  removeDeviceServer(this: void, serverId: string): Promise<void>;
+  assertAbsent?(this: void, ref: InstalledItemRef): Promise<void>;
+  prune(this: void, refs: InstalledItemRef[]): Promise<void>;
+  publish(this: void, target: InstalledItemTarget): Promise<void>;
+}
+
+function selectionFor(
+  ref: InstalledItemRef,
+  record?: InstalledItemRecord,
+): ReturnType<typeof normalizePluginSelections> {
+  const selections = normalizePluginSelections(undefined);
+  switch (ref.kind) {
+    case 'plugin':
+      selections.pluginRefs.push({
+        marketplaceId: ref.marketplaceId,
+        pluginName: ref.pluginName,
+      });
+      break;
+    case 'skill':
+      selections.skillRefs.push({
+        sourceId: ref.sourceId,
+        skillName: ref.skillName,
+      });
+      break;
+    case 'collection':
+      selections.collectionIds.push(ref.collectionId);
+      break;
+    case 'mcp-config':
+      selections.mcpServerRefs = [
+        { serverId: ref.serverId, configId: ref.configId },
+      ];
+      break;
+    case 'account-mcp':
+      selections.mcpServerRefs = record?.selectionRef
+        ? [record.selectionRef]
+        : [];
+      break;
+  }
+  return selections;
+}
+
+function selected(
+  ref: InstalledItemRef,
+  preferences: PreferencesData,
+  record: InstalledItemRecord,
+): boolean {
+  const selections = normalizePluginSelections(
+    preferences.globalPluginSelections,
+  );
+  const target = selectionFor(ref, record);
+  return (
+    target.collectionIds.some((id) => selections.collectionIds.includes(id)) ||
+    target.pluginRefs.some((candidate) =>
+      selections.pluginRefs.some(
+        (entry) =>
+          installedItemKey({ kind: 'plugin', ...entry }) ===
+          installedItemKey({ kind: 'plugin', ...candidate }),
+      ),
+    ) ||
+    target.skillRefs.some((candidate) =>
+      selections.skillRefs.some(
+        (entry) =>
+          entry.sourceId === candidate.sourceId &&
+          entry.skillName === candidate.skillName,
+      ),
+    ) ||
+    (target.mcpServerRefs ?? []).some((candidate) =>
+      selections.mcpServerRefs?.some(
+        (entry) =>
+          entry.serverId === candidate.serverId &&
+          entry.configId === candidate.configId,
+      ),
+    ) ||
+    (ref.kind === 'account-mcp' &&
+      selections.mcpServerRefs?.some(
+        (entry) =>
+          entry.serverId === `account:${ref.connectionId}` &&
+          entry.configId === record.selectionRef?.configId,
+      ) === true)
+  );
+}
+
+export function createInstalledItemStatusService(
+  port: InstalledItemStatusPort,
+): {
+  listStatus(this: void): Promise<InstalledItemSnapshot>;
+  setStatus(
+    this: void,
+    request: SetInstalledItemStatusRequest,
+  ): Promise<InstalledItemMutationResult>;
+  uninstall(
+    this: void,
+    request: UninstallInstalledItemRequest,
+  ): Promise<InstalledItemMutationResult>;
+} {
+  let lastSnapshot: InstalledItemSnapshot = { items: [] };
+  async function snapshot(
+    input?: InstalledItemRecord[],
+  ): Promise<InstalledItemSnapshot> {
+    const records = input ?? (await port.list());
+    const preferences = await canonicalPreferences(
+      await port.readPreferences(),
+    );
+    const disabled = new Set(preferences.disabledInstalledItems ?? []);
+    const parked = new Map(
+      (preferences.parkedCodexPlugins ?? []).map((entry) => [entry.key, entry]),
+    );
+    const items: InstalledItemSnapshotEntry[] = records.map((record) => {
+      const { ref } = record;
+      const key = installedItemKey(ref);
+      const intentDisabled =
+        disabled.has(key) ||
+        preferences.pendingInstalledItemUninstalls?.some((entry) =>
+          entry.refs.some(
+            (candidate) =>
+              candidate.kind !== 'mcp-config' &&
+              candidate.kind !== 'account-mcp' &&
+              installedItemKey(candidate) === key,
+          ),
+        ) === true;
+      const recovery = parked.get(key);
+      const status =
+        intentDisabled || recovery || !record.enabled
+          ? 'disabled'
+          : selected(ref, preferences, record)
+            ? 'active'
+            : 'available';
+      return {
+        target: ref,
+        status,
+        removable: ref.kind !== 'mcp-config' && record.removable,
+        ...(ref.kind === 'mcp-config'
+          ? {
+              reason:
+                'Uninstall the device server to remove all its configurations.',
+            }
+          : {}),
+        uninstallDescription:
+          ref.kind === 'collection'
+            ? 'Removes the collection and its saved selections. Members stay installed.'
+            : ref.kind === 'account-mcp'
+              ? 'Removes this account connection and its sign-in across the account.'
+              : ref.kind === 'plugin'
+                ? 'Removes the provider installations, managed cache and saved selections. Claude persistent data is kept.'
+                : ref.kind === 'skill'
+                  ? 'Removes the local skill files and saved selections.'
+                  : 'Remove the device server to uninstall every configuration and its sign-ins.',
+        ...(record.selectionRef ? { selectionRef: record.selectionRef } : {}),
+        ...(record.reason ? { reason: record.reason } : {}),
+        ...(ref.kind !== 'mcp-config'
+          ? {
+              uninstallTarget: ref,
+              removalScope: ref.kind === 'account-mcp' ? 'account' : 'item',
+            }
+          : {}),
+        notices: [
+          ...(intentDisabled && record.codex
+            ? [
+                {
+                  code: 'provider_pending',
+                  provider: 'codex',
+                  message:
+                    'Disabled in application loading. Codex may still load this plugin until parking completes; retry the status change.',
+                  retryable: true,
+                } as const,
+              ]
+            : []),
+          ...(intentDisabled &&
+          (record.claudeEnabled ?? record.enabled) &&
+          record.claudeIds?.length
+            ? [
+                {
+                  code: 'provider_pending',
+                  provider: 'claude',
+                  message:
+                    'Disabled in application loading. Claude may still load this plugin until the provider applies the change; retry the status change.',
+                  retryable: true,
+                } as const,
+              ]
+            : []),
+          ...(recovery && (!intentDisabled || recovery.state !== 'parked')
+            ? [
+                {
+                  code: 'provider_pending',
+                  provider: 'codex',
+                  message:
+                    'Codex plugin transition is incomplete. Retry to finish the saved transition.',
+                  retryable: true,
+                } as const,
+              ]
+            : []),
+          ...(status === 'disabled'
+            ? [
+                {
+                  code: 'session_recreation_required',
+                  message:
+                    'New sessions and supported next-turn refreshes apply this state. Already-running provider tools may require session recreation.',
+                  retryable: false,
+                } as const,
+              ]
+            : []),
+        ],
+      };
+    });
+    const servers = new Set([
+      ...(port.deviceServerIds?.() ?? []),
+      ...records.flatMap((record) =>
+        record.ref.kind === 'mcp-config' ? [record.ref.serverId] : [],
+      ),
+    ]);
+    for (const serverId of Array.from(servers)) {
+      const configs = items.filter(
+        (item) =>
+          item.target.kind === 'mcp-config' &&
+          item.target.serverId === serverId,
+      );
+      items.push({
+        target: { kind: 'mcp-server', serverId },
+        status: aggregateInstalledItemStatus(
+          configs.flatMap((item) => (item.status ? [item.status] : [])),
+        ),
+        removable: true,
+        uninstallTarget: { kind: 'mcp-server', serverId },
+        removalScope: 'device-server',
+        uninstallDescription:
+          'Removes this device server, all its configurations and their sign-ins.',
+        configurations: records.flatMap((record) =>
+          record.ref.kind === 'mcp-config' && record.ref.serverId === serverId
+            ? [record.ref]
+            : [],
+        ),
+        notices: [],
+      });
+    }
+    for (const pending of preferences.pendingInstalledItemUninstalls ?? []) {
+      const notice = {
+        code: 'partial_removal',
+        message:
+          'Uninstall is incomplete. Retry to reconcile remaining installations and saved references.',
+        retryable: true,
+      } as const;
+      const existing = items.find(
+        (item) =>
+          JSON.stringify(item.target) === JSON.stringify(pending.target),
+      );
+      if (existing) existing.notices.push(notice);
+      else
+        items.push({
+          target: pending.target,
+          status: null,
+          removable: true,
+          uninstallTarget: pending.target,
+          notices: [notice],
+        });
+    }
+    lastSnapshot = { items };
+    return lastSnapshot;
+  }
+
+  async function canonicalPreferences(
+    current: PreferencesData,
+  ): Promise<PreferencesData> {
+    const disabled = await Promise.all(
+      (current.disabledInstalledItems ?? []).map(async (key) => {
+        const { parseInstalledItemKey } =
+          await import('@canopy/protocol/installed-items');
+        const ref = parseInstalledItemKey(key);
+        return ref ? installedItemKey(await port.canonical(ref)) : key;
+      }),
+    );
+    const selections = normalizePluginSelections(
+      current.globalPluginSelections,
+    );
+    const pluginRefs = await Promise.all(
+      selections.pluginRefs.map(async (ref) => {
+        const canonical = await port.canonical({ kind: 'plugin', ...ref });
+        return canonical.kind === 'plugin'
+          ? {
+              marketplaceId: canonical.marketplaceId,
+              pluginName: canonical.pluginName,
+            }
+          : ref;
+      }),
+    );
+    return {
+      ...current,
+      disabledInstalledItems: Array.from(new Set(disabled)),
+      globalPluginSelections: { ...selections, pluginRefs },
+    };
+  }
+
+  async function updateSelections(
+    record: InstalledItemRecord,
+    status: InstalledItemStatus,
+  ): Promise<void> {
+    const { unionPluginSelections, subtractPluginSelections } =
+      await import('@canopy/desktop-shared/lib/effective-plugin-selections');
+    await port.updatePreferences(async (stored) => {
+      const current = await canonicalPreferences(stored);
+      const key = installedItemKey(record.ref);
+      const generic =
+        record.ref.kind !== 'mcp-config' && record.ref.kind !== 'account-mcp';
+      const disabled = new Set(current.disabledInstalledItems ?? []);
+      if (generic) {
+        if (status === 'disabled') disabled.add(key);
+        else disabled.delete(key);
+      }
+      let selections = normalizePluginSelections(
+        current.globalPluginSelections,
+      );
+      if (record.ref.kind === 'account-mcp' && record.selectionRef) {
+        selections = subtractPluginSelections(selections, {
+          collectionIds: [],
+          skillRefs: [],
+          pluginRefs: [],
+          mcpServerRefs: [
+            {
+              serverId: `account:${record.ref.connectionId}`,
+              configId: record.selectionRef.configId,
+            },
+          ],
+        });
+      }
+      const target = selectionFor(record.ref, record);
+      return {
+        disabledInstalledItems: Array.from(disabled),
+        globalPluginSelections:
+          status === 'active'
+            ? unionPluginSelections(selections, target)
+            : subtractPluginSelections(selections, target),
+      };
+    });
+  }
+
+  async function transition(
+    record: InstalledItemRecord,
+    status: InstalledItemStatus,
+  ): Promise<void> {
+    const ref = normalizeInstalledItemRef(record.ref);
+    const key = installedItemKey(ref);
+    if (ref.kind === 'mcp-config' || ref.kind === 'account-mcp') {
+      // An authoritative MCP write must succeed before selection bookkeeping changes.
+      await port.setMcpEnabled(ref, status !== 'disabled');
+      await updateSelections(record, status);
+      return;
+    }
+    if (status === 'disabled') await updateSelections(record, status);
+    let preferences = await port.readPreferences();
+    let recovery = preferences.parkedCodexPlugins?.find(
+      (entry) => entry.key === key,
+    );
+    if (
+      status !== 'disabled' &&
+      record.codex &&
+      record.codexEnabled === false &&
+      !recovery
+    ) {
+      const saved: ParkedCodexPlugin = {
+        ...record.codex,
+        key,
+        state: 'parking',
+      };
+      await port.updatePreferences((current) => ({
+        parkedCodexPlugins: [
+          ...(current.parkedCodexPlugins ?? []).filter(
+            (entry) => entry.key !== key,
+          ),
+          saved,
+        ],
+      }));
+      await port.parkCodex(saved.pluginId);
+      recovery = saved;
+    }
+    const failures: unknown[] = [];
+    for (const id of record.claudeIds ?? []) {
+      try {
+        await port.setClaudeEnabled(id, status !== 'disabled');
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    try {
+      if (status === 'disabled') {
+        if (!recovery && record.codex) {
+          const saved: ParkedCodexPlugin = {
+            ...record.codex,
+            key,
+            state: 'parking',
+          };
+          preferences = await port.updatePreferences((current) => ({
+            parkedCodexPlugins: [
+              ...(current.parkedCodexPlugins ?? []).filter(
+                (entry) => entry.key !== key,
+              ),
+              saved,
+            ],
+          }));
+          recovery = saved;
+        }
+        if (recovery) {
+          // Retry even for an unchanged status. `list` reconciles an interrupted park.
+          if (record.codex) await port.parkCodex(recovery.pluginId);
+          await port.updatePreferences((current) => ({
+            parkedCodexPlugins: (current.parkedCodexPlugins ?? []).map(
+              (entry) =>
+                entry.key === key ? { ...entry, state: 'parked' } : entry,
+            ),
+          }));
+        }
+      } else if (recovery) {
+        await port.updatePreferences((current) => ({
+          parkedCodexPlugins: (current.parkedCodexPlugins ?? []).map((entry) =>
+            entry.key === key ? { ...entry, state: 'restoring' } : entry,
+          ),
+        }));
+        await port.restoreCodex(recovery);
+        await port.updatePreferences((current) => ({
+          parkedCodexPlugins: (current.parkedCodexPlugins ?? []).filter(
+            (entry) => entry.key !== key,
+          ),
+        }));
+      }
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length)
+      throw new Error('Provider transition is incomplete. Retry to finish.');
+    if (status !== 'disabled') await updateSelections(record, status);
+  }
+
+  async function result(
+    requestedStatus: InstalledItemStatus | undefined,
+    removed: InstalledItemTarget[],
+    errors: InstalledItemMutationResult['errors'],
+    target: InstalledItemTarget,
+  ): Promise<InstalledItemMutationResult> {
+    try {
+      await port.publish(target);
+    } catch {
+      errors.push({
+        target,
+        code: 'refresh_failed',
+        message:
+          'The change was saved, but the catalog could not be refreshed. Retry to reconcile its state.',
+        retryable: true,
+      });
+    }
+    let current: InstalledItemSnapshot;
+    try {
+      current = await snapshot();
+    } catch {
+      current = {
+        items: lastSnapshot.items.map((item) => ({
+          ...item,
+          status: null,
+          notices: [
+            ...item.notices,
+            {
+              code: 'provider_unavailable',
+              message:
+                'Current installed-item state could not be read. Retry to reconcile the saved operation.',
+              retryable: true,
+            },
+          ],
+        })),
+      };
+      for (const item of current.items)
+        errors.push({
+          target: item.target,
+          code: 'state_unavailable',
+          message: 'Current installed-item state is unavailable.',
+          retryable: true,
+        });
+      if (!current.items.length)
+        errors.push({
+          target,
+          code: 'state_unavailable',
+          message: 'Current installed-item state is unavailable.',
+          retryable: true,
+        });
+    }
+    return {
+      success: errors.length === 0,
+      ...(requestedStatus ? { requestedStatus } : {}),
+      removed,
+      errors,
+      snapshot: current,
+    };
+  }
+
+  return {
+    listStatus: snapshot,
+    setStatus(raw): Promise<InstalledItemMutationResult> {
+      const request = SetInstalledItemStatusRequestSchema.parse(raw);
+      return port.serialize(async () => {
+        const records = await port.list();
+        await snapshot(records);
+        const target =
+          request.target.kind === 'mcp-server'
+            ? request.target
+            : await port.canonical(request.target);
+        const targets = records.filter((record) =>
+          target.kind === 'mcp-server'
+            ? record.ref.kind === 'mcp-config' &&
+              record.ref.serverId === target.serverId
+            : installedItemKey(record.ref) === installedItemKey(target),
+        );
+        const errors: InstalledItemMutationResult['errors'] = [];
+        if (!targets.length)
+          errors.push({
+            target,
+            code: 'not_found',
+            message: 'Installed item was not found.',
+            retryable: false,
+          });
+        for (const record of targets) {
+          try {
+            await transition(record, request.status);
+          } catch (error) {
+            errors.push({
+              target: record.ref,
+              code: 'transition_failed',
+              message:
+                error instanceof Error
+                  ? error.message
+                  : 'Status change failed.',
+              retryable: true,
+            });
+          }
+        }
+        const outcome = await result(request.status, [], errors, target);
+        const actual = outcome.snapshot.items.find(
+          (item) => JSON.stringify(item.target) === JSON.stringify(target),
+        );
+        if (!errors.length && actual?.status !== request.status) {
+          outcome.success = false;
+          outcome.errors.push({
+            target,
+            code: 'provider_pending',
+            message:
+              'The requested status has not taken effect. Retry after the provider becomes available.',
+            retryable: true,
+          });
+        }
+        return outcome;
+      });
+    },
+    uninstall(raw): Promise<InstalledItemMutationResult> {
+      const request = UninstallInstalledItemRequestSchema.parse(raw);
+      return port.serialize(async () => {
+        const inventory = await port.list();
+        await snapshot(inventory);
+        const target = UninstallInstalledItemRequestSchema.shape.target.parse(
+          request.target.kind === 'mcp-server'
+            ? request.target
+            : await port.canonical(request.target),
+        );
+        const records = inventory.filter((record) =>
+          target.kind === 'mcp-server'
+            ? record.ref.kind === 'mcp-config' &&
+              record.ref.serverId === target.serverId
+            : installedItemKey(record.ref) === installedItemKey(target),
+        );
+        const errors: InstalledItemMutationResult['errors'] = [];
+        const removed: InstalledItemTarget[] = [];
+        try {
+          const refused = records.find((record) => !record.removable);
+          if (refused)
+            throw new Error(
+              refused.reason ?? 'This installed item cannot be removed.',
+            );
+          const targetKey = JSON.stringify(target);
+          if (!records.length && target.kind !== 'mcp-server')
+            await port.assertAbsent?.(target);
+          const saved = (
+            await port.readPreferences()
+          ).pendingInstalledItemUninstalls?.find(
+            (entry) => JSON.stringify(entry.target) === targetKey,
+          );
+          const refs =
+            saved?.refs ??
+            (target.kind === 'mcp-server'
+              ? records.map((record) => record.ref)
+              : [target]);
+          for (const record of records)
+            if (record.ref.kind === 'account-mcp' && record.selectionRef)
+              refs.push({ kind: 'mcp-config', ...record.selectionRef });
+          await port.updatePreferences((current) => ({
+            pendingInstalledItemUninstalls: [
+              ...(current.pendingInstalledItemUninstalls ?? []).filter(
+                (entry) => JSON.stringify(entry.target) !== targetKey,
+              ),
+              { target, refs },
+            ],
+          }));
+          if (target.kind === 'mcp-server') {
+            await port.removeDeviceServer(target.serverId);
+          } else for (const record of records) await port.remove(record);
+          // An absent target is an idempotent retry, including cleanup after a crash.
+          await port.prune(refs);
+          await port.updatePreferences((current) => ({
+            pendingInstalledItemUninstalls: (
+              current.pendingInstalledItemUninstalls ?? []
+            ).filter((entry) => JSON.stringify(entry.target) !== targetKey),
+          }));
+          removed.push(target);
+        } catch {
+          const refused = records.find((record) => !record.removable);
+          errors.push({
+            target,
+            code: refused ? 'not_removable' : 'uninstall_incomplete',
+            message:
+              refused?.reason ??
+              'Uninstall is incomplete. Retry to reconcile remaining installations and saved references.',
+            retryable: !refused,
+          });
+        }
+        return result(undefined, removed, errors, target);
+      });
+    },
+  };
+}

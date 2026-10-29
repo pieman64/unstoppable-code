@@ -1,0 +1,20 @@
+name: Comms Setup
+description: Provision a shared SQLite channel for multi-agent coordination.
+inputs:
+  channel_name:
+    description: Optional logical channel name.
+    required: false
+  extra_tables:
+    description: Optional JSON array of CREATE TABLE statements.
+    required: false
+    default: "[]"
+outputs:
+  db_path:
+    description: Absolute path to the created SQLite database.
+  channel_name:
+    description: Channel name registered in the database.
+  extra_table_count:
+    description: Number of extra table statements executed.
+runs:
+  using: node
+  main: index.js

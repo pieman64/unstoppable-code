@@ -1,0 +1,332 @@
+{
+  "version": 2,
+  "applicability": "source-fixture",
+  "packagedApplicability": "not-qualified: packaged Windows daemon remains fail-closed (CAN-3996)",
+  "cases": [
+    {
+      "id": "T01",
+      "layer": "transport",
+      "file": "packages/core-platform/src/__tests__/windows-pipe-security.test.ts",
+      "ancestorTitles": ["Canopy transport conformance: secured-pipe"],
+      "title": "reassembles a request written one byte at a time"
+    },
+    {
+      "id": "T02",
+      "layer": "transport",
+      "file": "packages/core-platform/src/__tests__/windows-pipe-security.test.ts",
+      "ancestorTitles": ["Canopy transport conformance: secured-pipe"],
+      "title": "correlates concurrent requests answered out of order"
+    },
+    {
+      "id": "T03",
+      "layer": "transport",
+      "file": "packages/core-platform/src/__tests__/windows-pipe-security.test.ts",
+      "ancestorTitles": ["Canopy transport conformance: secured-pipe"],
+      "title": "carries payloads up to the frame cap and fails closed beyond it"
+    },
+    {
+      "id": "T04",
+      "layer": "transport",
+      "file": "packages/core-platform/src/__tests__/windows-pipe-security.test.ts",
+      "ancestorTitles": ["Canopy transport conformance: secured-pipe"],
+      "title": "applies backpressure to an unread stream and resumes in order"
+    },
+    {
+      "id": "T05",
+      "layer": "transport",
+      "file": "packages/core-platform/src/__tests__/windows-pipe-security.test.ts",
+      "ancestorTitles": ["Canopy transport conformance: secured-pipe"],
+      "title": "cancels a pending receive without closing the connection"
+    },
+    {
+      "id": "T06",
+      "layer": "transport",
+      "file": "packages/core-platform/src/__tests__/windows-pipe-security.test.ts",
+      "ancestorTitles": ["Canopy transport conformance: secured-pipe"],
+      "title": "surfaces a disconnect mid-stream to both ends"
+    },
+    {
+      "id": "T12",
+      "layer": "transport",
+      "file": "packages/core-platform/src/__tests__/windows-pipe-security.test.ts",
+      "ancestorTitles": ["Canopy transport conformance: secured-pipe"],
+      "title": "answers malformed envelopes and closes on malformed frames"
+    },
+    {
+      "id": "T13",
+      "layer": "transport",
+      "file": "packages/core-platform/src/__tests__/windows-pipe-security.test.ts",
+      "ancestorTitles": ["Canopy transport conformance: secured-pipe"],
+      "title": "negotiates bulk channels within their caps"
+    },
+    {
+      "id": "T14",
+      "layer": "transport",
+      "file": "packages/core-platform/src/__tests__/windows-pipe-security.test.ts",
+      "ancestorTitles": ["Canopy transport conformance: secured-pipe"],
+      "title": "bulk channel credit flow control"
+    },
+    {
+      "id": "T15",
+      "layer": "transport",
+      "file": "packages/core-platform/src/__tests__/windows-pipe-security.test.ts",
+      "ancestorTitles": ["Canopy transport conformance: secured-pipe"],
+      "title": "fails authentication closed"
+    },
+    {
+      "id": "L01",
+      "layer": "lease",
+      "file": "packages/core-platform/src/__tests__/windows-pipe-security.test.ts",
+      "ancestorTitles": [
+        "Canopy lease conformance: secured-pipe control plane"
+      ],
+      "title": "lease TTL expiry evicts the client"
+    },
+    {
+      "id": "L02",
+      "layer": "lease",
+      "file": "packages/core-platform/src/__tests__/windows-pipe-security.test.ts",
+      "ancestorTitles": [
+        "Canopy lease conformance: secured-pipe control plane"
+      ],
+      "title": "reconnect grace keeps lease registrations"
+    },
+    {
+      "id": "C01",
+      "layer": "channel",
+      "file": "packages/core-platform/src/__tests__/windows-pipe-security.test.ts",
+      "ancestorTitles": [
+        "Canopy channel conformance: secured-pipe control plane"
+      ],
+      "title": "opens, carries opaque bytes, and closes a lease-bound channel"
+    },
+    {
+      "id": "C02",
+      "layer": "channel",
+      "file": "packages/core-platform/src/__tests__/windows-pipe-security.test.ts",
+      "ancestorTitles": [
+        "Canopy channel conformance: secured-pipe control plane"
+      ],
+      "title": "refuses an open over the per-lease cap and reuses the slot"
+    },
+    {
+      "id": "C03",
+      "layer": "channel",
+      "file": "packages/core-platform/src/__tests__/windows-pipe-security.test.ts",
+      "ancestorTitles": [
+        "Canopy channel conformance: secured-pipe control plane"
+      ],
+      "title": "refuses an oversized chunk with the actionable error"
+    },
+    {
+      "id": "C04",
+      "layer": "channel",
+      "file": "packages/core-platform/src/__tests__/windows-pipe-security.test.ts",
+      "ancestorTitles": [
+        "Canopy channel conformance: secured-pipe control plane"
+      ],
+      "title": "bounds bytes in flight with channel credit"
+    },
+    {
+      "id": "C05",
+      "layer": "channel",
+      "file": "packages/core-platform/src/__tests__/windows-pipe-security.test.ts",
+      "ancestorTitles": [
+        "Canopy channel conformance: secured-pipe control plane"
+      ],
+      "title": "release closes the lease channels and settles a blocked write"
+    },
+    {
+      "id": "C06",
+      "layer": "channel",
+      "file": "packages/core-platform/src/__tests__/windows-pipe-security.test.ts",
+      "ancestorTitles": [
+        "Canopy channel conformance: secured-pipe control plane"
+      ],
+      "title": "TTL eviction closes the lease channels"
+    },
+    {
+      "id": "C07",
+      "layer": "channel",
+      "file": "packages/core-platform/src/__tests__/windows-pipe-security.test.ts",
+      "ancestorTitles": [
+        "Canopy channel conformance: secured-pipe control plane"
+      ],
+      "title": "rebind to a new connection closes the old connection channels"
+    },
+    {
+      "id": "C08",
+      "layer": "channel",
+      "file": "packages/core-platform/src/__tests__/windows-pipe-security.test.ts",
+      "ancestorTitles": [
+        "Canopy channel conformance: secured-pipe control plane"
+      ],
+      "title": "disconnect closes channels; reacquire within grace allows new channels"
+    },
+    {
+      "id": "N01",
+      "layer": "native",
+      "file": "packages/core-platform/src/__tests__/windows-pipe-security.test.ts",
+      "ancestorTitles": ["Windows named-pipe security addon"],
+      "title": "current user: delivers an early client, exchanges bytes, bounds writes, and releases everything on close"
+    },
+    {
+      "id": "N02",
+      "layer": "native",
+      "file": "packages/core-platform/src/__tests__/windows-pipe-security.test.ts",
+      "ancestorTitles": ["Windows named-pipe security addon"],
+      "title": "cap and burst: keeps at most 32 of 40 unread clients, closes the excess, and releases all on close"
+    },
+    {
+      "id": "N03",
+      "layer": "native",
+      "file": "packages/core-platform/src/__tests__/windows-pipe-security.test.ts",
+      "ancestorTitles": ["Windows named-pipe security addon"],
+      "title": "descriptor: the live first instance is owned by and grants only the current user"
+    },
+    {
+      "id": "N04",
+      "layer": "native",
+      "file": "packages/core-platform/src/__tests__/windows-pipe-security.test.ts",
+      "ancestorTitles": ["Windows named-pipe security addon"],
+      "title": "contention and squatting: a bound name refuses a second bind and a default net.Server, and a squatted name refuses our bind"
+    },
+    {
+      "id": "N05",
+      "layer": "native",
+      "file": "packages/core-platform/src/__tests__/windows-pipe-security.test.ts",
+      "ancestorTitles": ["Windows named-pipe security addon"],
+      "title": "handshake: a published daemon serves an authenticated client over the secured pipe and cleans up"
+    },
+    {
+      "id": "N06",
+      "layer": "native",
+      "file": "packages/core-platform/src/__tests__/windows-pipe-security.test.ts",
+      "ancestorTitles": ["Windows named-pipe security across users"],
+      "title": "positive control: the second user can read a default-DACL net.Server pipe (impersonation works and the prober sees permissive DACLs)"
+    },
+    {
+      "id": "N07",
+      "layer": "native",
+      "file": "packages/core-platform/src/__tests__/windows-pipe-security.test.ts",
+      "ancestorTitles": ["Windows named-pipe security across users"],
+      "title": "secured pipe: the second user cannot open, query, or add instances"
+    },
+    {
+      "id": "N08",
+      "layer": "native",
+      "file": "packages/core-platform/src/__tests__/windows-pipe-security.test.ts",
+      "ancestorTitles": ["Windows named-pipe security across users"],
+      "title": "churn: a second user hammering opens never gets in across rebinds and new instances"
+    }
+  ],
+  "exclusions": [
+    {
+      "title": "resumes a subscription after the acknowledged cursor",
+      "kind": "case",
+      "reason": "Reference journal behavior is not a secured-pipe control-plane target.",
+      "id": "T07"
+    },
+    {
+      "title": "replays a late subscriber without a cursor through the head",
+      "kind": "case",
+      "reason": "Reference journal behavior is not a secured-pipe control-plane target.",
+      "id": "T08"
+    },
+    {
+      "title": "answers a foreign-epoch cursor with snapshot_required",
+      "kind": "case",
+      "reason": "Reference journal behavior is not a secured-pipe control-plane target.",
+      "id": "T09"
+    },
+    {
+      "title": "answers a cursor past the head with snapshot_required",
+      "kind": "case",
+      "reason": "Reference journal behavior is not a secured-pipe control-plane target.",
+      "id": "T10"
+    },
+    {
+      "title": "answers an evicted cursor with snapshot_required",
+      "kind": "case",
+      "reason": "Reference journal behavior is not a secured-pipe control-plane target.",
+      "id": "T11"
+    },
+    {
+      "title": "fails closed with an actionable error on a protocol-major mismatch",
+      "kind": "case",
+      "reason": "Portable/reference coverage exists; production closure differs.",
+      "id": "T16"
+    },
+    {
+      "title": "client renews its lease before the TTL (pending CAN-3728 K3)",
+      "kind": "todo",
+      "reason": "Pending shared-kit scope; not required Lane J fixture evidence.",
+      "id": "P01"
+    },
+    {
+      "title": "client reacquires with previousLeaseId after reconnect (pending CAN-3728 K3)",
+      "kind": "todo",
+      "reason": "Pending shared-kit scope; not required Lane J fixture evidence.",
+      "id": "P02"
+    },
+    {
+      "title": "stale socket path probe before unlink (pending CAN-3727 C5)",
+      "kind": "todo",
+      "reason": "Pending shared-kit scope; not required Lane J fixture evidence.",
+      "id": "P03"
+    },
+    {
+      "title": "first-instance named pipe owns the endpoint (pending CAN-3727 C5)",
+      "kind": "todo",
+      "reason": "Pending shared-kit scope; not required Lane J fixture evidence.",
+      "id": "P04"
+    },
+    {
+      "title": "post-bind descriptor and token file handshake (pending CAN-3727 C5)",
+      "kind": "todo",
+      "reason": "Pending shared-kit scope; not required Lane J fixture evidence.",
+      "id": "P05"
+    },
+    {
+      "title": "concurrent launchers converge on one daemon (pending CAN-3729 J2)",
+      "kind": "todo",
+      "reason": "Pending shared-kit scope; not required Lane J fixture evidence.",
+      "id": "P06"
+    },
+    {
+      "title": "split-mode record equality (pending W6)",
+      "kind": "todo",
+      "reason": "Pending shared-kit scope; not required Lane J fixture evidence.",
+      "id": "P07"
+    }
+  ],
+  "sourceFiles": [
+    "scripts/lib/windows-pipe-qualification.mjs",
+    "scripts/lib/windows-pipe-qualification-validator.mjs",
+    "scripts/lib/windows-pipe-inventory.json",
+    "scripts/windows-pipe-security-fixture.ps1",
+    "scripts/build-windows-pipe-security.mjs",
+    "packages/core-platform/src/__tests__/windows-pipe-security.test.ts",
+    "packages/core-platform/src/__tests__/fixtures/control-plane-conformance.ts",
+    "packages/core-platform/src/__tests__/fixtures/pipe-conformance-registration.ts",
+    "packages/core-platform/src/__tests__/fixtures/pipe-test-cleanup.ts",
+    "packages/core-platform/src/__tests__/fixtures/published-daemon-cleanup.ts",
+    "packages/core-platform/src/__tests__/fixtures/prober-completion.ts",
+    "packages/core-platform/src/__tests__/fixtures/windows-pipe-prober.ps1",
+    "packages/core-platform/src/endpoints/index.ts",
+    "packages/core-platform/native/windows-pipe/src/pipe_security.c",
+    "packages/core-platform/native/windows-pipe/binding.gyp",
+    "packages/core-transport/src/conformance/index.ts",
+    "packages/core-transport/src/conformance/channels.ts",
+    "packages/core-transport/src/conformance/reference-core.ts",
+    "packages/core-transport/src/connection.ts",
+    "packages/core-transport/src/codec.ts",
+    "packages/core-runtime/src/node/daemon/control-plane.ts",
+    "packages/core-runtime/src/node/daemon/leases.ts",
+    "packages/core-platform/src/endpoints/stream.ts",
+    "packages/core-platform/src/endpoints/windows-pipe.ts",
+    "packages/core-runtime/src/node/daemon/channels.ts",
+    "packages/core-runtime/src/node/daemon/binding.ts",
+    "packages/core-transport/src/frames.ts"
+  ]
+}

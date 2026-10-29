@@ -1,0 +1,1879 @@
+{
+  "$comment": "Source of truth for app glyphs. Lucide 1.59.0, 2px stroke, 20px regular / 14px compact; brand marks preserved. Run pnpm run icons:generate and pnpm run mobile:glyphs:generate after editing.",
+  "sources": {
+    "material": {
+      "package": "Material Symbols",
+      "repository": "https://github.com/google/material-design-icons",
+      "commit": "49d4db35df873165d6bd6ba09b063c7dafbac2f4",
+      "style": "rounded",
+      "weight": 300,
+      "grade": 0,
+      "opticalSize": 24,
+      "license": "Apache-2.0",
+      "fileUrl": "https://raw.githubusercontent.com/google/material-design-icons/{commit}/symbols/web/{name}/materialsymbolsrounded/{file}",
+      "releaseFileUrl": "https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsrounded/{name}/{axes}/24px.svg",
+      "licenseUrl": "https://raw.githubusercontent.com/google/material-design-icons/{commit}/LICENSE"
+    },
+    "simple-icons": {
+      "package": "simple-icons",
+      "version": "16.35.0",
+      "license": "CC0-1.0",
+      "tarball": "https://registry.npmjs.org/simple-icons/-/simple-icons-16.35.0.tgz",
+      "integrity": "sha512-TCfl/2+GTrx0nCo4pEWGvxhOb8c6NsqOU1OpwjtF4lwJAthB8IYVD0fuIMjLMg6JFuG1YBO0t1iETQqJLqkoJA==",
+      "fileUrl": "https://cdn.jsdelivr.net/npm/simple-icons@{version}/icons/{name}.svg",
+      "licenseUrl": "https://cdn.jsdelivr.net/npm/simple-icons@{version}/LICENSE.md"
+    },
+    "lobehub": {
+      "package": "@lobehub/icons-static-svg",
+      "version": "1.95.1",
+      "license": "MIT",
+      "tarball": "https://registry.npmjs.org/@lobehub/icons-static-svg/-/icons-static-svg-1.95.1.tgz",
+      "integrity": "sha512-Hw7EPPgVnC4NZLXBfTNJG6hyQgqECfUPC11VVXodPSr1aebKcFxDZlSpxhWwYNdCc6bhxps/x5TtXoPmfKH2ag==",
+      "fileUrl": "https://cdn.jsdelivr.net/npm/@lobehub/icons-static-svg@{version}/icons/{name}.svg",
+      "licenseUrl": "https://raw.githubusercontent.com/lobehub/lobe-icons/8a1b2821bb768c484fe8da20c5e1838b6bf551a9/LICENSE"
+    },
+    "lucide": {
+      "package": "lucide-static",
+      "version": "1.59.0",
+      "repository": "https://github.com/lucide-icons/lucide",
+      "license": "ISC AND MIT",
+      "strokeWidth": 2,
+      "tarball": "https://registry.npmjs.org/lucide-static/-/lucide-static-1.59.0.tgz",
+      "integrity": "sha512-MuHZYaXbHgzN2QO6D3OM19bj09A+8GJiFSdXIMlbnLLEGQQ9+NRH2KaCxuivevD3Y23vM74kV17XBifgtqhfEg==",
+      "fileUrl": "https://cdn.jsdelivr.net/npm/lucide-static@{version}/icons/{name}.svg",
+      "licenseUrl": "https://cdn.jsdelivr.net/npm/lucide-static@{version}/LICENSE"
+    },
+    "octicons": {
+      "package": "@primer/octicons",
+      "version": "19.40.0",
+      "license": "MIT",
+      "tarball": "https://registry.npmjs.org/@primer/octicons/-/octicons-19.40.0.tgz",
+      "integrity": "sha512-IHzIw98WUf+APnzjryvS1MT9MDlqmHqn5JG1Mi/SlrGScXofERS3lS/hatVgReCoDYvHbeh2E5S/1MGWldmtoQ==",
+      "fileUrl": "https://cdn.jsdelivr.net/npm/@primer/octicons@{version}/build/svg/{file}",
+      "licenseUrl": "https://cdn.jsdelivr.net/npm/@primer/octicons@{version}/LICENSE"
+    }
+  },
+  "glyphs": {
+    "addPhotoAlternate": {
+      "source": "lucide",
+      "name": "image-plus",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide image-plus, 2px stroke. Replaces add_photo_alternate; regular 20px, compact 14px."
+    },
+    "agent": {
+      "source": "lucide",
+      "name": "workflow",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide workflow for pipelines, distinct from the subagent bot. 20px regular, 14px compact, 2px stroke."
+    },
+    "agents": {
+      "source": "lucide",
+      "name": "network",
+      "fill": 0,
+      "class": "approximate",
+      "note": "Lucide network, 2px stroke. Replaces hub; regular 20px, compact 14px."
+    },
+    "allModels": {
+      "source": "lucide",
+      "name": "layout-grid",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide layout-grid, 2px stroke. The model picker's All models tab; rail glyphs render at 18px."
+    },
+    "allModelsFilled": {
+      "source": "lucide",
+      "name": "layout-grid",
+      "fill": 1,
+      "class": "direct",
+      "note": "Lucide layout-grid, 2px stroke. The model picker's All models tab; rail glyphs render at 18px. Filled silhouette state."
+    },
+    "apple": {
+      "source": "simple-icons",
+      "name": "apple",
+      "fill": 0,
+      "class": "identity",
+      "inset": 2,
+      "note": "Apple platform mark (Simple Icons, CC0-1.0). Inset 2: the mark spans the full 24-unit box, so it is padded to Material's 20-unit live area (CAN-4423 captures)."
+    },
+    "apps": {
+      "source": "lucide",
+      "name": "blocks",
+      "fill": 0,
+      "class": "approximate",
+      "note": "Lucide blocks, 2px stroke. Replaces widgets; regular 20px, compact 14px."
+    },
+    "archive": {
+      "source": "lucide",
+      "name": "archive",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide archive, 2px stroke. Replaces archive; regular 20px, compact 14px."
+    },
+    "archive1": {
+      "source": "lucide",
+      "name": "archive",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide archive, 2px stroke. Replaces inventory_2; regular 20px, compact 14px."
+    },
+    "arrowBoxLeft": {
+      "source": "lucide",
+      "name": "log-out",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide log-out, 2px stroke. Replaces logout; regular 20px, compact 14px."
+    },
+    "arrowBoxRight": {
+      "source": "lucide",
+      "name": "log-in",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide log-in, 2px stroke. Replaces login; regular 20px, compact 14px."
+    },
+    "arrowDownRight": {
+      "source": "lucide",
+      "name": "arrow-down-right",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide arrow-down-right, 2px stroke. Replaces south_east; regular 20px, compact 14px."
+    },
+    "arrowInbox": {
+      "source": "lucide",
+      "name": "download",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide download, 2px stroke. Replaces download; regular 20px, compact 14px."
+    },
+    "arrowLeft": {
+      "source": "lucide",
+      "name": "arrow-left",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide arrow-left, 2px stroke. Replaces arrow_back; regular 20px, compact 14px."
+    },
+    "arrowLoopDownLeft": {
+      "source": "lucide",
+      "name": "undo-2",
+      "fill": 0,
+      "class": "approximate",
+      "note": "Lucide undo-2, 2px stroke. Replaces undo; regular 20px, compact 14px."
+    },
+    "arrowOutOfBox": {
+      "source": "lucide",
+      "name": "upload",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide upload, 2px stroke. Replaces upload; regular 20px, compact 14px."
+    },
+    "arrowRight": {
+      "source": "lucide",
+      "name": "arrow-right",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide arrow-right, 2px stroke. Replaces arrow_forward; regular 20px, compact 14px."
+    },
+    "arrowRotateClockwise": {
+      "source": "lucide",
+      "name": "refresh-cw",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide refresh-cw, 2px stroke. Replaces refresh; regular 20px, compact 14px."
+    },
+    "arrowRotateLeftRight": {
+      "source": "lucide",
+      "name": "refresh-cw",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide refresh-cw, 2px stroke. Replaces sync; regular 20px, compact 14px."
+    },
+    "arrowRotateRightLeft": {
+      "source": "lucide",
+      "name": "rotate-ccw",
+      "fill": 0,
+      "class": "approximate",
+      "note": "Lucide rotate-ccw, 2px stroke. Replaces restart_alt; regular 20px, compact 14px."
+    },
+    "arrowSplitRight": {
+      "source": "lucide",
+      "name": "git-fork",
+      "fill": 0,
+      "class": "approximate",
+      "note": "Lucide git-fork, 2px stroke. Replaces arrow_split; regular 20px, compact 14px."
+    },
+    "arrowSplitUp": {
+      "source": "lucide",
+      "name": "git-fork",
+      "fill": 0,
+      "class": "approximate",
+      "note": "Lucide git-fork, 2px stroke. Replaces call_split; regular 20px, compact 14px."
+    },
+    "arrowUp": {
+      "source": "lucide",
+      "name": "arrow-up",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide arrow-up, 2px stroke. Replaces arrow_upward; regular 20px, compact 14px."
+    },
+    "arrowUpRight": {
+      "source": "lucide",
+      "name": "arrow-up-right",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide arrow-up-right, 2px stroke. Replaces north_east; regular 20px, compact 14px."
+    },
+    "autoAwesome": {
+      "source": "lucide",
+      "name": "sparkles",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide sparkles, 2px stroke. Replaces auto_awesome; regular 20px, compact 14px."
+    },
+    "autoplay": {
+      "source": "lucide",
+      "name": "circle-play",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide circle-play, 2px stroke. Replaces autoplay; regular 20px, compact 14px."
+    },
+    "barsThree": {
+      "source": "lucide",
+      "name": "menu",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide menu, 2px stroke. Replaces menu; regular 20px, compact 14px."
+    },
+    "barsTwo": {
+      "source": "lucide",
+      "name": "menu",
+      "fill": 0,
+      "class": "approximate",
+      "note": "Lucide menu, 2px stroke. Replaces menu; regular 20px, compact 14px."
+    },
+    "bell": {
+      "source": "lucide",
+      "name": "bell",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide bell, 2px stroke. Replaces notifications; regular 20px, compact 14px."
+    },
+    "bell2": {
+      "source": "lucide",
+      "name": "bell",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide bell, 2px stroke. Replaces notifications; regular 20px, compact 14px."
+    },
+    "board": {
+      "source": "lucide",
+      "name": "layout-dashboard",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide layout-dashboard, 2px stroke. Replaces space_dashboard; regular 20px, compact 14px."
+    },
+    "bottombarHiddenBottomWide": {
+      "source": "lucide",
+      "name": "panel-bottom",
+      "fill": 0,
+      "class": "approximate",
+      "note": "Lucide panel-bottom, 2px stroke. Replaces bottom_panel_open; regular 20px, compact 14px."
+    },
+    "brain1": {
+      "source": "lucide",
+      "name": "brain",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide brain, 2px stroke. Replaces neurology; regular 20px, compact 14px."
+    },
+    "brain2": {
+      "source": "lucide",
+      "name": "brain-circuit",
+      "fill": 0,
+      "class": "approximate",
+      "note": "Lucide brain-circuit, 2px stroke. Replaces neurology; regular 20px, compact 14px."
+    },
+    "branch": {
+      "source": "octicons",
+      "name": "git-branch",
+      "fill": 0,
+      "class": "identity",
+      "inset": 0.5,
+      "note": "Official GitHub Octicon (git-branch-24), inset 0.5. Replaces the CAN-4423 gap decision fork_right."
+    },
+    "branchSimple": {
+      "source": "octicons",
+      "name": "git-branch",
+      "fill": 0,
+      "class": "identity",
+      "inset": 0.5,
+      "note": "Official GitHub Octicon (git-branch-24), inset 0.5. Replaces the CAN-4423 gap decision fork_right."
+    },
+    "briefcase": {
+      "source": "lucide",
+      "name": "briefcase",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide briefcase, 2px stroke. Customize hub; regular 20px, compact 14px."
+    },
+    "brightness": {
+      "source": "lucide",
+      "name": "sun",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide sun, 2px stroke. Replaces light_mode; regular 20px, compact 14px."
+    },
+    "bubble2": {
+      "source": "lucide",
+      "name": "message-circle",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide message-circle, 2px stroke. Replaces chat_bubble; regular 20px, compact 14px."
+    },
+    "bubblePlus": {
+      "source": "lucide",
+      "name": "message-square-plus",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide message-square-plus, 2px stroke. Replaces add_comment; regular 20px, compact 14px."
+    },
+    "bubbleText": {
+      "source": "lucide",
+      "name": "message-square",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide message-square, 2px stroke. Replaces chat; regular 20px, compact 14px."
+    },
+    "bubbles": {
+      "source": "lucide",
+      "name": "messages-square",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide messages-square, 2px stroke. Replaces forum; regular 20px, compact 14px."
+    },
+    "bug": {
+      "source": "lucide",
+      "name": "bug",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide bug, 2px stroke. Replaces bug_report; regular 20px, compact 14px."
+    },
+    "build": {
+      "source": "lucide",
+      "name": "wrench",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide wrench, 2px stroke. Replaces build; regular 20px, compact 14px."
+    },
+    "buildingBlocks": {
+      "source": "lucide",
+      "name": "box",
+      "fill": 0,
+      "class": "approximate",
+      "note": "Lucide box, 2px stroke. Replaces deployed_code; regular 20px, compact 14px."
+    },
+    "buildings": {
+      "source": "lucide",
+      "name": "building-2",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide building-2, 2px stroke. Replaces domain; regular 20px, compact 14px."
+    },
+    "bulletList": {
+      "source": "lucide",
+      "name": "list",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide list, 2px stroke. Replaces format_list_bulleted; regular 20px, compact 14px."
+    },
+    "calendarClock": {
+      "source": "lucide",
+      "name": "calendar-clock",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide calendar-clock, 2px stroke. Replaces calendar_clock; regular 20px, compact 14px."
+    },
+    "camera1": {
+      "source": "lucide",
+      "name": "camera",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide camera, 2px stroke. Replaces photo_camera; regular 20px, compact 14px."
+    },
+    "canvasGrid": {
+      "source": "lucide",
+      "name": "grid-2x2",
+      "fill": 0,
+      "class": "approximate",
+      "note": "Lucide grid-2x2, 2px stroke. Replaces grid_view; regular 20px, compact 14px."
+    },
+    "changes": {
+      "source": "octicons",
+      "name": "file-diff",
+      "fill": 0,
+      "class": "identity",
+      "inset": 1,
+      "note": "Official GitHub Octicon (file-diff-24), inset 1. Replaces Material difference."
+    },
+    "chart4": {
+      "source": "lucide",
+      "name": "chart-no-axes-column",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide chart-no-axes-column, 2px stroke. Replaces bar_chart; regular 20px, compact 14px."
+    },
+    "checkmark1": {
+      "source": "lucide",
+      "name": "check",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide check, 2px stroke. Replaces check; regular 20px, compact 14px."
+    },
+    "chevronDownMedium": {
+      "source": "lucide",
+      "name": "chevron-down",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide chevron-down, 2px stroke. Replaces expand_more; regular 20px, compact 14px."
+    },
+    "chevronDownSmall": {
+      "source": "lucide",
+      "name": "chevron-down",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide chevron-down, 2px stroke. Replaces expand_more; regular 20px, compact 14px."
+    },
+    "chevronLeftMedium": {
+      "source": "lucide",
+      "name": "chevron-left",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide chevron-left, 2px stroke. Replaces chevron_left; regular 20px, compact 14px."
+    },
+    "chevronRightMedium": {
+      "source": "lucide",
+      "name": "chevron-right",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide chevron-right, 2px stroke. Replaces chevron_right; regular 20px, compact 14px."
+    },
+    "chevronRightSmall": {
+      "source": "lucide",
+      "name": "chevron-right",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide chevron-right, 2px stroke. Replaces chevron_right; regular 20px, compact 14px."
+    },
+    "chevronTopMedium": {
+      "source": "lucide",
+      "name": "chevron-up",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide chevron-up, 2px stroke. Replaces expand_less; regular 20px, compact 14px."
+    },
+    "chevronTopSmall": {
+      "source": "lucide",
+      "name": "chevron-up",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide chevron-up, 2px stroke. Replaces expand_less; regular 20px, compact 14px."
+    },
+    "chipSimple": {
+      "source": "lucide",
+      "name": "cpu",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide cpu, 2px stroke. Replaces memory; regular 20px, compact 14px."
+    },
+    "circleCheck": {
+      "source": "lucide",
+      "name": "circle-check",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide circle-check, 2px stroke. Replaces check_circle; regular 20px, compact 14px."
+    },
+    "circleInfo": {
+      "source": "lucide",
+      "name": "info",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide info, 2px stroke. Replaces info; regular 20px, compact 14px."
+    },
+    "circleQuestionmark": {
+      "source": "lucide",
+      "name": "circle-help",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide circle-help, 2px stroke. Replaces help; regular 20px, compact 14px."
+    },
+    "circleStop": {
+      "source": "lucide",
+      "name": "circle-stop",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide circle-stop, consolidated from inline app controls; 2px stroke, regular 20px / compact 14px."
+    },
+    "circleDashed": {
+      "source": "lucide",
+      "name": "circle-dashed",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide circle-dashed for the Available installed-item status (CAN-4255); 2px stroke, regular 20px / compact 14px."
+    },
+    "circleX": {
+      "source": "lucide",
+      "name": "circle-x",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide circle-x, 2px stroke. Outline X in a circle for cancel actions; regular 20px, compact 14px."
+    },
+    "circleXFilled": {
+      "source": "lucide",
+      "name": "circle-x",
+      "fill": 1,
+      "class": "direct",
+      "note": "Lucide circle-x, 2px stroke. Replaces cancel; regular 20px, compact 14px. Filled circle with a transparent X cutout."
+    },
+    "claudeai": {
+      "source": "repo",
+      "name": "ClaudeLogo",
+      "fill": 0,
+      "class": "identity",
+      "note": "Existing repository logo."
+    },
+    "clipboard": {
+      "source": "lucide",
+      "name": "clipboard-list",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide clipboard-list, 2px stroke. Replaces assignment; regular 20px, compact 14px."
+    },
+    "clipboard2Sparkle": {
+      "source": "lucide",
+      "name": "clipboard-plus",
+      "fill": 0,
+      "class": "approximate",
+      "note": "Lucide clipboard-plus, 2px stroke. Replaces assignment_add; regular 20px, compact 14px."
+    },
+    "clock": {
+      "source": "lucide",
+      "name": "clock",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide clock, 2px stroke. Replaces schedule; regular 20px, compact 14px."
+    },
+    "clockSnooze": {
+      "source": "lucide",
+      "name": "alarm-clock",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide alarm-clock, 2px stroke. Replaces snooze; regular 20px, compact 14px."
+    },
+    "clockTimeslot": {
+      "source": "lucide",
+      "name": "history",
+      "fill": 0,
+      "class": "approximate",
+      "note": "Lucide history, 2px stroke. Replaces history_toggle_off; regular 20px, compact 14px."
+    },
+    "cloud": {
+      "source": "lucide",
+      "name": "cloud",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide cloud, 2px stroke. Replaces cloud; regular 20px, compact 14px."
+    },
+    "codeBrackets": {
+      "source": "lucide",
+      "name": "code",
+      "fill": 0,
+      "class": "approximate",
+      "note": "Lucide code, 2px stroke. Replaces code; regular 20px, compact 14px."
+    },
+    "codeMedium": {
+      "source": "lucide",
+      "name": "code",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide code, 2px stroke. Replaces code; regular 20px, compact 14px."
+    },
+    "coins": {
+      "source": "lucide",
+      "name": "coins",
+      "fill": 0,
+      "class": "direct",
+      "note": "Shared Lucide replacement for the legacy coins icon; 2px stroke, regular 20px / compact 14px."
+    },
+    "commits": {
+      "source": "octicons",
+      "name": "git-commit",
+      "fill": 0,
+      "class": "identity",
+      "inset": 0,
+      "note": "Official GitHub Octicon (git-commit-24), inset 0. Replaces Material commit."
+    },
+    "connectors2": {
+      "source": "lucide",
+      "name": "network",
+      "fill": 0,
+      "class": "approximate",
+      "note": "Lucide network, 2px stroke. Replaces account_tree; regular 20px, compact 14px."
+    },
+    "console": {
+      "source": "lucide",
+      "name": "terminal",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide terminal, 2px stroke. Replaces terminal; regular 20px, compact 14px."
+    },
+    "consoleSimple": {
+      "source": "lucide",
+      "name": "terminal",
+      "fill": 0,
+      "class": "approximate",
+      "note": "Lucide terminal, 2px stroke. Replaces terminal; regular 20px, compact 14px."
+    },
+    "creditCard1": {
+      "source": "lucide",
+      "name": "credit-card",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide credit-card, 2px stroke. Replaces credit_card; regular 20px, compact 14px."
+    },
+    "crossLarge": {
+      "source": "lucide",
+      "name": "x",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide x, 2px stroke. Replaces close; regular 20px, compact 14px."
+    },
+    "crossMedium": {
+      "source": "lucide",
+      "name": "x",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide x, 2px stroke. Replaces close; regular 20px, compact 14px."
+    },
+    "crossSmall": {
+      "source": "lucide",
+      "name": "x",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide x, 2px stroke. Replaces close; regular 20px, compact 14px."
+    },
+    "cursor": {
+      "source": "repo",
+      "name": "CursorLogo",
+      "fill": 0,
+      "class": "identity",
+      "note": "Existing repository logo."
+    },
+    "cursorClick": {
+      "source": "lucide",
+      "name": "mouse-pointer-click",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide mouse-pointer-click, 2px stroke. Replaces ads_click; regular 20px, compact 14px."
+    },
+    "deepseek": {
+      "source": "simple-icons",
+      "name": "deepseek",
+      "fill": 0,
+      "class": "identity",
+      "inset": 2,
+      "note": "DeepSeek mark (Simple Icons, CC0-1.0). Inset 2: the mark spans the full 24-unit box, so it is padded to Material's 20-unit live area (CAN-4423 captures)."
+    },
+    "devices": {
+      "source": "lucide",
+      "name": "monitor-smartphone",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide monitor-smartphone, 2px stroke. Replaces devices; regular 20px, compact 14px."
+    },
+    "difference": {
+      "source": "octicons",
+      "name": "file-diff",
+      "fill": 0,
+      "class": "identity",
+      "inset": 1,
+      "note": "Official GitHub Octicon (file-diff-24), inset 1. Replaces Material difference. API override. FileDiff: the Changes tab of a shared run, a generic file diff."
+    },
+    "differenceModified": {
+      "source": "octicons",
+      "name": "diff-modified",
+      "fill": 0,
+      "class": "identity",
+      "inset": 0,
+      "note": "Official GitHub Octicon (diff-modified-24), inset 0. Replaces the CAN-4423 gap decision square_dot. Modified-file status."
+    },
+    "discord": {
+      "source": "simple-icons",
+      "name": "discord",
+      "fill": 0,
+      "class": "identity",
+      "inset": 2,
+      "note": "Discord community mark (Simple Icons, CC0-1.0) for the CAN-447 download confirmation cards. Inset 2: the mark spans the full 24-unit box, so it is padded to Material's 20-unit live area."
+    },
+    "dollar": {
+      "source": "lucide",
+      "name": "circle-dollar-sign",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide circle-dollar-sign, 2px stroke. Replaces paid; regular 20px, compact 14px."
+    },
+    "dotGrid1x3Horizontal": {
+      "source": "lucide",
+      "name": "ellipsis",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide ellipsis, 2px stroke. Replaces more_horiz; regular 20px, compact 14px."
+    },
+    "dotGrid1x3Vertical": {
+      "source": "lucide",
+      "name": "ellipsis-vertical",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide ellipsis-vertical, 2px stroke. Replaces more_vert; regular 20px, compact 14px."
+    },
+    "dotGrid2x3": {
+      "source": "lucide",
+      "name": "grip-vertical",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide grip-vertical, 2px stroke. Replaces drag_indicator; regular 20px, compact 14px."
+    },
+    "dotGrid3x3": {
+      "source": "lucide",
+      "name": "grip",
+      "fill": 1,
+      "class": "direct",
+      "note": "Lucide grip, 2px stroke. Replaces apps; regular 20px, compact 14px. Nine filled dots in a 3x3 grid."
+    },
+    "draft": {
+      "source": "octicons",
+      "name": "git-pull-request-draft",
+      "fill": 0,
+      "class": "identity",
+      "inset": 0.5,
+      "note": "Official GitHub Octicon (git-pull-request-draft-24), inset 0.5. Replaces the CAN-4423 gap decision alt_route."
+    },
+    "draftSimple": {
+      "source": "octicons",
+      "name": "git-pull-request-draft",
+      "fill": 0,
+      "class": "identity",
+      "inset": 0.5,
+      "note": "Official GitHub Octicon (git-pull-request-draft-24), inset 0.5. Replaces the CAN-4423 gap decision alt_route."
+    },
+    "editBig": {
+      "source": "lucide",
+      "name": "square-pen",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide square-pen, 2px stroke. Replaces edit_square; regular 20px, compact 14px."
+    },
+    "electrocardiogram": {
+      "source": "lucide",
+      "name": "activity",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide activity, 2px stroke. Replaces ecg; regular 20px, compact 14px."
+    },
+    "email1": {
+      "source": "lucide",
+      "name": "mail",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide mail, 2px stroke. Replaces mail; regular 20px, compact 14px."
+    },
+    "email2Check": {
+      "source": "lucide",
+      "name": "mail-check",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide mail-check, 2px stroke. Replaces mark_email_read; regular 20px, compact 14px."
+    },
+    "exclamationTriangle": {
+      "source": "lucide",
+      "name": "triangle-alert",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide triangle-alert, 2px stroke. Replaces warning; regular 20px, compact 14px."
+    },
+    "expand45": {
+      "source": "lucide",
+      "name": "maximize-2",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide maximize-2, 2px stroke. Replaces open_in_full; regular 20px, compact 14px."
+    },
+    "eyeOpen": {
+      "source": "lucide",
+      "name": "eye",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide eye, 2px stroke. Replaces visibility; regular 20px, compact 14px."
+    },
+    "eyeSlash": {
+      "source": "lucide",
+      "name": "eye-off",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide eye-off, 2px stroke. Replaces visibility_off; regular 20px, compact 14px."
+    },
+    "eyeSparkle": {
+      "source": "lucide",
+      "name": "scan-eye",
+      "fill": 0,
+      "class": "gap",
+      "note": "Lucide scan-eye, 2px stroke. Replaces eye_tracking; regular 20px, compact 14px."
+    },
+    "feed": {
+      "source": "lucide",
+      "name": "activity",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide activity, 2px stroke. Replaces earthquake; regular 20px, compact 14px."
+    },
+    "fileDown": {
+      "source": "lucide",
+      "name": "file-down",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide file-down, consolidated from inline app controls; 2px stroke, regular 20px / compact 14px."
+    },
+    "fileText": {
+      "source": "lucide",
+      "name": "file-text",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide file-text, 2px stroke. Replaces description; regular 20px, compact 14px."
+    },
+    "files": {
+      "source": "lucide",
+      "name": "files",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide files, 2px stroke. Replaces file_copy; regular 20px, compact 14px."
+    },
+    "filter1": {
+      "source": "lucide",
+      "name": "filter",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide filter, 2px stroke. Replaces filter_alt; regular 20px, compact 14px."
+    },
+    "focusSquare": {
+      "source": "lucide",
+      "name": "focus",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide focus, 2px stroke. Replaces center_focus_strong; regular 20px, compact 14px."
+    },
+    "folder1": {
+      "source": "lucide",
+      "name": "folder",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide folder, 2px stroke. Replaces folder; regular 20px, compact 14px."
+    },
+    "folderAddRight": {
+      "source": "lucide",
+      "name": "folder-plus",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide folder-plus, 2px stroke. Replaces create_new_folder; regular 20px, compact 14px."
+    },
+    "folderData": {
+      "source": "octicons",
+      "name": "repo",
+      "fill": 0,
+      "class": "identity",
+      "inset": 2,
+      "note": "Official GitHub Octicon (repo-24), inset 2. Replaces Material folder_data. API override. FolderGit2: a Git-backed folder (GitIcon keeps the Git logo); RepoIcon binds it too."
+    },
+    "folderFilled": {
+      "source": "lucide",
+      "name": "folder",
+      "fill": 1,
+      "class": "direct",
+      "note": "Filled folder silhouette for Cowork project identities; 14px compact, 20px regular."
+    },
+    "folders": {
+      "source": "lucide",
+      "name": "folders",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide folders, 2px stroke. Replaces folder_copy; regular 20px, compact 14px."
+    },
+    "foldersDashed": {
+      "source": "lucide",
+      "name": "folder-open",
+      "fill": 0,
+      "class": "gap",
+      "note": "Lucide folder-open, 2px stroke. Replaces folder_open; regular 20px, compact 14px."
+    },
+    "frontHand": {
+      "source": "lucide",
+      "name": "hand",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide hand, 2px stroke. Replaces front_hand; regular 20px, compact 14px."
+    },
+    "git": {
+      "source": "simple-icons",
+      "name": "git",
+      "fill": 0,
+      "class": "identity",
+      "inset": 2,
+      "note": "Git logo by Jason Long, CC BY 3.0; attribution in vendor/README.md. Inset 2: the mark spans the full 24-unit box, so it is padded to Material's 20-unit live area (CAN-4423 captures)."
+    },
+    "forkSplit": {
+      "source": "lucide",
+      "name": "split",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide split, 2px stroke. The clean chat look's Fork action, turned a quarter right; regular 20px, compact 14px. Lucide by the designer's explicit choice (2026-10-21), matching the other Lucide icons in the reply row and menu. Intentional deviation from DESIGN.md's rule that Git and GitHub concepts use Primer Octicons, limited to the Clean chat reply row and its \"•••\" menu; elsewhere fork and branch keep their Octicons."
+    },
+    "gitBranchLine": {
+      "source": "lucide",
+      "name": "git-branch",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide git-branch, 2px stroke. The clean chat look's Branch action, beside Lucide icons; regular 20px, compact 14px. Lucide by the designer's explicit choice (2026-10-21), matching the other Lucide icons in the reply row and menu. Intentional deviation from DESIGN.md's rule that Git and GitHub concepts use Primer Octicons, limited to the Clean chat reply row and its \"•••\" menu; elsewhere fork and branch keep their Octicons."
+    },
+    "gitFork": {
+      "source": "octicons",
+      "name": "repo-forked",
+      "fill": 0,
+      "class": "identity",
+      "inset": 0.5,
+      "note": "Official GitHub Octicon (repo-forked-24), inset 0.5. Replaces the Canopy-drawn IconGitFork."
+    },
+    "github": {
+      "source": "octicons",
+      "name": "mark-github",
+      "fill": 0,
+      "class": "identity",
+      "inset": 1.5,
+      "note": "Official GitHub Octicon (mark-github-24), inset 1.5. Replaces the repository GitHubMarkIcon. GitHub logo used per https://github.com/logos."
+    },
+    "globe": {
+      "source": "lucide",
+      "name": "globe",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide globe, 2px stroke. Replaces language; regular 20px, compact 14px."
+    },
+    "globe2": {
+      "source": "lucide",
+      "name": "globe",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide globe, 2px stroke. Replaces language; regular 20px, compact 14px."
+    },
+    "hammer2": {
+      "source": "lucide",
+      "name": "hammer",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide hammer, 2px stroke. Replaces hardware; regular 20px, compact 14px."
+    },
+    "history": {
+      "source": "lucide",
+      "name": "history",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide history, 2px stroke. Replaces history; regular 20px, compact 14px."
+    },
+    "images1": {
+      "source": "lucide",
+      "name": "image",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide image, 2px stroke. Replaces image; regular 20px, compact 14px."
+    },
+    "inputForm": {
+      "source": "lucide",
+      "name": "rectangle-ellipsis",
+      "fill": 0,
+      "class": "approximate",
+      "note": "Lucide rectangle-ellipsis, 2px stroke. Replaces text_fields; regular 20px, compact 14px."
+    },
+    "kanbanView": {
+      "source": "lucide",
+      "name": "kanban",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide kanban, 2px stroke. Replaces view_kanban; regular 20px, compact 14px."
+    },
+    "kimi": {
+      "source": "simple-icons",
+      "name": "kimi",
+      "fill": 0,
+      "class": "identity",
+      "inset": 2,
+      "note": "Kimi / Moonshot AI mark (Simple Icons, CC0-1.0). Inset 2: the mark spans the full 24-unit box, so it is padded to Material's 20-unit live area (CAN-4423 captures)."
+    },
+    "lab": {
+      "source": "lucide",
+      "name": "flask-conical",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide flask-conical, 2px stroke. Replaces science; regular 20px, compact 14px."
+    },
+    "layoutDashboard": {
+      "source": "lucide",
+      "name": "layout-dashboard",
+      "fill": 0,
+      "class": "approximate",
+      "note": "Lucide layout-dashboard, 2px stroke. Replaces dashboard; regular 20px, compact 14px."
+    },
+    "layoutGrid2Filled": {
+      "source": "lucide",
+      "name": "grid-2x2",
+      "fill": 1,
+      "class": "direct",
+      "note": "Lucide grid-2x2, 2px stroke. Replaces grid_view; regular 20px, compact 14px. Filled silhouette state."
+    },
+    "layoutGrid2FilledSquare": {
+      "source": "lobehub",
+      "name": "microsoft",
+      "fill": 0,
+      "class": "identity",
+      "note": "WindowsPlatformIcon: the four-square Windows mark (LobeHub Icons `microsoft`, MIT), shape only."
+    },
+    "layoutWindow": {
+      "source": "lucide",
+      "name": "app-window",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide app-window, 2px stroke. Replaces window; regular 20px, compact 14px."
+    },
+    "letterACircle": {
+      "source": "lucide",
+      "name": "circle-gauge",
+      "fill": 0,
+      "class": "approximate",
+      "note": "Lucide circle-gauge, 2px stroke. Replaces hdr_auto; regular 20px, compact 14px."
+    },
+    "lightbulb": {
+      "source": "lucide",
+      "name": "lightbulb",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide lightbulb, 2px stroke. The clean chat look's thinking step; regular 20px, compact 14px. Lucide by the designer's explicit choice (2026-10-21), matching the other Lucide icons in the reply row and menu."
+    },
+    "lineChart1": {
+      "source": "lucide",
+      "name": "chart-no-axes-column",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide chart-no-axes-column, 2px stroke. Replaces bar_chart; regular 20px, compact 14px."
+    },
+    "linear": {
+      "source": "repo",
+      "name": "LinearLogo",
+      "fill": 0,
+      "class": "identity",
+      "note": "Existing repository logo."
+    },
+    "link": {
+      "source": "lucide",
+      "name": "link",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide link, 2px stroke. Replaces link; regular 20px, compact 14px."
+    },
+    "linkOff": {
+      "source": "lucide",
+      "name": "link-2-off",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide link-2-off, 2px stroke. Unshare: stop sharing an item without deleting it; regular 20px, compact 14px."
+    },
+    "linkedin": {
+      "source": "repo",
+      "name": "LinkedInLogo",
+      "fill": 0,
+      "class": "identity",
+      "note": "Repository logo; path data from simple-icons 11.0.0 (CC0-1.0), which later releases removed. CAN-447 download confirmation cards."
+    },
+    "listAdd": {
+      "source": "lucide",
+      "name": "list-plus",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide list-plus, 2px stroke. Replaces playlist_add; regular 20px, compact 14px."
+    },
+    "listBullets": {
+      "source": "lucide",
+      "name": "list",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide list, 2px stroke. Replaces format_list_bulleted; regular 20px, compact 14px."
+    },
+    "listFilter": {
+      "source": "lucide",
+      "name": "list-filter",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide list-filter, consolidated from inline app controls; 2px stroke, regular 20px / compact 14px."
+    },
+    "loader": {
+      "source": "lucide",
+      "name": "loader-circle",
+      "fill": 0,
+      "class": "approximate",
+      "note": "Lucide loader-circle, 2px stroke. Replaces progress_activity; regular 20px, compact 14px."
+    },
+    "lock": {
+      "source": "lucide",
+      "name": "lock-keyhole",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide lock-keyhole, 2px stroke. Replaces lock; regular 20px, compact 14px."
+    },
+    "macbook": {
+      "source": "lucide",
+      "name": "laptop",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide laptop, 2px stroke. Replaces laptop_mac; regular 20px, compact 14px."
+    },
+    "magnifyingGlass": {
+      "source": "lucide",
+      "name": "search",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide search, 2px stroke. Replaces search; regular 20px, compact 14px."
+    },
+    "map": {
+      "source": "lucide",
+      "name": "map",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide map, 2px stroke. Replaces map; regular 20px, compact 14px."
+    },
+    "mention": {
+      "source": "lucide",
+      "name": "at-sign",
+      "fill": 0,
+      "class": "direct",
+      "note": "Shared Lucide replacement for the legacy mention icon; 2px stroke, regular 20px / compact 14px."
+    },
+    "mergeConflict": {
+      "source": "octicons",
+      "name": "alert",
+      "fill": 0,
+      "class": "identity",
+      "inset": 0.5,
+      "note": "Official GitHub Octicon (alert-24), inset 0.5. Merge conflicts, the glyph GitHub's merge box shows for a conflicting branch; previously shared git-merge artwork with merged, which read as merged."
+    },
+    "mergeConflictSimple": {
+      "source": "octicons",
+      "name": "alert",
+      "fill": 0,
+      "class": "identity",
+      "inset": 0.5,
+      "note": "Official GitHub Octicon (alert-24), inset 0.5. Merge conflicts, the glyph GitHub's merge box shows for a conflicting branch; previously shared git-merge artwork with mergedSimple, which read as merged."
+    },
+    "mergeQueue": {
+      "source": "octicons",
+      "name": "git-merge-queue",
+      "fill": 0,
+      "class": "identity",
+      "inset": 0.5,
+      "note": "Official GitHub Octicon (git-merge-queue-24), inset 0.5. Merge-queue state, which previously rendered mergedSimple."
+    },
+    "merged": {
+      "source": "octicons",
+      "name": "git-merge",
+      "fill": 0,
+      "class": "identity",
+      "inset": 0.5,
+      "note": "Official GitHub Octicon (git-merge-24), inset 0.5. Replaces the CAN-4423 gap decision merge."
+    },
+    "mergedSimple": {
+      "source": "octicons",
+      "name": "git-merge",
+      "fill": 0,
+      "class": "identity",
+      "inset": 0.5,
+      "note": "Official GitHub Octicon (git-merge-24), inset 0.5. Replaces the CAN-4423 gap decision merge."
+    },
+    "microphone": {
+      "source": "lucide",
+      "name": "mic",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide mic, 2px stroke. Replaces mic; regular 20px, compact 14px."
+    },
+    "minimax": {
+      "source": "simple-icons",
+      "name": "minimax",
+      "fill": 0,
+      "class": "identity",
+      "inset": 2,
+      "note": "MiniMax mark (Simple Icons, CC0-1.0). Inset 2: the mark spans the full 24-unit box, so it is padded to Material's 20-unit live area (CAN-4423 captures)."
+    },
+    "minimize45": {
+      "source": "lucide",
+      "name": "minimize-2",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide minimize-2, 2px stroke. Replaces close_fullscreen; regular 20px, compact 14px."
+    },
+    "minusSmall": {
+      "source": "lucide",
+      "name": "minus",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide minus, 2px stroke. Replaces remove; regular 20px, compact 14px."
+    },
+    "monitorDown": {
+      "source": "lucide",
+      "name": "monitor-down",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide monitor-down, consolidated from inline app controls; 2px stroke, regular 20px / compact 14px."
+    },
+    "moon": {
+      "source": "lucide",
+      "name": "moon",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide moon, 2px stroke. Replaces dark_mode; regular 20px, compact 14px."
+    },
+    "noteText": {
+      "source": "lucide",
+      "name": "sticky-note",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide sticky-note, 2px stroke. Replaces sticky_note_2; regular 20px, compact 14px."
+    },
+    "ollama": {
+      "source": "repo",
+      "name": "OllamaLogo",
+      "fill": 0,
+      "class": "identity",
+      "note": "Existing repository logo."
+    },
+    "openai": {
+      "source": "repo",
+      "name": "CodexLogo",
+      "fill": 0,
+      "class": "identity",
+      "note": "Existing repository logo."
+    },
+    "package": {
+      "source": "lucide",
+      "name": "package",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide package, 2px stroke. Replaces package_2; regular 20px, compact 14px."
+    },
+    "pageAttachment": {
+      "source": "lucide",
+      "name": "paperclip",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide paperclip, 2px stroke. Replaces file_present; regular 20px, compact 14px."
+    },
+    "pageSearch": {
+      "source": "lucide",
+      "name": "file-search",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide file-search, 2px stroke. Replaces find_in_page; regular 20px, compact 14px."
+    },
+    "pageTextAdd": {
+      "source": "lucide",
+      "name": "clipboard-plus",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide clipboard-plus, 2px stroke. Replaces add_notes; regular 20px, compact 14px."
+    },
+    "pause": {
+      "source": "lucide",
+      "name": "pause",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide pause, 2px stroke. Replaces pause; regular 20px, compact 14px."
+    },
+    "pencil": {
+      "source": "lucide",
+      "name": "pencil",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide pencil, 2px stroke. Replaces edit; regular 20px, compact 14px."
+    },
+    "peopleIdCard": {
+      "source": "lucide",
+      "name": "contact-round",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide contact-round, 2px stroke. Replaces badge; regular 20px, compact 14px."
+    },
+    "phone": {
+      "source": "lucide",
+      "name": "smartphone",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide smartphone, 2px stroke. Replaces mobile_3; regular 20px, compact 14px."
+    },
+    "phoneDynamicIsland": {
+      "source": "lucide",
+      "name": "smartphone",
+      "fill": 0,
+      "class": "approximate",
+      "note": "Lucide smartphone, 2px stroke. Replaces mobile; regular 20px, compact 14px."
+    },
+    "phoneDynamicIslandFilled": {
+      "source": "lucide",
+      "name": "smartphone",
+      "fill": 1,
+      "class": "approximate",
+      "note": "Lucide smartphone, 2px stroke. Replaces mobile; regular 20px, compact 14px. Filled silhouette state."
+    },
+    "phoneFilled": {
+      "source": "lucide",
+      "name": "smartphone",
+      "fill": 1,
+      "class": "direct",
+      "note": "Lucide smartphone, 2px stroke. Replaces mobile_3; regular 20px, compact 14px. Filled silhouette state."
+    },
+    "pin": {
+      "source": "lucide",
+      "name": "pin",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide pin, 2px stroke. Replaces push_pin; regular 20px, compact 14px."
+    },
+    "pinFilled": {
+      "source": "lucide",
+      "name": "pin",
+      "fill": 1,
+      "class": "direct",
+      "note": "Lucide pin, 2px stroke. Replaces push_pin; regular 20px, compact 14px. Filled silhouette state."
+    },
+    "planning": {
+      "source": "lucide",
+      "name": "list-checks",
+      "fill": 0,
+      "class": "approximate",
+      "note": "Lucide list-checks, 2px stroke. Replaces checklist; regular 20px, compact 14px."
+    },
+    "play": {
+      "source": "lucide",
+      "name": "play",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide play, 2px stroke. Replaces play_arrow; regular 20px, compact 14px."
+    },
+    "playCircle": {
+      "source": "lucide",
+      "name": "circle-play",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide circle-play, 2px stroke. Replaces play_circle; regular 20px, compact 14px."
+    },
+    "plusLarge": {
+      "source": "lucide",
+      "name": "plus",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide plus, 2px stroke. Replaces add; regular 20px, compact 14px."
+    },
+    "plusMedium": {
+      "source": "lucide",
+      "name": "plus",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide plus, 2px stroke. Replaces add; regular 20px, compact 14px."
+    },
+    "plusSmall": {
+      "source": "lucide",
+      "name": "plus",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide plus, 2px stroke. Replaces add; regular 20px, compact 14px."
+    },
+    "pullRequest": {
+      "source": "octicons",
+      "name": "git-pull-request",
+      "fill": 0,
+      "class": "identity",
+      "inset": 0.5,
+      "note": "Official GitHub Octicon (git-pull-request-24), inset 0.5. Replaces the CAN-4423 gap decision conversion_path."
+    },
+    "pullRequestClosedSimple": {
+      "source": "octicons",
+      "name": "git-pull-request-closed",
+      "fill": 0,
+      "class": "identity",
+      "inset": 0.5,
+      "note": "Official GitHub Octicon (git-pull-request-closed-24), inset 0.5. Replaces the CAN-4423 gap decision conversion_path_off."
+    },
+    "pullRequestSimple": {
+      "source": "octicons",
+      "name": "git-pull-request",
+      "fill": 0,
+      "class": "identity",
+      "inset": 0.5,
+      "note": "Official GitHub Octicon (git-pull-request-24), inset 0.5. Replaces the CAN-4423 gap decision conversion_path."
+    },
+    "puzzle": {
+      "source": "lucide",
+      "name": "puzzle",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide puzzle, 2px stroke. Replaces extension; regular 20px, compact 14px."
+    },
+    "raisedHand": {
+      "source": "lucide",
+      "name": "hand",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide hand, 2px stroke. Replaces front_hand; regular 20px, compact 14px."
+    },
+    "record": {
+      "source": "lucide",
+      "name": "circle-dot",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide circle-dot, 2px stroke. Replaces radio_button_checked; regular 20px, compact 14px."
+    },
+    "reddit": {
+      "source": "simple-icons",
+      "name": "reddit",
+      "fill": 0,
+      "class": "identity",
+      "inset": 2,
+      "note": "Reddit community mark (Simple Icons, CC0-1.0) for the CAN-447 download confirmation cards. Inset 2: the mark spans the full 24-unit box, so it is padded to Material's 20-unit live area."
+    },
+    "redo": {
+      "source": "lucide",
+      "name": "redo-2",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide redo-2, consolidated from inline app controls; 2px stroke, regular 20px / compact 14px."
+    },
+    "replay": {
+      "source": "lucide",
+      "name": "rotate-ccw",
+      "fill": 0,
+      "class": "approximate",
+      "note": "Lucide rotate-ccw, 2px stroke. Replaces replay; regular 20px, compact 14px."
+    },
+    "requestClosed": {
+      "source": "octicons",
+      "name": "git-pull-request-closed",
+      "fill": 0,
+      "class": "identity",
+      "inset": 0.5,
+      "note": "Official GitHub Octicon (git-pull-request-closed-24), inset 0.5. Replaces the CAN-4423 gap decision conversion_path_off."
+    },
+    "reviewFilled": {
+      "source": "lucide",
+      "name": "star",
+      "fill": 1,
+      "class": "approximate",
+      "note": "Lucide star, 2px stroke. Replaces stars; regular 20px, compact 14px. Filled star silhouette."
+    },
+    "robot": {
+      "source": "lucide",
+      "name": "bot",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide bot, 2px stroke. Replaces smart_toy; regular 20px, compact 14px."
+    },
+    "robot2": {
+      "source": "lucide",
+      "name": "bot",
+      "fill": 0,
+      "class": "approximate",
+      "note": "Lucide bot, 2px stroke. Replaces smart_toy; regular 20px, compact 14px."
+    },
+    "rocket": {
+      "source": "lucide",
+      "name": "rocket",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide rocket, 2px stroke. Replaces rocket_launch; regular 20px, compact 14px."
+    },
+    "runShortcut": {
+      "source": "lucide",
+      "name": "command",
+      "fill": 0,
+      "class": "gap",
+      "note": "Lucide command, 2px stroke. Replaces keyboard_command_key; regular 20px, compact 14px."
+    },
+    "server": {
+      "source": "lucide",
+      "name": "database",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide database, 2px stroke. Replaces storage; regular 20px, compact 14px."
+    },
+    "server2": {
+      "source": "lucide",
+      "name": "database",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide database, 2px stroke. Replaces database; regular 20px, compact 14px."
+    },
+    "settingsGear2": {
+      "source": "lucide",
+      "name": "settings",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide settings, 2px stroke. Replaces settings; regular 20px, compact 14px."
+    },
+    "settingsSliderHor": {
+      "source": "lucide",
+      "name": "sliders-horizontal",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide sliders-horizontal, 2px stroke. Replaces tune; regular 20px, compact 14px."
+    },
+    "shareAndroid": {
+      "source": "lucide",
+      "name": "share-2",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide share-2, 2px stroke. Replaces share; regular 20px, compact 14px."
+    },
+    "shield": {
+      "source": "lucide",
+      "name": "shield",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide shield, 2px stroke. Replaces shield; regular 20px, compact 14px."
+    },
+    "shieldAccess": {
+      "source": "lucide",
+      "name": "shield-alert",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide shield-alert, 2px stroke. Replaces gpp_maybe; regular 20px, compact 14px."
+    },
+    "shieldAi": {
+      "source": "lucide",
+      "name": "shield-check",
+      "fill": 0,
+      "class": "gap",
+      "note": "Lucide shield-check, 2px stroke. Replaces shield_spark; regular 20px, compact 14px."
+    },
+    "shieldCheck": {
+      "source": "lucide",
+      "name": "shield-check",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide shield-check, 2px stroke. Replaces verified_user; regular 20px, compact 14px."
+    },
+    "shieldCheck3": {
+      "source": "lucide",
+      "name": "shield-check",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide shield-check, 2px stroke. Replaces verified_user; regular 20px, compact 14px."
+    },
+    "shimmer": {
+      "source": "canopy",
+      "name": "IconShimmer",
+      "fill": 0,
+      "class": "identity",
+      "note": "Canopy-authored: the earlier Central shimmer (three diagonal waves) redrawn as a 2px Lucide-style stroke. AutoModelIcon; Lucide has no equivalent."
+    },
+    "shortcut": {
+      "source": "lucide",
+      "name": "zap",
+      "fill": 0,
+      "class": "approximate",
+      "note": "Lucide zap, 2px stroke. Replaces offline_bolt; regular 20px, compact 14px."
+    },
+    "sidebar": {
+      "source": "lucide",
+      "name": "panel-right",
+      "fill": 0,
+      "class": "approximate",
+      "note": "Lucide panel-right, 2px stroke. Replaces dock_to_right; regular 20px, compact 14px."
+    },
+    "sidebarHiddenLeftWide": {
+      "source": "lucide",
+      "name": "panel-left",
+      "fill": 0,
+      "class": "approximate",
+      "note": "Lucide panel-left, 2px stroke. Replaces left_panel_open; regular 20px, compact 14px."
+    },
+    "sidebarHiddenRightWide": {
+      "source": "lucide",
+      "name": "panel-right",
+      "fill": 0,
+      "class": "approximate",
+      "note": "Lucide panel-right, 2px stroke. Replaces right_panel_open; regular 20px, compact 14px."
+    },
+    "singleSignOn": {
+      "source": "lucide",
+      "name": "key-round",
+      "fill": 0,
+      "class": "direct",
+      "note": "Shared Lucide replacement for the legacy singleSignOn icon; 2px stroke, regular 20px / compact 14px."
+    },
+    "sparkle": {
+      "source": "lucide",
+      "name": "sparkles",
+      "fill": 0,
+      "class": "approximate",
+      "note": "Lucide sparkles, 2px stroke. Replaces auto_awesome; regular 20px, compact 14px."
+    },
+    "split": {
+      "source": "lucide",
+      "name": "columns-2",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide columns-2, 2px stroke. Replaces view_column_2; regular 20px, compact 14px."
+    },
+    "squareArrowTopRight": {
+      "source": "lucide",
+      "name": "external-link",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide external-link, 2px stroke. Replaces open_in_new; regular 20px, compact 14px."
+    },
+    "squareBehindSquare1": {
+      "source": "lucide",
+      "name": "copy",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide copy, 2px stroke. Replaces content_copy; regular 20px, compact 14px."
+    },
+    "squareChecklist": {
+      "source": "lucide",
+      "name": "list-checks",
+      "fill": 0,
+      "class": "approximate",
+      "note": "Lucide list-checks, 2px stroke. Replaces list_alt_check; regular 20px, compact 14px."
+    },
+    "squarePlus": {
+      "source": "lucide",
+      "name": "square-plus",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide square-plus, 2px stroke. Replaces add_box; regular 20px, compact 14px."
+    },
+    "stackedBarChart": {
+      "source": "lucide",
+      "name": "chart-column-stacked",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide chart-column-stacked, 2px stroke. Replaces stacked_bar_chart; regular 20px, compact 14px."
+    },
+    "star": {
+      "source": "lucide",
+      "name": "star",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide star, consolidated from inline app controls; 2px stroke, regular 20px / compact 14px."
+    },
+    "steer": {
+      "source": "lucide",
+      "name": "chevrons-up",
+      "fill": 0,
+      "class": "direct",
+      "note": "Shared Lucide replacement for the legacy steer icon; 2px stroke, regular 20px / compact 14px."
+    },
+    "stop": {
+      "source": "lucide",
+      "name": "square",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide square, 2px stroke. Replaces stop; regular 20px, compact 14px."
+    },
+    "stopFilled": {
+      "source": "lucide",
+      "name": "square",
+      "fill": 1,
+      "class": "direct",
+      "note": "Lucide square, 2px stroke. Replaces stop; regular 20px, compact 14px. Filled silhouette state."
+    },
+    "stopwatch": {
+      "source": "lucide",
+      "name": "timer",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide timer, 2px stroke. Replaces timer; regular 20px, compact 14px."
+    },
+    "store1": {
+      "source": "lucide",
+      "name": "store",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide store, 2px stroke. Replaces storefront; regular 20px, compact 14px."
+    },
+    "summary": {
+      "source": "lucide",
+      "name": "file-text",
+      "fill": 0,
+      "class": "approximate",
+      "note": "Lucide file-text, 2px stroke. Replaces summarize; regular 20px, compact 14px."
+    },
+    "sun": {
+      "source": "lucide",
+      "name": "sun",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide sun, 2px stroke. Replaces light_mode; regular 20px, compact 14px."
+    },
+    "tag": {
+      "source": "lucide",
+      "name": "tag",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide tag, 2px stroke. Replaces sell; regular 20px, compact 14px."
+    },
+    "textIndentLeft": {
+      "source": "lucide",
+      "name": "indent-increase",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide indent-increase, 2px stroke. Replaces format_indent_increase; regular 20px, compact 14px."
+    },
+    "textIndentRight": {
+      "source": "lucide",
+      "name": "indent-decrease",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide indent-decrease, 2px stroke. Replaces format_indent_decrease; regular 20px, compact 14px."
+    },
+    "thumbsDown": {
+      "source": "lucide",
+      "name": "thumbs-down",
+      "fill": 0,
+      "class": "direct",
+      "note": "Shared Lucide replacement for the legacy thumbsDown icon; 2px stroke, regular 20px / compact 14px."
+    },
+    "thumbsUp": {
+      "source": "lucide",
+      "name": "thumbs-up",
+      "fill": 0,
+      "class": "direct",
+      "note": "Shared Lucide replacement for the legacy thumbsUp icon; 2px stroke, regular 20px / compact 14px."
+    },
+    "trashCan": {
+      "source": "lucide",
+      "name": "trash-2",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide trash-2, 2px stroke. Replaces delete; regular 20px, compact 14px."
+    },
+    "trashPermanently": {
+      "source": "lucide",
+      "name": "trash",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide trash, 2px stroke. Replaces delete_forever; regular 20px, compact 14px."
+    },
+    "unarchive": {
+      "source": "lucide",
+      "name": "archive-restore",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide archive-restore, 2px stroke. Replaces unarchive; regular 20px, compact 14px."
+    },
+    "unfoldMore": {
+      "source": "lucide",
+      "name": "chevrons-up-down",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide chevrons-up-down, 2px stroke. Replaces unfold_more; regular 20px, compact 14px."
+    },
+    "untrash": {
+      "source": "lucide",
+      "name": "archive-restore",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide archive-restore, 2px stroke. Replaces restore_from_trash; regular 20px, compact 14px."
+    },
+    "user": {
+      "source": "lucide",
+      "name": "user-round",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide user-round, 2px stroke. Replaces person; regular 20px, compact 14px."
+    },
+    "userAdd": {
+      "source": "lucide",
+      "name": "user-round-plus",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide user-round-plus, 2px stroke. Replaces person_add; regular 20px, compact 14px."
+    },
+    "userGroup": {
+      "source": "lucide",
+      "name": "users",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide users, 2px stroke. Replaces group; regular 20px, compact 14px."
+    },
+    "vibeCoding": {
+      "source": "lucide",
+      "name": "wand-sparkles",
+      "fill": 0,
+      "class": "gap",
+      "note": "Lucide wand-sparkles, 2px stroke. Replaces code_blocks; regular 20px, compact 14px."
+    },
+    "warningSign": {
+      "source": "lucide",
+      "name": "triangle-alert",
+      "fill": 0,
+      "class": "approximate",
+      "note": "Lucide triangle-alert, 2px stroke. Replaces warning; regular 20px, compact 14px."
+    },
+    "webhooks": {
+      "source": "lucide",
+      "name": "webhook",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide webhook, 2px stroke. Replaces webhook; regular 20px, compact 14px."
+    },
+    "workflows": {
+      "source": "lucide",
+      "name": "workflow",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide workflow, 2px stroke. Replaces automation; regular 20px, compact 14px."
+    },
+    "xSocial": {
+      "source": "simple-icons",
+      "name": "x",
+      "fill": 0,
+      "class": "identity",
+      "inset": 2,
+      "note": "X community mark (Simple Icons, CC0-1.0) for the CAN-447 download confirmation cards. Inset 2: the mark spans the full 24-unit box, so it is padded to Material's 20-unit live area. Keyed xSocial so it cannot collide with the Lucide close X."
+    },
+    "zai": {
+      "source": "lobehub",
+      "name": "zai",
+      "fill": 0,
+      "class": "identity",
+      "inset": 2,
+      "note": "Z.ai mark (LobeHub Icons, MIT). Inset 2: the mark spans the full 24-unit box, so it is padded to Material's 20-unit live area (CAN-4423 captures)."
+    },
+    "zap": {
+      "source": "lucide",
+      "name": "zap",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide zap, 2px stroke. Replaces bolt; regular 20px, compact 14px."
+    },
+    "zapFilled": {
+      "source": "lucide",
+      "name": "zap",
+      "fill": 1,
+      "class": "direct",
+      "note": "Lucide zap, 2px stroke. Replaces bolt; regular 20px, compact 14px. Filled silhouette state."
+    }
+  }
+}

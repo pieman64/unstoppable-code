@@ -1,0 +1,70 @@
+{
+  "pipelines": [
+    {
+      "id": "bundled-refine-plan",
+      "name": "Refine Plan",
+      "filename": "refine-plan.yaml",
+      "description": "Review a plan with GPT-5.6 Sol and Opus, repeating only when Opus makes further edits.",
+      "icon": "📝",
+      "createdAt": "2026-03-17T00:00:00.000Z",
+      "updatedAt": "2026-07-13T00:00:00.000Z",
+      "triggerTypes": ["plan_ready"],
+      "scopes": ["worktree"]
+    },
+    {
+      "id": "bundled-code-review-multi-provider",
+      "name": "Code Review (Multi-Provider)",
+      "filename": "code-review-multi-provider.yaml",
+      "description": "Run the multi-track reviewer workflow and publish the multi-agent style report and PR comments",
+      "icon": "🔎",
+      "createdAt": "2026-06-17T00:00:00.000Z",
+      "updatedAt": "2026-06-24T00:00:00.000Z",
+      "triggerTypes": ["dispatch"],
+      "scopes": ["directory", "worktree"]
+    },
+    {
+      "id": "bundled-code-review-claude",
+      "name": "Code Review (Claude)",
+      "filename": "code-review-claude.yaml",
+      "description": "Run the Claude multi-track reviewer workflow and publish the multi-agent style report and PR comments",
+      "icon": "🔎",
+      "createdAt": "2026-06-18T00:00:00.000Z",
+      "updatedAt": "2026-06-24T00:00:00.000Z",
+      "triggerTypes": ["dispatch"],
+      "scopes": ["directory", "worktree"]
+    },
+    {
+      "id": "bundled-code-review-codex",
+      "name": "Code Review (Codex)",
+      "filename": "code-review-codex.yaml",
+      "description": "Run the Codex multi-track reviewer workflow and publish the multi-agent style report and PR comments",
+      "icon": "🔎",
+      "createdAt": "2026-06-18T00:00:00.000Z",
+      "updatedAt": "2026-06-24T00:00:00.000Z",
+      "triggerTypes": ["dispatch"],
+      "scopes": ["directory", "worktree"]
+    },
+    {
+      "id": "bundled-implementation-autopilot",
+      "name": "Implementation (Autopilot)",
+      "filename": "implementation-autopilot.yaml",
+      "description": "After planning a task, refine, implement, test, and keep going while recording unresolved issues that may need attention.",
+      "icon": "▶",
+      "createdAt": "2026-06-18T00:00:00.000Z",
+      "updatedAt": "2026-06-18T00:00:00.000Z",
+      "triggerTypes": ["plan_ready", "task_ready"],
+      "scopes": ["worktree"]
+    },
+    {
+      "id": "bundled-create-task-implementation-plan",
+      "name": "Create Task Implementation Plan",
+      "filename": "create-task-implementation-plan.yaml",
+      "description": "Generate an implementation plan from a task definition and publish it into the task-ready plan slot.",
+      "icon": "🧭",
+      "createdAt": "2026-04-16T00:00:00.000Z",
+      "updatedAt": "2026-09-22T00:00:00.000Z",
+      "triggerTypes": ["task_ready"],
+      "scopes": ["worktree"]
+    }
+  ]
+}

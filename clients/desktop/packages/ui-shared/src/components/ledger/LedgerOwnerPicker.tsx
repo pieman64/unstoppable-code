@@ -1,0 +1,229 @@
+'use client';
+
+import { useRef, useState, type JSX, type MouseEvent } from 'react';
+import {
+  isSameLedgerPipelinePause,
+  type LedgerOwnerCandidate,
+  type LedgerOwnerPipelineAgent,
+} from '@canopy/protocol/canopy-core/core/ledger';
+import {
+  ledgerOwnerCandidateDescription,
+  ledgerOwnerCandidateTitle,
+} from '../../lib/ledger-display';
+import { Button } from '../Button';
+import {
+  FloatingPickerMenu,
+  PickerMenuFooter,
+  PickerMenuOption,
+  PickerMenuOptionCheck,
+  PickerMenuOptionContent,
+  PickerMenuOptionDescription,
+  PickerMenuOptionLabel,
+  PickerMenuState,
+  PickerTrigger,
+  PickerTriggerChevron,
+  type PickerTriggerVariant,
+} from '../PickerMenu';
+import { LedgerInPlaceTrigger } from './LedgerInPlaceTrigger';
+
+export interface LedgerOwnerPickerProps {
+  /** The current owner's name. */
+  ownerName: string;
+  /** The current owner's actor; null when it is the person ("You"). */
+  ownerActorId: string | null;
+  /**
+   * The pause the current owner was chosen at, when it is a paused pipeline
+   * agent. A later pause of the same agent is then offered as another owner.
+   * Omit when the owner is known only by its actor.
+   */
+  ownerPipelineAgent?: LedgerOwnerPipelineAgent;
+  candidates: readonly LedgerOwnerCandidate[];
+  status: 'idle' | 'loading' | 'ready' | 'problem';
+  /** Reads the candidates; called when the picker opens. */
+  onOpen: () => void;
+  /** The chosen owner; null is the person ("You"). */
+  onSelect: (candidate: LedgerOwnerCandidate | null) => void;
+  /** A change is being saved; the picker waits for it. */
+  saving?: boolean;
+  /** Why no owner can be chosen yet, such as no task chosen; it waits. */
+  disabledReason?: string;
+  /** `field` inside a form, `capsule` beside details, or `inline` on a row. */
+  variant?: PickerTriggerVariant | 'inline';
+  /** Names the trigger for screen readers when no visible label does. */
+  'aria-label'?: string;
+  /** The visible label that names the trigger, inside a form. */
+  'aria-labelledby'?: string;
+  id?: string;
+}
+
+/**
+ * Chooses who owns an entry: the person ("You", always offered), the scope's
+ * chats, retained delegates and paused pipeline agents. Each row is one line;
+ * a pipeline agent names its exact run, job and step, and its full locator,
+ * checkpoint included, is in the row's tooltip.
+ */
+export function LedgerOwnerPicker({
+  ownerName,
+  ownerActorId,
+  ownerPipelineAgent,
+  candidates,
+  status,
+  onOpen,
+  onSelect,
+  saving = false,
+  disabledReason,
+  variant = 'capsule',
+  'aria-label': ariaLabel,
+  'aria-labelledby': ariaLabelledBy,
+  id,
+}: LedgerOwnerPickerProps): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const self = candidates.find((candidate) => candidate.isSelf);
+  const others = candidates.filter((candidate) => !candidate.isSelf);
+  const inlineAriaLabel =
+    ariaLabel === undefined ? `Change owner, now ${ownerName}` : ariaLabel;
+  const onTriggerClick = (event: MouseEvent<HTMLButtonElement>): void => {
+    event.stopPropagation();
+    if (!open) onOpen();
+    setOpen((previous) => !previous);
+  };
+  const youSelected =
+    ownerActorId === null ||
+    (self !== undefined && self.actor.actorId === ownerActorId);
+  return (
+    <div
+      className={
+        // Inline, a flex box: the trigger sets the height and no line box does.
+        variant === 'inline' ? 'relative flex min-w-0' : 'relative min-w-0'
+      }
+    >
+      {variant === 'inline' ? (
+        <LedgerInPlaceTrigger
+          ref={triggerRef}
+          id={id}
+          disabled={saving || disabledReason !== undefined}
+          title={disabledReason}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          aria-label={inlineAriaLabel}
+          data-testid="ledger-owner-picker"
+          // The trigger's -mx-1 makes its wrapper 0.5rem narrower than it;
+          // `max-w-full` alone would cut a short name such as You.
+          className="min-w-0 max-w-[calc(100%+0.5rem)]"
+          onClick={onTriggerClick}
+        >
+          <span className="flex min-w-0 items-center gap-1 text-2xs">
+            <span className="shrink-0 fg-tertiary">Owner:</span>
+            <span className="min-w-0 truncate fg-secondary">{ownerName}</span>
+          </span>
+        </LedgerInPlaceTrigger>
+      ) : (
+        <PickerTrigger
+          ref={triggerRef}
+          id={id}
+          variant={variant}
+          disabled={saving || disabledReason !== undefined}
+          title={disabledReason}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          aria-label={ariaLabel}
+          aria-labelledby={ariaLabelledBy}
+          data-testid="ledger-owner-picker"
+          className={
+            variant === 'capsule' ? '-mx-2.5' : 'w-full justify-between'
+          }
+          onClick={onTriggerClick}
+        >
+          <span className="truncate">{ownerName}</span>
+          <PickerTriggerChevron open={open} variant={variant} />
+        </PickerTrigger>
+      )}
+      <FloatingPickerMenu
+        open={open}
+        onOpenChange={setOpen}
+        anchorRef={triggerRef}
+        placement="bottom-left"
+        heightLimit={360}
+        interaction="menu"
+        // Wide enough for a pipeline agent's run, job and step on one line.
+        minimumWidth="17.5rem"
+        maximumWidth="22rem"
+        data-testid="ledger-owner-menu"
+      >
+        <PickerMenuOption
+          role="menuitemradio"
+          aria-checked={youSelected}
+          selected={youSelected}
+          data-testid="ledger-owner-option-you"
+          onClick={() => {
+            if (!youSelected) onSelect(self ?? null);
+          }}
+        >
+          <PickerMenuOptionContent>
+            <PickerMenuOptionLabel>You</PickerMenuOptionLabel>
+          </PickerMenuOptionContent>
+          <PickerMenuOptionCheck selected={youSelected} />
+        </PickerMenuOption>
+        {status === 'loading' && (
+          <PickerMenuState data-testid="ledger-owner-loading">
+            Loading owners…
+          </PickerMenuState>
+        )}
+        {status === 'problem' && (
+          <PickerMenuState data-testid="ledger-owner-problem">
+            <span className="flex-1">Couldn&apos;t load owners.</span>
+            <Button type="button" variant="ghost" size="sm" onClick={onOpen}>
+              Try again
+            </Button>
+          </PickerMenuState>
+        )}
+        {status === 'ready' && others.length === 0 && (
+          <PickerMenuState>No chats or agents to assign yet.</PickerMenuState>
+        )}
+        {others.map((candidate) => {
+          const selected =
+            candidate.actor.actorId === ownerActorId &&
+            (ownerPipelineAgent === undefined ||
+              isSameLedgerPipelinePause(
+                ownerPipelineAgent,
+                candidate.pipelineAgent,
+              ));
+          const description = ledgerOwnerCandidateDescription(candidate);
+          return (
+            <PickerMenuOption
+              key={candidate.actor.actorId}
+              role="menuitemradio"
+              aria-checked={selected}
+              selected={selected}
+              title={ledgerOwnerCandidateTitle(candidate)}
+              data-testid="ledger-owner-option"
+              data-owner-kind={candidate.actor.kind}
+              data-actor-id={candidate.actor.actorId}
+              onClick={() => {
+                if (!selected) onSelect(candidate);
+              }}
+            >
+              <PickerMenuOptionContent>
+                <PickerMenuOptionLabel>
+                  {candidate.displayName}
+                </PickerMenuOptionLabel>
+                {description.length > 0 && (
+                  <PickerMenuOptionDescription>
+                    {description}
+                  </PickerMenuOptionDescription>
+                )}
+              </PickerMenuOptionContent>
+              <PickerMenuOptionCheck selected={selected} />
+            </PickerMenuOption>
+          );
+        })}
+        <PickerMenuFooter>
+          <p className="px-2 py-1 text-2xs fg-tertiary">
+            Assigning this entry does not start the session.
+          </p>
+        </PickerMenuFooter>
+      </FloatingPickerMenu>
+    </div>
+  );
+}

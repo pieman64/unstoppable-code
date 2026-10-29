@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Transformed frame owners</title>
+    <style>
+      body { margin: 0; }
+      iframe { position: absolute; border: 0; }
+      /* Out-of-process, scaled about its center, with border and padding. */
+      #scaled { left: 60px; top: 50px; width: 200px; height: 90px; border: 4px solid #333; padding: 3px 5px; transform: scale(1.5); }
+      /* Same-process, inside a scaled ancestor. */
+      #scaled-parent { position: absolute; left: 400px; top: 20px; transform: scale(0.5); transform-origin: 0 0; }
+      #in-scaled { position: static; width: 240px; height: 120px; }
+      /* A scaled frame with a nested frame inside it. */
+      #outer { left: 20px; top: 220px; width: 300px; height: 180px; transform: scale(1.25); transform-origin: 0 0; }
+      /* Not axis-aligned or mirrored: omitted, with any frame inside. */
+      #rotated { left: 560px; top: 260px; width: 300px; height: 180px; transform: rotate(12deg); }
+      #mirrored { left: 900px; top: 60px; width: 200px; height: 90px; transform: scaleX(-1); }
+    </style>
+  </head>
+  <body>
+    <button type="button" id="main-button">Main button</button>
+    <iframe id="scaled" src="__CHILD_ORIGIN__/transforms-child.html?id=scaled"></iframe>
+    <div id="scaled-parent"><iframe id="in-scaled" src="transforms-child.html?id=in-scaled"></iframe></div>
+    <iframe id="outer" src="transforms-outer.html?id=outer"></iframe>
+    <iframe id="rotated" src="transforms-outer.html?id=rotated"></iframe>
+    <iframe id="mirrored" src="transforms-child.html?id=mirrored"></iframe>
+  </body>
+</html>

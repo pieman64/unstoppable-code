@@ -1,0 +1,17 @@
+{
+  "extends": "../../../../tsconfig.base.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": false,
+    "noEmit": true,
+    "target": "ES2022",
+    "types": ["node", "@playwright/test"]
+  },
+  "include": [
+    "**/*.capture-spec.ts",
+    "**/*.demo-spec.ts",
+    "../../src/brand-defines.d.ts",
+    "../../src/preload/index.d.ts",
+    "../../../../packages/desktop-shared/src/build-constants.d.ts"
+  ]
+}

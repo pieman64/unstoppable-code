@@ -1,0 +1,9 @@
+name: builtin-gh
+version: 1.0.0
+description: Built-in GitHub and pull request workflow skills for {{BRAND_DISPLAY_NAME}}.
+author:
+  name: '{{BRAND_DISPLAY_NAME}}'
+category: development
+targets:
+  codex:
+    category: Development

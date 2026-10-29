@@ -1,0 +1,112 @@
+pipeline:
+  name: 'Create Task Implementation Plan'
+  version: '3.0'
+  description: 'Generate an implementation plan from a task definition and publish it to the task-ready plan slot.'
+  icon: '🧭'
+  readonly: true
+  scope: worktree
+  on:
+    task_ready:
+      inputs:
+        model:
+          type: choice
+          description: Choose the planning model.
+          options:
+            - opus
+            - $fast
+            - $default-codex
+          default: $default-codex
+
+  jobs:
+    plan:
+      name: Create Plan
+      outputs:
+        plan_path: ${{ steps.publish_plan.outputs.plan_path }}
+      steps:
+        - id: create_plan
+          name: Draft Implementation Plan
+          uses: builtin/agent-prompt
+          with:
+            model: ${{ inputs.model }}
+            thinking_effort: xhigh
+            permission_preset: plan
+            prompt_file: ${{ {{BRAND_EXPRESSION_ROOT}}.event.task_ready.task_path }}
+
+        - id: publish_plan
+          name: Publish Generated Plan
+          shell: node
+          run: |
+            import fs from 'node:fs';
+            import path from 'node:path';
+
+            const sourcePlan = (process.env.SOURCE_PLAN ?? '').trim();
+            const targetPlan = (process.env.TARGET_PLAN ?? '').trim();
+            const {{BRAND_OUTPUT_VARIABLE_NAME}} = process.env.{{BRAND_ENV_PREFIX}}_OUTPUT ?? '';
+
+            if (!{{BRAND_OUTPUT_VARIABLE_NAME}}) {
+              throw new Error('{{BRAND_ENV_PREFIX}}_OUTPUT is required');
+            }
+            if (!sourcePlan || !fs.existsSync(sourcePlan)) {
+              throw new Error('Expected a proposed plan file but none was produced');
+            }
+            if (!targetPlan) {
+              throw new Error('Task-ready plan path is required');
+            }
+
+            fs.mkdirSync(path.dirname(targetPlan), { recursive: true });
+            fs.copyFileSync(sourcePlan, targetPlan);
+            fs.appendFileSync({{BRAND_OUTPUT_VARIABLE_NAME}}, `plan_path=${targetPlan}\n`, 'utf8');
+          env:
+            SOURCE_PLAN: ${{ steps.create_plan.outputs.proposed_plan_file }}
+            TARGET_PLAN: ${{ {{BRAND_EXPRESSION_ROOT}}.event.task_ready.plan_path }}
+
+    summary:
+      name: Summarize Plan
+      needs: plan
+      continue_on_error: true
+      steps:
+        - id: summarize
+          name: Summarize Generated Plan
+          uses: builtin/agent-prompt
+          with:
+            model: ${{ inputs.model }}
+            permission_preset: read_only
+            prompt: |
+              Summarize the generated implementation plan in 1 short paragraph.
+
+              Read:
+              - the task definition at `${{ {{BRAND_EXPRESSION_ROOT}}.event.task_ready.task_path }}`
+              - the published plan at `${{ {{BRAND_EXPRESSION_ROOT}}.event.task_ready.plan_path }}`
+
+              Include:
+              - whether the plan job succeeded
+              - whether the plan was published to the allocated task-ready plan path
+              - the overall scope of the generated plan
+
+              <execution>
+              plan.result=${{ needs.plan.result }}
+              plan.path=${{ {{BRAND_EXPRESSION_ROOT}}.event.task_ready.plan_path }}
+              </execution>
+
+        - id: prepare_report
+          name: Prepare {{BRAND_DISPLAY_NAME}} Report Content
+          shell: node
+          run: |
+            import fs from 'node:fs';
+
+            const summarizeOutputs = ${{ toJson(steps.summarize.outputs) }};
+            const summaryPath = String(summarizeOutputs.text_response_file ?? '').trim();
+            const content = fs.readFileSync(summaryPath, 'utf8');
+
+            fs.appendFileSync(
+              process.env.{{BRAND_ENV_PREFIX}}_OUTPUT ?? '',
+              `report_content_json=${JSON.stringify(content)}\n`,
+              'utf8',
+            );
+
+        - id: publish_report
+          name: Publish Summary Report
+          uses: builtin/{{BRAND_REPORT_ACTION_ID}}
+          with:
+            format: text
+            content: ${{ parseJson(steps.prepare_report.outputs.report_content_json) }}

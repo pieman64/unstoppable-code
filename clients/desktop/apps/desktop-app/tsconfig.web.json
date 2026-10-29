@@ -1,0 +1,37 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "jsx": "react-jsx",
+    "outDir": "out",
+    "rootDir": "../.."
+  },
+  "include": [
+    "src/main/pipelines/executor/types.ts",
+    "src/renderer/src/**/*.ts",
+    "src/renderer/src/**/*.tsx",
+    "src/renderer/src/**/*.d.ts",
+    "src/preload/**/*.d.ts",
+    "src/shared/**/*.ts",
+    "src/preload/ipc-router.ts",
+    "src/brand-defines.d.ts",
+    "../../.cache/brand/**/*.ts"
+  ],
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx",
+    "src/**/__tests__/**",
+    "../../packages/desktop-shared/src/node/**"
+  ],
+  "references": [
+    { "path": "../../packages/protocol" },
+    { "path": "../../packages/agent-transcript" },
+    { "path": "../../packages/app-core" },
+    { "path": "../../packages/app-state" },
+    { "path": "../../packages/desktop-shared" },
+    { "path": "../../packages/desktop-instrumentation" },
+    { "path": "../../packages/ui-shared" },
+    { "path": "../../packages/ui-rich" },
+    { "path": "../../packages/ui-app" }
+  ]
+}

@@ -1,0 +1,2099 @@
+import { randomUUID as cryptoRandomUUID } from 'node:crypto';
+import type { DatabaseSync, StatementSync } from 'node:sqlite';
+import { z } from 'zod';
+
+import {
+  LEDGER_LIMITS,
+  LedgerCommandReceiptSchema,
+  LedgerEntrySchema,
+  LedgerMutationSchema,
+  LedgerSequenceSchema,
+  LedgerTitleSchema,
+  LedgerUuidSchema,
+  toLedgerEntrySearchItem,
+  type LedgerActorRef,
+  type LedgerChangesListResult,
+  type LedgerCommandReceipt,
+  type LedgerContainer,
+  type LedgerEntry,
+  type LedgerEntryGetResult,
+  type LedgerMutation,
+  type LedgerSourceAvailability,
+  type LedgerSyncState,
+} from '@canopy/protocol/canopy-core';
+
+import {
+  decodeLedgerCursor,
+  encodeLedgerCursor,
+  isLedgerCursorFresh,
+  type LedgerCursorState,
+} from './cursor';
+import {
+  LEDGER_DEFAULT_OPEN_BUSY_TIMEOUT_MS,
+  closeQuietly,
+  openExclusiveLedgerDatabase,
+  rollbackQuietly,
+} from './database';
+import { LedgerStoreError, toLedgerStoreError } from './errors';
+import {
+  sha256Hex,
+  toCanonicalJson,
+  type LedgerCanonicalValue,
+} from './hashing';
+import {
+  canPurgeLedgerScope,
+  canRebindLedgerScope,
+  isLedgerScopeWritable,
+  ledgerScopeLifecycleRejection,
+  ledgerScopeLifecycleStep,
+} from './lifecycle';
+import {
+  canLedgerActorOwn,
+  checkLedgerAttribution,
+  checkLedgerCreation,
+  evaluateLedgerUpdate,
+  type LedgerPolicyViolation,
+  type LedgerStatusChange,
+  type LedgerOwnerChange,
+  type LedgerUpdateRejection,
+} from './policy';
+import {
+  actorFromRow,
+  parseLedgerInput,
+  parseStoredEntry,
+  parseStoredRecord,
+  scopeFromRow,
+  type LedgerScopeState,
+} from './records';
+import {
+  assertSameLedgerActorRegistration,
+  parseLedgerActorRegistration,
+  parseLedgerContainerColumns,
+  parseLedgerIdInput,
+  parseLedgerScopeBinding,
+  parseLedgerScopeIdentity,
+  parseLedgerScopeLifecycleChange,
+  parseLedgerScopeRebinding,
+  type LedgerActorRegistration,
+  type LedgerScopeBinding,
+  type LedgerScopeIdentity,
+} from './registrations';
+import {
+  normalizeAddEntryRequest,
+  normalizeReceiptKeysRequest,
+  normalizeSummaryRequest,
+  normalizeUpdateEntryRequest,
+  type LedgerCreateRequest,
+  type LedgerEntryDraft,
+  type LedgerReceiptKey,
+  type LedgerUpdateRequest,
+} from './requests';
+import {
+  rowInteger,
+  rowNullableText,
+  rowText,
+  type LedgerSqlRow,
+} from './rows';
+import {
+  createEphemeralLedgerCursorSecret,
+  migrateLedgerSchema,
+  readLedgerAuthorityId,
+  readLedgerCursorSecret,
+} from './schema';
+import {
+  buildLedgerSearchPageStatement,
+  normalizeLedgerSearch,
+  type LedgerNormalizedSearch,
+  type LedgerSearchPagePosition,
+} from './search';
+import {
+  LEDGER_PURGE_SCOPE_SQL,
+  LEDGER_SQL,
+  type LedgerCountedTable,
+} from './statements';
+import {
+  LEDGER_UNSYNCED_SCOPE,
+  ledgerSyncStateAt,
+  outboxEventFromRow,
+  parseAcknowledgeOutboxInput,
+  parseMirrorAudienceInput,
+  parseReadOutboxInput,
+  parseRebindAccountInput,
+  parseScopeRepairInput,
+  scopeSyncFromRow,
+  takeOutboxBatch,
+  toScopeSyncRecord,
+  type LedgerStoredScopeSync,
+} from './sync';
+import { toLedgerTimestamp } from './time';
+import type {
+  LedgerAcknowledgeOutboxInput,
+  LedgerActorRecord,
+  LedgerAddEntryInput,
+  LedgerBindScopeInput,
+  LedgerBindScopeResult,
+  LedgerFindScopeInput,
+  LedgerGetEntryInput,
+  LedgerListChangesInput,
+  LedgerListReceiptKeysInput,
+  LedgerOutboxEventRecord,
+  LedgerPendingTitleRecord,
+  LedgerPublishSummaryInput,
+  LedgerPurgeScopeResult,
+  LedgerReadOutboxInput,
+  LedgerRecordPendingTitleAttemptInput,
+  LedgerRebindAccountInput,
+  LedgerRebindAccountResult,
+  LedgerRebindScopeInput,
+  LedgerRecordMirrorAudienceInput,
+  LedgerRegisterActorInput,
+  LedgerRegisterActorResult,
+  LedgerResolvePendingTitleInput,
+  LedgerResolvePendingTitleResult,
+  LedgerRepositoryOptions,
+  LedgerSchemaStatus,
+  LedgerScopeLifecycleState,
+  LedgerScopeRecord,
+  LedgerScopeSyncRecord,
+  LedgerSearchEntriesInput,
+  LedgerSearchEntriesResult,
+  LedgerSetScopeLifecycleInput,
+  LedgerSetScopeRepairInput,
+  LedgerSourceAvailabilityResolver,
+  LedgerStorageCounts,
+  LedgerStoreOperation,
+  LedgerUpdateEntryInput,
+} from './types';
+
+const SCOPE_SEQUENCE_TEXT = /^(0|[1-9][0-9]{0,15})$/;
+
+const LedgerEntryOutboxPayloadSchema = z.strictObject({
+  entry: LedgerEntrySchema,
+  mutation: LedgerMutationSchema,
+  publication: z.strictObject({ sourceTruncated: z.boolean() }).optional(),
+});
+
+/**
+ * Archive and restore (including a rebind) are replicated so the mirror can
+ * tell archived scopes apart. Retirement is not: the purge that follows
+ * removes the scope's outbox, and v1 keeps no cloud tombstone.
+ */
+type LedgerScopeLifecycleEventKind = 'scope_archived' | 'scope_restored';
+
+type LedgerOutboxKind =
+  | 'scope_registered'
+  | 'actor_registered'
+  | 'entry_revision'
+  | LedgerScopeLifecycleEventKind;
+
+const SCOPE_LIFECYCLE_EVENT_KIND: {
+  readonly [State in LedgerScopeLifecycleState]: LedgerScopeLifecycleEventKind | null;
+} = {
+  active: 'scope_restored',
+  archived: 'scope_archived',
+  retirement_pending: null,
+};
+
+interface LedgerOutboxEvent {
+  readonly ledgerId: string;
+  readonly sequence: number;
+  readonly kind: LedgerOutboxKind;
+  readonly entryId: string | null;
+  readonly entryRevision: number | null;
+  readonly occurredAt: string;
+  readonly payload: LedgerCanonicalValue;
+}
+
+interface LedgerCurrentEntry {
+  readonly entryRowid: number;
+  /** The scope sequence of the entry's current revision. */
+  readonly sequence: number;
+  readonly entry: LedgerEntry;
+}
+
+/** A search row: the version shown and the sequence it was committed at. */
+interface LedgerSearchRow {
+  readonly entry: LedgerEntry;
+  readonly sequence: number;
+}
+
+interface LedgerRevisionWrite {
+  /** The account the scope syncs to; null for a scope that never does. */
+  readonly accountId: string | null;
+  readonly entryRowid: number;
+  readonly entry: LedgerEntry;
+  readonly mutation: LedgerMutation;
+  readonly sequence: number;
+  readonly receiptKey: LedgerReceiptKey;
+  readonly requestHash: string;
+  readonly publication: LedgerEntryDraft['publication'];
+}
+
+interface LedgerEntryChange {
+  readonly status: LedgerStatusChange | null;
+  readonly owner: LedgerOwnerChange | null;
+}
+
+function pendingTitleFromRow(row: LedgerSqlRow): LedgerPendingTitleRecord {
+  return {
+    entryId: rowText(row, 'entry_id'),
+    ledgerId: rowText(row, 'ledger_id'),
+    createdAt: rowText(row, 'created_at'),
+    attempts: rowInteger(row, 'attempts'),
+    lastAttemptAt: rowNullableText(row, 'last_attempt_at'),
+  };
+}
+
+type LedgerHistoryPage = NonNullable<LedgerEntryGetResult['history']>;
+
+function assertScopeWritable(scope: LedgerScopeState): void {
+  if (!isLedgerScopeWritable(scope.record.lifecycleState)) {
+    throw new LedgerStoreError('SCOPE_RETIRED');
+  }
+}
+
+/** A refused lifecycle move; see `ledgerScopeLifecycleRejection`. */
+function lifecycleRejection(from: LedgerScopeLifecycleState): LedgerStoreError {
+  const reason = ledgerScopeLifecycleRejection(from);
+  return new LedgerStoreError(
+    reason,
+    reason === 'FORBIDDEN' ? { field: 'ledgerId' } : {},
+  );
+}
+
+/**
+ * A stored projection keeps the scope it was written under, and a rebind may
+ * have moved that scope to a restored container since. Reads report the
+ * scope's current identity; stored versions and receipts stay as written.
+ */
+function withCurrentScope(
+  entry: LedgerEntry,
+  scope: LedgerScopeState,
+): LedgerEntry {
+  return { ...entry, scope: scope.record.scope };
+}
+
+function throwIfViolation(violation: LedgerPolicyViolation | null): void {
+  if (violation !== null) {
+    throw new LedgerStoreError(violation.reason, { field: violation.field });
+  }
+}
+
+function buildNewEntry(
+  scope: LedgerScopeState,
+  draft: LedgerEntryDraft,
+  entryId: string,
+  createdAt: string,
+): LedgerEntry {
+  return {
+    schemaVersion: 1,
+    entryId,
+    scope: scope.record.scope,
+    createdAt,
+    updatedAt: createdAt,
+    revision: 1,
+    author: draft.author,
+    authorDetails: draft.authorDetails,
+    owner: draft.owner,
+    type: draft.type,
+    title: draft.title,
+    content: draft.content,
+    highlights: draft.highlights,
+    referenceFiles: draft.referenceFiles,
+    status: draft.status,
+    origin: draft.origin,
+    attribution: draft.attribution,
+    ...(draft.supersedesEntryId === undefined
+      ? {}
+      : { supersedesEntryId: draft.supersedesEntryId }),
+  };
+}
+
+function updateRejection(
+  reason: LedgerUpdateRejection,
+  field: string | undefined,
+  entry: LedgerEntry,
+): LedgerStoreError {
+  // Conflicts carry the current projection so the caller can reconsider; a
+  // permission failure does not.
+  return new LedgerStoreError(reason, {
+    field,
+    ...(reason === 'FORBIDDEN' ? {} : { currentEntry: entry }),
+  });
+}
+
+/** `updatedAt` never moves backwards, even if the clock does. */
+function laterTimestamp(candidate: string, previous: string): string {
+  return Date.parse(candidate) >= Date.parse(previous) ? candidate : previous;
+}
+
+function pageLimit(
+  value: number | undefined,
+  fallback: number,
+  max: number,
+  field: string,
+): number {
+  if (value === undefined) return fallback;
+  if (!Number.isSafeInteger(value) || value < 1 || value > max) {
+    throw new LedgerStoreError('INVALID_INPUT', { field, limit: max });
+  }
+  return value;
+}
+
+function parseScopeSequence(value: string): number | null {
+  if (!SCOPE_SEQUENCE_TEXT.test(value)) return null;
+  const sequence = Number(value);
+  return Number.isSafeInteger(sequence) ? sequence : null;
+}
+
+function cursorExpired(field: string): LedgerStoreError {
+  return new LedgerStoreError('CURSOR_EXPIRED', { field });
+}
+
+function availableSource(): LedgerSourceAvailability {
+  return 'available';
+}
+
+function sourceAvailability(
+  resolver: LedgerSourceAvailabilityResolver | undefined,
+  entry: LedgerEntry,
+): LedgerSourceAvailability {
+  return (resolver ?? availableSource)(entry);
+}
+
+/**
+ * The local Agent Ledger store: one exclusive, single-writer `node:sqlite`
+ * connection.
+ *
+ * Every command (`bindScope`, `registerActor`, `addEntry`, `updateEntry`,
+ * `publishSummary`, and the lifecycle commands `setScopeLifecycle`,
+ * `rebindScope` and `purgeScope`) runs in exactly one `BEGIN IMMEDIATE`
+ * transaction and commits before it returns; any failure rolls the whole
+ * command back. Entry commands look up their idempotency receipt before any
+ * other check, so an exact replay returns the stored receipt even after the
+ * entry became terminal or its scope was archived or rebound.
+ *
+ * Every method is synchronous, so the host must run the repository off the
+ * Electron main event loop (the desktop uses a storage worker thread). Nothing
+ * here logs; errors are `LedgerStoreError`s whose messages carry no entry
+ * text, paths or identifiers.
+ */
+export class LedgerRepository {
+  /** Schema state found at open. */
+  readonly schema: LedgerSchemaStatus;
+  /**
+   * The writer authority minted with this database. The host binds scopes
+   * and registers actors under it, so every ID this store issues is
+   * qualified by the database that wrote it.
+   */
+  readonly authorityId: string;
+  private database: DatabaseSync | null;
+  private readonly now: () => Date;
+  private readonly randomUUID: () => string;
+  private readonly beforeCommit: LedgerRepositoryOptions['beforeCommit'];
+  private readonly cursorSecret: Buffer;
+  private readonly statements = new Map<string, StatementSync>();
+  private activeOperation: LedgerStoreOperation | null = null;
+
+  private constructor(
+    database: DatabaseSync,
+    options: LedgerRepositoryOptions,
+    schema: LedgerSchemaStatus,
+    cursorSecret: Buffer,
+    authorityId: string,
+  ) {
+    this.database = database;
+    this.authorityId = authorityId;
+    this.now = options.now ?? ((): Date => new Date());
+    this.randomUUID = options.randomUUID ?? ((): string => cryptoRandomUUID());
+    this.beforeCommit = options.beforeCommit;
+    this.schema = schema;
+    this.cursorSecret = cursorSecret;
+  }
+
+  /**
+   * Opens (creating and migrating when needed) the database at
+   * `options.databasePath` and takes its exclusive write lock.
+   *
+   * Fails with `WRITER_UNAVAILABLE` when another connection holds the
+   * database past `openBusyTimeoutMs`, having written nothing, and with
+   * `STORAGE_UNAVAILABLE` for other open failures (the file is never
+   * recreated). A database from a newer build opens read-only: reads work
+   * and every command fails `UNSUPPORTED_SCHEMA`.
+   */
+  static open(options: LedgerRepositoryOptions): LedgerRepository {
+    const now = options.now ?? ((): Date => new Date());
+    const database = openExclusiveLedgerDatabase(
+      options.databasePath,
+      options.openBusyTimeoutMs ?? LEDGER_DEFAULT_OPEN_BUSY_TIMEOUT_MS,
+    );
+    try {
+      const migration = migrateLedgerSchema(database, {
+        createdAt: toLedgerTimestamp(now()),
+      });
+      if (migration.newer) database.exec('PRAGMA query_only = ON');
+      const secret =
+        readLedgerCursorSecret(database) ??
+        (migration.newer ? createEphemeralLedgerCursorSecret() : null);
+      if (secret === null) {
+        throw new LedgerStoreError('STORAGE_UNAVAILABLE', {
+          diagnosticCode: 'cursor_secret',
+        });
+      }
+      const authorityId = readLedgerAuthorityId(database);
+      if (authorityId === null) {
+        throw new LedgerStoreError('STORAGE_UNAVAILABLE', {
+          diagnosticCode: 'authority_id',
+        });
+      }
+      return new LedgerRepository(
+        database,
+        options,
+        { version: migration.version, readOnly: migration.newer },
+        secret,
+        authorityId,
+      );
+    } catch (error) {
+      closeQuietly(database);
+      throw toLedgerStoreError(error, 'STORAGE_UNAVAILABLE');
+    }
+  }
+
+  get isOpen(): boolean {
+    return this.database !== null;
+  }
+
+  /** Closes the connection and releases the lock. Safe to call twice. */
+  close(): void {
+    const database = this.database;
+    if (database === null) return;
+    if (this.activeOperation !== null) {
+      throw new LedgerStoreError('STORAGE_UNAVAILABLE', {
+        diagnosticCode: 'close_during_command',
+      });
+    }
+    this.database = null;
+    this.statements.clear();
+    try {
+      database.close();
+    } catch (error) {
+      throw toLedgerStoreError(error, 'STORAGE_UNAVAILABLE');
+    }
+  }
+
+  /**
+   * Returns the ledger bound to a container incarnation, minting it on first
+   * use. The key is the container tuple plus the container's creation time;
+   * a reused container ID with a different creation time gets a new ledger.
+   * The account is recorded only when the ledger is minted and is never
+   * rebound here. Binding an existing ledger under another authority fails
+   * `FORBIDDEN`.
+   */
+  bindScope(input: LedgerBindScopeInput): LedgerBindScopeResult {
+    return this.command('bindScope', (): LedgerBindScopeResult => {
+      const binding = parseLedgerScopeBinding(input);
+      const existing = this.selectScopeByIdentity(binding);
+      if (existing === null) {
+        return { scope: this.insertScope(binding), created: true };
+      }
+      if (existing.record.scope.authorityId !== binding.authorityId) {
+        throw new LedgerStoreError('FORBIDDEN', { field: 'authorityId' });
+      }
+      return { scope: existing.record, created: false };
+    });
+  }
+
+  /** Looks up a container incarnation's ledger without minting one. */
+  findScope(input: LedgerFindScopeInput): LedgerScopeRecord | null {
+    return this.query(
+      (): LedgerScopeRecord | null =>
+        this.selectScopeByIdentity(
+          parseLedgerScopeIdentity(input.container, input.containerCreatedAt),
+        )?.record ?? null,
+    );
+  }
+
+  getScope(ledgerId: string): LedgerScopeRecord | null {
+    return this.query(
+      (): LedgerScopeRecord | null =>
+        this.selectScope(ledgerId)?.record ?? null,
+    );
+  }
+
+  /** Every scope, in the order the scopes were minted. */
+  listScopes(): LedgerScopeRecord[] {
+    return this.query((): LedgerScopeRecord[] =>
+      this.prepare(LEDGER_SQL.listScopes)
+        .all()
+        .map((row) => scopeFromRow(row).record),
+    );
+  }
+
+  /**
+   * The scopes bound to any incarnation of one container, in the order the
+   * scopes were minted. A scope rebound to a restored container is listed
+   * under that container, no longer under the one it was minted for.
+   */
+  findContainerScopes(container: LedgerContainer): LedgerScopeRecord[] {
+    return this.query((): LedgerScopeRecord[] => {
+      const columns = parseLedgerContainerColumns(container);
+      return this.prepare(LEDGER_SQL.listContainerScopes)
+        .all(columns.kind, columns.parentId, columns.itemId)
+        .map((row) => scopeFromRow(row).record);
+    });
+  }
+
+  /**
+   * Moves a scope along its lifecycle (see `lifecycle.ts`): `archived`,
+   * `active` again, or `retirement_pending`. Requesting the current state
+   * changes nothing. Archive and restore append a replication event;
+   * retirement does not. Fails, changing nothing, with `NOT_FOUND` for an
+   * unknown scope and `SCOPE_RETIRED` for a move out of `retirement_pending`.
+   */
+  setScopeLifecycle(input: LedgerSetScopeLifecycleInput): LedgerScopeRecord {
+    return this.command('setScopeLifecycle', (): LedgerScopeRecord => {
+      const change = parseLedgerScopeLifecycleChange(input);
+      const scope = this.requireScope(change.ledgerId);
+      const from = scope.record.lifecycleState;
+      switch (ledgerScopeLifecycleStep(from, change.state)) {
+        case 'unchanged':
+          return scope.record;
+        case 'forbidden':
+          throw lifecycleRejection(from);
+        case 'transition':
+          this.prepare(LEDGER_SQL.updateScopeLifecycle).run(
+            change.state,
+            scope.ledgerId,
+          );
+          return this.recordScopeLifecycleEvent(scope.ledgerId, change.state);
+      }
+    });
+  }
+
+  /**
+   * Points an archived scope at the restored incarnation of its container and
+   * makes it active again. Its ledger ID, entries, revisions, mutations,
+   * receipts and actors stay; entry reads report the new container, while
+   * stored versions and receipts are not rewritten, so an exact replay still
+   * returns its original response. The old incarnation no longer has a
+   * ledger, and repeating a completed rebind changes nothing.
+   *
+   * Fails, changing nothing, with `NOT_FOUND` for an unknown scope,
+   * `INVALID_INPUT` for another container kind, `SCOPE_RETIRED` for a
+   * retiring scope, and `FORBIDDEN` for an active scope or for an incarnation
+   * that already has a ledger of its own.
+   */
+  rebindScope(input: LedgerRebindScopeInput): LedgerScopeRecord {
+    return this.command('rebindScope', (): LedgerScopeRecord => {
+      const rebinding = parseLedgerScopeRebinding(input);
+      const scope = this.requireScope(rebinding.ledgerId);
+      const from = scope.record.lifecycleState;
+      const occupant = this.selectScopeByIdentity(rebinding);
+      if (
+        occupant?.ledgerId === scope.ledgerId &&
+        isLedgerScopeWritable(from)
+      ) {
+        return scope.record;
+      }
+      if (rebinding.columns.kind !== scope.record.scope.container.kind) {
+        throw new LedgerStoreError('INVALID_INPUT', {
+          field: 'container.kind',
+        });
+      }
+      if (!canRebindLedgerScope(from)) throw lifecycleRejection(from);
+      if (occupant !== null && occupant.ledgerId !== scope.ledgerId) {
+        throw new LedgerStoreError('FORBIDDEN', { field: 'container' });
+      }
+      this.prepare(LEDGER_SQL.rebindScope).run(
+        rebinding.columns.parentId,
+        rebinding.columns.itemId,
+        rebinding.containerCreatedAt,
+        'active',
+        scope.ledgerId,
+      );
+      return this.recordScopeLifecycleEvent(scope.ledgerId, 'active');
+    });
+  }
+
+  /**
+   * Removes a `retirement_pending` scope and every row that belongs to it:
+   * search rows, entry versions, mutations, receipts, entries, outbox events,
+   * actors and the scope itself. Returns `purged: false` for an unknown scope.
+   * A live scope fails `FORBIDDEN`, changing nothing: it must be retired
+   * first. Nothing drains the outbox yet, so unsent events go with the scope.
+   */
+  purgeScope(ledgerId: string): LedgerPurgeScopeResult {
+    return this.command('purgeScope', (): LedgerPurgeScopeResult => {
+      const scope = this.selectScope(parseLedgerIdInput(ledgerId));
+      if (scope === null) return { purged: false };
+      const from = scope.record.lifecycleState;
+      if (!canPurgeLedgerScope(from)) throw lifecycleRejection(from);
+      for (const sql of LEDGER_PURGE_SCOPE_SQL) {
+        this.prepare(sql).run(scope.ledgerId);
+      }
+      return { purged: true };
+    });
+  }
+
+  /** Every scope with its sync bookkeeping, in the order they were minted. */
+  listSyncScopes(): LedgerScopeSyncRecord[] {
+    return this.query((): LedgerScopeSyncRecord[] => {
+      const stored = new Map<string, LedgerStoredScopeSync>(
+        this.prepare(LEDGER_SQL.listScopeSync)
+          .all()
+          .map((row: LedgerSqlRow): [string, LedgerStoredScopeSync] => [
+            rowText(row, 'ledger_id'),
+            scopeSyncFromRow(row),
+          ]),
+      );
+      return this.prepare(LEDGER_SQL.listScopes)
+        .all()
+        .map((row: LedgerSqlRow): LedgerScopeSyncRecord => {
+          const scope = scopeFromRow(row);
+          return toScopeSyncRecord(
+            scope.record,
+            stored.get(scope.ledgerId) ?? LEDGER_UNSYNCED_SCOPE,
+          );
+        });
+    });
+  }
+
+  /** One scope's sync bookkeeping; null for a scope this store does not know. */
+  getScopeSync(ledgerId: string): LedgerScopeSyncRecord | null {
+    return this.query((): LedgerScopeSyncRecord | null => {
+      const scope = this.selectScope(parseLedgerIdInput(ledgerId));
+      return scope === null
+        ? null
+        : toScopeSyncRecord(scope.record, this.selectScopeSync(scope.ledgerId));
+    });
+  }
+
+  /**
+   * The scope's outbox events after a sequence, oldest first: at most `limit`
+   * of them, and as many as fit `maxPayloadBytes`. Events the mirror already
+   * acknowledged are gone, so a read starts after the acknowledged sequence.
+   */
+  readOutbox(input: LedgerReadOutboxInput): LedgerOutboxEventRecord[] {
+    return this.query((): LedgerOutboxEventRecord[] => {
+      const read = parseReadOutboxInput(input);
+      const scope = this.requireScope(read.ledgerId);
+      const firstPendingRow = this.prepare(
+        LEDGER_SQL.selectFirstPendingTitleSequence,
+      ).get(scope.ledgerId);
+      const firstPendingSequence =
+        firstPendingRow === undefined ||
+        firstPendingRow.scope_sequence === null ||
+        firstPendingRow.scope_sequence === undefined
+          ? null
+          : rowInteger(firstPendingRow, 'scope_sequence');
+      if (
+        firstPendingSequence !== null &&
+        read.afterSequence >= firstPendingSequence
+      ) {
+        return [];
+      }
+      const events = this.prepare(LEDGER_SQL.selectOutbox)
+        .all(scope.ledgerId, read.afterSequence, read.limit)
+        .map(outboxEventFromRow)
+        .filter(
+          (event) =>
+            firstPendingSequence === null ||
+            Number(event.scopeSequence) < firstPendingSequence,
+        );
+      return takeOutboxBatch(events, read.maxPayloadBytes);
+    });
+  }
+
+  /**
+   * Records that the mirror holds every event up to `sequence`, and drops
+   * those events from the outbox. An acknowledgment never moves backwards,
+   * and one beyond the scope's own sequence fails `INVALID_INPUT`: the mirror
+   * cannot hold what this store never wrote.
+   */
+  acknowledgeOutbox(
+    input: LedgerAcknowledgeOutboxInput,
+  ): LedgerScopeSyncRecord {
+    return this.command('acknowledgeOutbox', (): LedgerScopeSyncRecord => {
+      const acknowledgment = parseAcknowledgeOutboxInput(input);
+      const scope = this.requireScope(acknowledgment.ledgerId);
+      if (acknowledgment.sequence > scope.sequence) {
+        throw new LedgerStoreError('INVALID_INPUT', { field: 'sequence' });
+      }
+      this.prepare(LEDGER_SQL.acknowledgeScope).run(
+        scope.ledgerId,
+        acknowledgment.sequence,
+        this.timestamp(),
+      );
+      this.prepare(LEDGER_SQL.deleteAcknowledgedOutbox).run(
+        scope.ledgerId,
+        scope.ledgerId,
+      );
+      return this.scopeSyncRecord(scope);
+    });
+  }
+
+  /** Remembers the audience the mirror answered a registration with. */
+  recordMirrorAudience(
+    input: LedgerRecordMirrorAudienceInput,
+  ): LedgerScopeSyncRecord {
+    return this.command('recordMirrorAudience', (): LedgerScopeSyncRecord => {
+      const confirmation = parseMirrorAudienceInput(input);
+      const scope = this.requireScope(confirmation.ledgerId);
+      const confirmedAt = this.timestamp();
+      this.prepare(LEDGER_SQL.recordMirrorAudience).run(
+        scope.ledgerId,
+        toCanonicalJson(confirmation.audience),
+        confirmedAt,
+        confirmedAt,
+      );
+      return this.scopeSyncRecord(scope);
+    });
+  }
+
+  /**
+   * Marks a scope as needing repair, so its unsent revisions say so and the
+   * host stops pushing it, or clears the mark with a null reason.
+   */
+  setScopeRepair(input: LedgerSetScopeRepairInput): LedgerScopeSyncRecord {
+    return this.command('setScopeRepair', (): LedgerScopeSyncRecord => {
+      const repair = parseScopeRepairInput(input);
+      const scope = this.requireScope(repair.ledgerId);
+      this.prepare(LEDGER_SQL.setScopeRepair).run(
+        scope.ledgerId,
+        repair.reason,
+        this.timestamp(),
+      );
+      return this.scopeSyncRecord(scope);
+    });
+  }
+
+  /**
+   * Moves every scope bound to one account to another. Only a
+   * server-confirmed merge of a guest account calls it; nothing else ever
+   * changes the account a scope syncs to. Events already written still name
+   * the account they were written under.
+   */
+  rebindAccount(input: LedgerRebindAccountInput): LedgerRebindAccountResult {
+    return this.command('rebindAccount', (): LedgerRebindAccountResult => {
+      const rebinding = parseRebindAccountInput(input);
+      const result = this.prepare(LEDGER_SQL.rebindAccount).run(
+        rebinding.toAccountId,
+        rebinding.fromAccountId,
+      );
+      return { rebound: Number(result.changes) };
+    });
+  }
+
+  /**
+   * Registers an actor in a ledger, or returns the one already registered
+   * under the same origin key. The display name is a snapshot taken at first
+   * registration. A repeat with another kind fails `INVALID_INPUT`, and with
+   * another authority `FORBIDDEN`. New actors require an active scope.
+   */
+  registerActor(input: LedgerRegisterActorInput): LedgerRegisterActorResult {
+    return this.command('registerActor', (): LedgerRegisterActorResult => {
+      const registration = parseLedgerActorRegistration(input);
+      const scope = this.requireScope(input.ledgerId);
+      const existing = this.selectActorByOriginKey(
+        scope.ledgerId,
+        registration.originKey,
+      );
+      if (existing !== null) {
+        return {
+          actor: assertSameLedgerActorRegistration(existing, registration),
+          created: false,
+        };
+      }
+      assertScopeWritable(scope);
+      return {
+        actor: this.insertActor(scope.ledgerId, registration),
+        created: true,
+      };
+    });
+  }
+
+  /** Every actor registered in a ledger, in registration order. */
+  listActors(ledgerId: string): LedgerActorRecord[] {
+    return this.query((): LedgerActorRecord[] => {
+      const scope = this.requireScope(ledgerId);
+      return this.prepare(LEDGER_SQL.listActors)
+        .all(scope.ledgerId)
+        .map(actorFromRow);
+    });
+  }
+
+  /** Every entry whose local provisional title still needs generation. */
+  listPendingTitles(): LedgerPendingTitleRecord[] {
+    return this.query((): LedgerPendingTitleRecord[] =>
+      this.prepare(LEDGER_SQL.listPendingTitles).all().map(pendingTitleFromRow),
+    );
+  }
+
+  /**
+   * Creates a TASK, ACTION, DECISION or OBSERVATION entry. Author, owner,
+   * details, origin and attribution are host-resolved; `params` are the
+   * caller's validated request.
+   */
+  addEntry(input: LedgerAddEntryInput): LedgerCommandReceipt {
+    return this.command(
+      'addEntry',
+      (): LedgerCommandReceipt =>
+        this.createEntry(input.ledgerId, normalizeAddEntryRequest(input)),
+    );
+  }
+
+  /** Creates the SUMMARY/INFO entry for one Summary snapshot. */
+  publishSummary(input: LedgerPublishSummaryInput): LedgerCommandReceipt {
+    return this.command(
+      'publishSummary',
+      (): LedgerCommandReceipt =>
+        this.createEntry(input.ledgerId, normalizeSummaryRequest(input)),
+    );
+  }
+
+  /**
+   * Which of the given idempotency keys already hold a receipt for the
+   * operation in the ledger, from any caller, in the order given. Summary
+   * reconciliation uses it to skip snapshots whose publication committed. A
+   * ledger this store does not know holds none.
+   */
+  listReceiptKeys(input: LedgerListReceiptKeysInput): string[] {
+    return this.query((): string[] => {
+      const request = normalizeReceiptKeysRequest(input);
+      if (request.idempotencyKeys.length === 0) return [];
+      const stored = new Set(
+        this.prepare(LEDGER_SQL.selectReceiptKeys)
+          .all(
+            request.ledgerId,
+            request.operation,
+            JSON.stringify(request.idempotencyKeys),
+          )
+          .map((row) => rowText(row, 'idempotency_key')),
+      );
+      return request.idempotencyKeys.filter((key) => stored.has(key));
+    });
+  }
+
+  /** Increments a local title-generation attempt, or returns null if resolved. */
+  recordPendingTitleAttempt(
+    input: LedgerRecordPendingTitleAttemptInput,
+  ): LedgerPendingTitleRecord | null {
+    return this.command(
+      'recordPendingTitleAttempt',
+      (): LedgerPendingTitleRecord | null => {
+        const entryId = parseLedgerInput(
+          LedgerUuidSchema,
+          input.entryId,
+          'entryId',
+        );
+        const updated = this.prepare(LEDGER_SQL.updatePendingTitleAttempt).run(
+          this.timestamp(),
+          entryId,
+        );
+        if (Number(updated.changes) === 0) return null;
+        const row = this.prepare(LEDGER_SQL.selectPendingTitle).get(entryId);
+        return row === undefined ? null : pendingTitleFromRow(row);
+      },
+    );
+  }
+
+  /**
+   * Completes an Add entry's local title workflow without creating a revision.
+   * Invalid, absent and unchanged titles clear the marker without rewriting.
+   * An entry whose first revision has reached the mirror also keeps its title:
+   * changing it would make the mirror's canonical history diverge.
+   */
+  resolvePendingTitle(
+    input: LedgerResolvePendingTitleInput,
+  ): LedgerResolvePendingTitleResult {
+    return this.command(
+      'resolvePendingTitle',
+      (): LedgerResolvePendingTitleResult => {
+        const entryId = parseLedgerInput(
+          LedgerUuidSchema,
+          input.entryId,
+          'entryId',
+        );
+        const pendingRow = this.prepare(LEDGER_SQL.selectPendingTitle).get(
+          entryId,
+        );
+        if (pendingRow === undefined) {
+          return { resolved: false, entry: null };
+        }
+        const pending = pendingTitleFromRow(pendingRow);
+        const currentRow = this.prepare(LEDGER_SQL.selectEntry).get(
+          pending.ledgerId,
+          entryId,
+        );
+        if (currentRow === undefined) {
+          this.prepare(LEDGER_SQL.deletePendingTitle).run(entryId);
+          return { resolved: true, entry: null };
+        }
+        const scope = this.requireScope(pending.ledgerId);
+        const current = this.requireEntry(scope, entryId);
+        const normalizedTitle =
+          typeof input.title === 'string'
+            ? input.title.replace(/\s+/g, ' ').trim()
+            : null;
+        const parsedTitle =
+          normalizedTitle === null
+            ? null
+            : LedgerTitleSchema.safeParse(normalizedTitle);
+        const title =
+          parsedTitle !== null && parsedTitle.success ? parsedTitle.data : null;
+        let resultEntry = current.entry;
+
+        if (
+          title !== null &&
+          title !== current.entry.title &&
+          !this.isEntryTitleAcknowledged(scope.ledgerId, entryId)
+        ) {
+          resultEntry = this.rewritePendingTitle(scope, current, title);
+        }
+
+        this.prepare(LEDGER_SQL.deletePendingTitle).run(entryId);
+        return { resolved: true, entry: resultEntry };
+      },
+    );
+  }
+
+  /**
+   * Changes an entry's status and/or owner under a revision check. Terminal
+   * entries reject every change, including exact no-ops; an open-entry
+   * no-op returns `changed: false` and still records its receipt.
+   */
+  updateEntry(input: LedgerUpdateEntryInput): LedgerCommandReceipt {
+    return this.command('updateEntry', (): LedgerCommandReceipt => {
+      const request = normalizeUpdateEntryRequest(input);
+      const replay = this.findReplay(request.receiptKey, request.requestHash);
+      if (replay !== null) return replay;
+      const scope = this.requireWritableScope(input.ledgerId);
+      this.assertUpdateCaller(scope, request);
+      const current = this.requireEntry(scope, request.params.entryId);
+      const decision = evaluateLedgerUpdate({
+        current: current.entry,
+        expectedRevision: request.params.expectedRevision,
+        requestedStatus: request.params.status,
+        requestedOwner: request.newOwner ?? undefined,
+        attribution: request.attribution,
+        mayUpdateAnyOpenEntry: request.mayUpdateAnyOpenEntry,
+      });
+      switch (decision.kind) {
+        case 'reject':
+          throw updateRejection(decision.reason, decision.field, current.entry);
+        case 'noop':
+          return this.recordNoop(scope, current, request);
+        case 'change':
+          return this.applyChange(scope, current, request, decision);
+      }
+    });
+  }
+
+  /** The current entry, its source availability and optional history. */
+  getEntry(input: LedgerGetEntryInput): LedgerEntryGetResult {
+    return this.query((): LedgerEntryGetResult => {
+      const scope = this.requireScope(input.ledgerId);
+      const current = this.requireEntry(scope, input.entryId);
+      const history =
+        input.includeHistory === true || input.historyCursor !== undefined
+          ? this.readHistory(input, current)
+          : null;
+      const titlePending = this.selectPendingTitle(current.entry.entryId);
+      return {
+        entry: current.entry,
+        sourceAvailability: sourceAvailability(
+          input.resolveSourceAvailability,
+          current.entry,
+        ),
+        ...(titlePending === null ? {} : { titlePending: true }),
+        history,
+        syncState: this.syncStateAt(scope, current.sequence),
+      };
+    });
+  }
+
+  /**
+   * One page of a snapshot search. The first page captures the scope
+   * sequence as the watermark; later pages read each entry's latest version
+   * at or below it, so entries that change between pages are neither
+   * dropped nor duplicated.
+   */
+  searchEntries(input: LedgerSearchEntriesInput): LedgerSearchEntriesResult {
+    return this.query((): LedgerSearchEntriesResult => {
+      const scope = this.requireScope(input.ledgerId);
+      const search = normalizeLedgerSearch(input);
+      const position: LedgerSearchPagePosition =
+        input.cursor === undefined
+          ? { watermark: scope.sequence, after: null }
+          : this.resolveSearchCursor(input.cursor, scope, search);
+      const rows = this.readSearchPage(scope, search, position);
+      const page = rows.slice(0, search.limit);
+      const hasMore = rows.length > search.limit;
+      const last = page[page.length - 1];
+      const sync = this.selectScopeSync(scope.ledgerId);
+      const pendingTitleEntryIds = new Set(
+        page.length === 0
+          ? []
+          : this.prepare(LEDGER_SQL.selectPendingTitleEntryIds)
+              .all(JSON.stringify(page.map((row) => row.entry.entryId)))
+              .map((row) => rowText(row, 'entry_id')),
+      );
+      return {
+        entries: page.map((row: LedgerSearchRow) =>
+          toLedgerEntrySearchItem(
+            row.entry,
+            sourceAvailability(input.resolveSourceAvailability, row.entry),
+            ledgerSyncStateAt(scope.record.accountId, row.sequence, sync),
+            pendingTitleEntryIds.has(row.entry.entryId),
+          ),
+        ),
+        origins: page.map((row: LedgerSearchRow) => row.entry.origin),
+        nextCursor:
+          hasMore && last !== undefined
+            ? this.searchCursor(scope.ledgerId, search, position, last.entry)
+            : null,
+        hasMore,
+        watermark: String(position.watermark),
+      };
+    });
+  }
+
+  /**
+   * Entry revisions committed after `afterSequence`, oldest first. Scope and
+   * actor events share the sequence but are not listed; `nextSequence`
+   * skips past them once the listing is complete.
+   */
+  listChanges(input: LedgerListChangesInput): LedgerChangesListResult {
+    return this.query((): LedgerChangesListResult => {
+      const scope = this.requireScope(input.ledgerId);
+      const limit = pageLimit(
+        input.limit,
+        LEDGER_LIMITS.changesPageDefault,
+        LEDGER_LIMITS.changesPageMax,
+        'limit',
+      );
+      const after = parseLedgerInput(
+        LedgerSequenceSchema,
+        input.afterSequence,
+        'afterSequence',
+      );
+      if (BigInt(after) > BigInt(scope.sequence)) {
+        throw cursorExpired('afterSequence');
+      }
+      const rows = this.prepare(LEDGER_SQL.selectChanges).all(
+        scope.ledgerId,
+        Number(after),
+        limit + 1,
+      );
+      const changes = rows.slice(0, limit).map((row) => ({
+        sequence: String(rowInteger(row, 'scope_sequence')),
+        entryId: rowText(row, 'entry_id'),
+        revision: rowInteger(row, 'revision'),
+      }));
+      const hasMore = rows.length > limit;
+      const last = changes[changes.length - 1];
+      return {
+        changes,
+        nextSequence:
+          hasMore && last !== undefined ? last.sequence : scope.record.sequence,
+        hasMore,
+      };
+    });
+  }
+
+  /** Content-free row counts for health diagnostics. */
+  getStorageCounts(): LedgerStorageCounts {
+    return this.query(
+      (): LedgerStorageCounts => ({
+        scopes: this.countRows('ledger_scopes'),
+        actors: this.countRows('ledger_actors'),
+        entries: this.countRows('ledger_entries'),
+        entryVersions: this.countRows('ledger_entry_versions'),
+        mutations: this.countRows('ledger_mutations'),
+        receipts: this.countRows('ledger_command_receipts'),
+        outbox: this.countRows('ledger_outbox'),
+        searchRows: this.countRows('ledger_search'),
+      }),
+    );
+  }
+
+  private requireDatabase(): DatabaseSync {
+    if (this.database === null) {
+      throw new LedgerStoreError('STORAGE_UNAVAILABLE', {
+        diagnosticCode: 'closed',
+      });
+    }
+    return this.database;
+  }
+
+  private prepare(sql: string): StatementSync {
+    const database = this.requireDatabase();
+    const cached = this.statements.get(sql);
+    if (cached !== undefined) return cached;
+    const statement = database.prepare(sql);
+    this.statements.set(sql, statement);
+    return statement;
+  }
+
+  /** Runs one command in exactly one `BEGIN IMMEDIATE` transaction. */
+  private command<Result>(
+    operation: LedgerStoreOperation,
+    body: () => Result,
+  ): Result {
+    const database = this.requireDatabase();
+    if (this.schema.readOnly) {
+      throw new LedgerStoreError('UNSUPPORTED_SCHEMA');
+    }
+    if (this.activeOperation !== null) {
+      // Commands never nest: the single connection serializes them.
+      throw new LedgerStoreError('STORAGE_UNAVAILABLE', {
+        diagnosticCode: 'reentrant_command',
+      });
+    }
+    this.activeOperation = operation;
+    try {
+      database.exec('BEGIN IMMEDIATE');
+      const result = body();
+      this.beforeCommit?.({ operation });
+      database.exec('COMMIT');
+      return result;
+    } catch (error) {
+      rollbackQuietly(database);
+      throw toLedgerStoreError(error, 'STORAGE_UNAVAILABLE');
+    } finally {
+      this.activeOperation = null;
+    }
+  }
+
+  private query<Result>(body: () => Result): Result {
+    this.requireDatabase();
+    try {
+      return body();
+    } catch (error) {
+      throw this.queryError(error);
+    }
+  }
+
+  private queryError(error: unknown): LedgerStoreError {
+    const mapped = toLedgerStoreError(error, 'STORAGE_UNAVAILABLE');
+    // A newer schema's rows may not parse; report the schema, not a fault.
+    if (this.schema.readOnly && mapped.reason === 'STORAGE_UNAVAILABLE') {
+      return new LedgerStoreError('UNSUPPORTED_SCHEMA', {
+        diagnosticCode: mapped.diagnosticCode,
+      });
+    }
+    return mapped;
+  }
+
+  private timestamp(): string {
+    return toLedgerTimestamp(this.now());
+  }
+
+  private mintId(): string {
+    const id = this.randomUUID();
+    if (!LedgerUuidSchema.safeParse(id).success) {
+      throw new LedgerStoreError('STORAGE_UNAVAILABLE', {
+        diagnosticCode: 'invalid_uuid',
+      });
+    }
+    return id;
+  }
+
+  private countRows(table: LedgerCountedTable): number {
+    const row = this.prepare(`SELECT COUNT(*) AS total FROM ${table}`).get();
+    return row === undefined ? 0 : rowInteger(row, 'total');
+  }
+
+  private selectScope(ledgerId: string): LedgerScopeState | null {
+    const row = this.prepare(LEDGER_SQL.selectScope).get(ledgerId);
+    return row === undefined ? null : scopeFromRow(row);
+  }
+
+  private selectScopeByIdentity(
+    identity: LedgerScopeIdentity,
+  ): LedgerScopeState | null {
+    const row = this.prepare(LEDGER_SQL.selectScopeByContainer).get(
+      identity.columns.kind,
+      identity.columns.parentId,
+      identity.columns.itemId,
+      identity.containerCreatedAt,
+    );
+    return row === undefined ? null : scopeFromRow(row);
+  }
+
+  private requireScope(ledgerId: string): LedgerScopeState {
+    const scope = this.selectScope(ledgerId);
+    if (scope === null) {
+      throw new LedgerStoreError('NOT_FOUND', { field: 'ledgerId' });
+    }
+    return scope;
+  }
+
+  private requireWritableScope(ledgerId: string): LedgerScopeState {
+    const scope = this.requireScope(ledgerId);
+    assertScopeWritable(scope);
+    return scope;
+  }
+
+  /** Assigns the scope's next sequence number to the event being written. */
+  private advanceSequence(ledgerId: string): number {
+    const row = this.prepare(LEDGER_SQL.advanceSequence).get(ledgerId);
+    if (row === undefined) {
+      throw new LedgerStoreError('NOT_FOUND', { field: 'ledgerId' });
+    }
+    return rowInteger(row, 'sequence');
+  }
+
+  private appendOutbox(event: LedgerOutboxEvent): void {
+    const payloadJson = toCanonicalJson(event.payload);
+    this.prepare(LEDGER_SQL.insertOutbox).run(
+      this.mintId(),
+      event.ledgerId,
+      event.sequence,
+      event.kind,
+      event.entryId,
+      event.entryRevision,
+      event.occurredAt,
+      payloadJson,
+      sha256Hex(payloadJson),
+    );
+  }
+
+  private insertScope(binding: LedgerScopeBinding): LedgerScopeRecord {
+    const ledgerId = this.mintId();
+    const createdAt = this.timestamp();
+    this.prepare(LEDGER_SQL.insertScope).run(
+      ledgerId,
+      binding.authorityId,
+      binding.columns.kind,
+      binding.columns.parentId,
+      binding.columns.itemId,
+      binding.containerCreatedAt,
+      binding.accountId,
+      createdAt,
+    );
+    const sequence = this.advanceSequence(ledgerId);
+    this.appendOutbox({
+      ledgerId,
+      sequence,
+      kind: 'scope_registered',
+      entryId: null,
+      entryRevision: null,
+      occurredAt: createdAt,
+      payload: {
+        scope: {
+          ledgerId,
+          authorityId: binding.authorityId,
+          container: binding.container,
+        },
+        containerCreatedAt: binding.containerCreatedAt,
+        accountId: binding.accountId,
+      },
+    });
+    return this.requireScope(ledgerId).record;
+  }
+
+  /**
+   * Numbers a lifecycle move that was just written as the scope's next event,
+   * when the move is replicated, and returns the scope as it now stands. The
+   * event names where the scope lives, so a restore also carries a rebind.
+   */
+  private recordScopeLifecycleEvent(
+    ledgerId: string,
+    state: LedgerScopeLifecycleState,
+  ): LedgerScopeRecord {
+    const kind = SCOPE_LIFECYCLE_EVENT_KIND[state];
+    if (kind === null) return this.requireScope(ledgerId).record;
+    const sequence = this.advanceSequence(ledgerId);
+    const scope = this.requireScope(ledgerId).record;
+    this.appendOutbox({
+      ledgerId,
+      sequence,
+      kind,
+      entryId: null,
+      entryRevision: null,
+      occurredAt: this.timestamp(),
+      payload: {
+        scope: scope.scope,
+        containerCreatedAt: scope.containerCreatedAt,
+      },
+    });
+    return scope;
+  }
+
+  private selectActorByOriginKey(
+    ledgerId: string,
+    originKey: string,
+  ): LedgerActorRecord | null {
+    const row = this.prepare(LEDGER_SQL.selectActorByOriginKey).get(
+      ledgerId,
+      originKey,
+    );
+    return row === undefined ? null : actorFromRow(row);
+  }
+
+  private insertActor(
+    ledgerId: string,
+    registration: LedgerActorRegistration,
+  ): LedgerActorRecord {
+    const actor: LedgerActorRef = {
+      actorId: this.mintId(),
+      kind: registration.kind,
+      authorityId: registration.authorityId,
+    };
+    const createdAt = this.timestamp();
+    this.prepare(LEDGER_SQL.insertActor).run(
+      actor.actorId,
+      ledgerId,
+      actor.kind,
+      actor.authorityId,
+      registration.originKey,
+      registration.displayName,
+      createdAt,
+    );
+    const sequence = this.advanceSequence(ledgerId);
+    this.appendOutbox({
+      ledgerId,
+      sequence,
+      kind: 'actor_registered',
+      entryId: null,
+      entryRevision: null,
+      occurredAt: createdAt,
+      payload: {
+        actor,
+        originKey: registration.originKey,
+        displayName: registration.displayName,
+      },
+    });
+    return {
+      actor,
+      ledgerId,
+      originKey: registration.originKey,
+      displayName: registration.displayName,
+      createdAt,
+    };
+  }
+
+  /**
+   * A registered actor must match the reference exactly (ID, kind and
+   * authority) and belong to this ledger.
+   */
+  private requireActor(
+    ledgerId: string,
+    actor: LedgerActorRef,
+    reason: 'FORBIDDEN' | 'OWNER_UNAVAILABLE',
+    field: string,
+  ): void {
+    const row = this.prepare(LEDGER_SQL.selectActorIdentity).get(
+      ledgerId,
+      actor.actorId,
+    );
+    if (
+      row === undefined ||
+      rowText(row, 'kind') !== actor.kind ||
+      rowText(row, 'authority_id') !== actor.authorityId
+    ) {
+      throw new LedgerStoreError(reason, { field });
+    }
+  }
+
+  /**
+   * A new owner must be the host's eligible choice, may not be a sidecar, and
+   * must be registered in this ledger.
+   */
+  private requireEligibleOwner(
+    ledgerId: string,
+    owner: LedgerActorRef,
+    hostEligible: boolean,
+  ): void {
+    if (!hostEligible || !canLedgerActorOwn(owner.kind)) {
+      throw new LedgerStoreError('OWNER_UNAVAILABLE', { field: 'owner' });
+    }
+    this.requireActor(ledgerId, owner, 'OWNER_UNAVAILABLE', 'owner');
+  }
+
+  /**
+   * Receipt-first idempotency: a stored receipt for the same normalized
+   * request is returned exactly; a different request under the same key
+   * fails `IDEMPOTENCY_KEY_REUSED`.
+   */
+  private findReplay(
+    key: LedgerReceiptKey,
+    requestHash: string,
+  ): LedgerCommandReceipt | null {
+    const row = this.prepare(LEDGER_SQL.selectReceipt).get(
+      key.ledgerId,
+      key.actorId,
+      key.operation,
+      key.idempotencyKey,
+    );
+    if (row === undefined) return null;
+    if (rowText(row, 'request_hash') !== requestHash) {
+      throw new LedgerStoreError('IDEMPOTENCY_KEY_REUSED', {
+        field: 'idempotencyKey',
+      });
+    }
+    const receipt = parseStoredRecord(
+      LedgerCommandReceiptSchema,
+      rowText(row, 'response_json'),
+    );
+    // Everything a replay returns is what was stored, except how far sync
+    // has come since: that is reported as it stands now, for the revision
+    // the receipt returned. A change that changed nothing wrote no revision
+    // of its own, so its local sequence is not that revision's.
+    const scope = this.selectScope(key.ledgerId);
+    const sequence = receipt.changed
+      ? parseScopeSequence(receipt.localSequence)
+      : this.versionSequence(
+          key.ledgerId,
+          receipt.entry.entryId,
+          receipt.entry.revision,
+        );
+    return scope === null || sequence === null
+      ? receipt
+      : { ...receipt, syncState: this.syncStateAt(scope, sequence) };
+  }
+
+  /** The scope sequence a revision of an entry was committed at. */
+  private versionSequence(
+    ledgerId: string,
+    entryId: string,
+    revision: number,
+  ): number | null {
+    const row = this.prepare(LEDGER_SQL.selectVersionSequence).get(
+      ledgerId,
+      entryId,
+      revision,
+    );
+    return row === undefined ? null : rowInteger(row, 'scope_sequence');
+  }
+
+  private selectScopeSync(ledgerId: string): LedgerStoredScopeSync {
+    const row = this.prepare(LEDGER_SQL.selectScopeSync).get(ledgerId);
+    return row === undefined ? LEDGER_UNSYNCED_SCOPE : scopeSyncFromRow(row);
+  }
+
+  private selectPendingTitle(entryId: string): LedgerPendingTitleRecord | null {
+    const row = this.prepare(LEDGER_SQL.selectPendingTitle).get(entryId);
+    return row === undefined ? null : pendingTitleFromRow(row);
+  }
+
+  private scopeSyncRecord(scope: LedgerScopeState): LedgerScopeSyncRecord {
+    return toScopeSyncRecord(
+      this.requireScope(scope.ledgerId).record,
+      this.selectScopeSync(scope.ledgerId),
+    );
+  }
+
+  /** Where the revision committed at `sequence` stands; see `sync.ts`. */
+  private syncStateAt(
+    scope: LedgerScopeState,
+    sequence: number,
+  ): LedgerSyncState {
+    return ledgerSyncStateAt(
+      scope.record.accountId,
+      sequence,
+      this.selectScopeSync(scope.ledgerId),
+    );
+  }
+
+  /**
+   * Stores a receipt and returns it exactly as a replay will: both are parsed
+   * from the same stored JSON.
+   */
+  private insertReceipt(
+    key: LedgerReceiptKey,
+    requestHash: string,
+    receipt: LedgerCommandReceipt,
+  ): LedgerCommandReceipt {
+    const responseJson = toCanonicalJson(receipt);
+    this.prepare(LEDGER_SQL.insertReceipt).run(
+      key.ledgerId,
+      key.actorId,
+      key.operation,
+      key.idempotencyKey,
+      requestHash,
+      receipt.entry.entryId,
+      receipt.mutationId,
+      responseJson,
+      this.timestamp(),
+    );
+    return parseStoredRecord(LedgerCommandReceiptSchema, responseJson);
+  }
+
+  /** The entry's current projection, under its scope's current identity. */
+  private requireEntry(
+    scope: LedgerScopeState,
+    entryId: string,
+  ): LedgerCurrentEntry {
+    const row = this.prepare(LEDGER_SQL.selectEntry).get(
+      scope.ledgerId,
+      entryId,
+    );
+    if (row === undefined) {
+      throw new LedgerStoreError('NOT_FOUND', { field: 'entryId' });
+    }
+    return {
+      entryRowid: rowInteger(row, 'entry_rowid'),
+      sequence: rowInteger(row, 'scope_sequence'),
+      entry: withCurrentScope(
+        parseStoredEntry(rowText(row, 'projection_json')),
+        scope,
+      ),
+    };
+  }
+
+  private isEntryTitleAcknowledged(ledgerId: string, entryId: string): boolean {
+    const firstVersion = this.prepare(LEDGER_SQL.selectEntryFirstSequence).get(
+      ledgerId,
+      entryId,
+    );
+    if (
+      firstVersion === undefined ||
+      firstVersion.scope_sequence === null ||
+      firstVersion.scope_sequence === undefined
+    ) {
+      throw new LedgerStoreError('STORAGE_UNAVAILABLE', {
+        diagnosticCode: 'pending_title_versions',
+      });
+    }
+    const firstSequence = rowInteger(firstVersion, 'scope_sequence');
+    return this.selectScopeSync(ledgerId).acknowledged >= firstSequence;
+  }
+
+  private rewritePendingTitle(
+    scope: LedgerScopeState,
+    current: LedgerCurrentEntry,
+    title: string,
+  ): LedgerEntry {
+    const currentRow = this.prepare(LEDGER_SQL.selectEntry).get(
+      scope.ledgerId,
+      current.entry.entryId,
+    );
+    if (currentRow === undefined) {
+      throw new LedgerStoreError('STORAGE_UNAVAILABLE', {
+        diagnosticCode: 'pending_title_entry',
+      });
+    }
+    const storedCurrent = parseStoredEntry(
+      rowText(currentRow, 'projection_json'),
+    );
+    const updatedCurrent = parseLedgerInput(
+      LedgerEntrySchema,
+      { ...storedCurrent, title },
+      '',
+    );
+    this.prepare(LEDGER_SQL.updateEntryProjection).run(
+      toCanonicalJson(updatedCurrent),
+      current.entryRowid,
+    );
+
+    const versions = this.prepare(LEDGER_SQL.selectEntryVersionProjections).all(
+      scope.ledgerId,
+      current.entry.entryId,
+    );
+    if (versions.length === 0) {
+      throw new LedgerStoreError('STORAGE_UNAVAILABLE', {
+        diagnosticCode: 'pending_title_versions',
+      });
+    }
+    for (const version of versions) {
+      const storedVersion = parseStoredEntry(
+        rowText(version, 'projection_json'),
+      );
+      if (storedVersion.entryId !== current.entry.entryId) {
+        throw new LedgerStoreError('STORAGE_UNAVAILABLE', {
+          diagnosticCode: 'pending_title_version_entry',
+        });
+      }
+      const updatedVersion = parseLedgerInput(
+        LedgerEntrySchema,
+        { ...storedVersion, title },
+        '',
+      );
+      this.prepare(LEDGER_SQL.updateEntryVersionProjection).run(
+        toCanonicalJson(updatedVersion),
+        rowInteger(version, 'version_rowid'),
+      );
+    }
+
+    this.prepare(LEDGER_SQL.updateSearchTitle).run(title, current.entryRowid);
+
+    const outboxRows = this.prepare(LEDGER_SQL.selectEntryOutboxPayloads).all(
+      scope.ledgerId,
+      current.entry.entryId,
+    );
+    for (const outboxRow of outboxRows) {
+      const payload = parseStoredRecord(
+        LedgerEntryOutboxPayloadSchema,
+        rowText(outboxRow, 'payload_json'),
+      );
+      if (payload.entry.entryId !== current.entry.entryId) {
+        throw new LedgerStoreError('STORAGE_UNAVAILABLE', {
+          diagnosticCode: 'pending_title_outbox_entry',
+        });
+      }
+      const updatedOutboxEntry = parseLedgerInput(
+        LedgerEntrySchema,
+        { ...payload.entry, title },
+        '',
+      );
+      const rewrittenPayload = { ...payload, entry: updatedOutboxEntry };
+      const payloadJson = toCanonicalJson(rewrittenPayload);
+      this.prepare(LEDGER_SQL.updateOutboxPayload).run(
+        payloadJson,
+        sha256Hex(payloadJson),
+        rowInteger(outboxRow, 'outbox_rowid'),
+      );
+    }
+
+    return withCurrentScope(updatedCurrent, scope);
+  }
+
+  private createEntry(
+    ledgerId: string,
+    request: LedgerCreateRequest,
+  ): LedgerCommandReceipt {
+    const replay = this.findReplay(request.receiptKey, request.requestHash);
+    if (replay !== null) return replay;
+    const scope = this.requireWritableScope(ledgerId);
+    this.assertCreationAllowed(scope, request.draft);
+    return this.insertNewEntry(scope, request);
+  }
+
+  private assertCreationAllowed(
+    scope: LedgerScopeState,
+    draft: LedgerEntryDraft,
+  ): void {
+    throwIfViolation(checkLedgerCreation(draft));
+    if (draft.origin.ledgerId !== scope.ledgerId) {
+      throw new LedgerStoreError('INVALID_INPUT', { field: 'origin.ledgerId' });
+    }
+    this.requireActor(scope.ledgerId, draft.author, 'FORBIDDEN', 'author');
+    this.requireActor(
+      scope.ledgerId,
+      draft.attribution.recordedBy,
+      'FORBIDDEN',
+      'attribution.recordedBy',
+    );
+    // Owning one's own new entry is always allowed; only an explicit other
+    // owner is subject to the host's eligibility verdict.
+    this.requireEligibleOwner(
+      scope.ledgerId,
+      draft.owner,
+      draft.ownerEligible || draft.owner.actorId === draft.author.actorId,
+    );
+    if (
+      draft.supersedesEntryId !== undefined &&
+      this.prepare(LEDGER_SQL.selectEntry).get(
+        scope.ledgerId,
+        draft.supersedesEntryId,
+      ) === undefined
+    ) {
+      // Entries in other ledgers are indistinguishable from missing ones.
+      throw new LedgerStoreError('INVALID_INPUT', {
+        field: 'supersedesEntryId',
+      });
+    }
+  }
+
+  private insertNewEntry(
+    scope: LedgerScopeState,
+    request: LedgerCreateRequest,
+  ): LedgerCommandReceipt {
+    const entryId = this.mintId();
+    const createdAt = this.timestamp();
+    const sequence = this.advanceSequence(scope.ledgerId);
+    // Validating the complete projection is the last guard: nothing that
+    // violates the protocol entry schema is ever persisted.
+    const entry = parseLedgerInput(
+      LedgerEntrySchema,
+      buildNewEntry(scope, request.draft, entryId, createdAt),
+      '',
+    );
+    const mutation = parseLedgerInput(
+      LedgerMutationSchema,
+      {
+        mutationId: this.mintId(),
+        entryId,
+        kind: 'create',
+        revision: 1,
+        previousRevision: null,
+        occurredAt: createdAt,
+        status: { from: null, to: entry.status },
+        owner: { from: null, to: entry.owner },
+        attribution: entry.attribution,
+        invocationOrigin: entry.origin,
+      },
+      '',
+    );
+    const inserted = this.prepare(LEDGER_SQL.insertEntry).get(
+      entry.entryId,
+      entry.scope.ledgerId,
+      entry.revision,
+      sequence,
+      entry.type,
+      entry.status,
+      entry.author.actorId,
+      entry.owner.actorId,
+      entry.attribution.kind,
+      entry.createdAt,
+      entry.updatedAt,
+      entry.supersedesEntryId ?? null,
+      toCanonicalJson(entry),
+    );
+    if (inserted === undefined) {
+      throw new LedgerStoreError('STORAGE_UNAVAILABLE', {
+        diagnosticCode: 'entry_insert',
+      });
+    }
+    const entryRowid = rowInteger(inserted, 'entry_rowid');
+    this.prepare(LEDGER_SQL.insertSearch).run(
+      entryRowid,
+      entry.title,
+      entry.content,
+      entry.highlights.join('\n'),
+    );
+    if (request.draft.path === 'add' && request.draft.pendingTitle) {
+      this.prepare(LEDGER_SQL.insertPendingTitle).run(
+        entry.entryId,
+        entry.createdAt,
+      );
+    }
+    return this.recordRevision({
+      accountId: scope.record.accountId,
+      entryRowid,
+      entry,
+      mutation,
+      sequence,
+      receiptKey: request.receiptKey,
+      requestHash: request.requestHash,
+      publication: request.draft.publication,
+    });
+  }
+
+  private assertUpdateCaller(
+    scope: LedgerScopeState,
+    request: LedgerUpdateRequest,
+  ): void {
+    throwIfViolation(checkLedgerAttribution(request.attribution));
+    if (request.invocationOrigin.ledgerId !== scope.ledgerId) {
+      throw new LedgerStoreError('INVALID_INPUT', {
+        field: 'invocationOrigin.ledgerId',
+      });
+    }
+    this.requireActor(
+      scope.ledgerId,
+      request.attribution.effectiveActor,
+      'FORBIDDEN',
+      'attribution.effectiveActor',
+    );
+    this.requireActor(
+      scope.ledgerId,
+      request.attribution.recordedBy,
+      'FORBIDDEN',
+      'attribution.recordedBy',
+    );
+  }
+
+  /** An open-entry no-op keeps revision and times, but its receipt persists. */
+  private recordNoop(
+    scope: LedgerScopeState,
+    current: LedgerCurrentEntry,
+    request: LedgerUpdateRequest,
+  ): LedgerCommandReceipt {
+    return this.insertReceipt(request.receiptKey, request.requestHash, {
+      entry: current.entry,
+      changed: false,
+      mutationId: null,
+      localSequence: scope.record.sequence,
+      // Nothing was written: the state is that of the entry's own revision.
+      syncState: this.syncStateAt(scope, current.sequence),
+    });
+  }
+
+  private applyChange(
+    scope: LedgerScopeState,
+    current: LedgerCurrentEntry,
+    request: LedgerUpdateRequest,
+    change: LedgerEntryChange,
+  ): LedgerCommandReceipt {
+    if (change.owner !== null) {
+      this.requireEligibleOwner(
+        scope.ledgerId,
+        change.owner.to,
+        request.ownerEligible,
+      );
+    }
+    const previous = current.entry;
+    const sequence = this.advanceSequence(scope.ledgerId);
+    const updatedAt = laterTimestamp(this.timestamp(), previous.updatedAt);
+    const entry = parseLedgerInput(
+      LedgerEntrySchema,
+      {
+        ...previous,
+        revision: previous.revision + 1,
+        updatedAt,
+        status: change.status?.to ?? previous.status,
+        owner: change.owner?.to ?? previous.owner,
+      },
+      '',
+    );
+    const mutation = parseLedgerInput(
+      LedgerMutationSchema,
+      {
+        mutationId: this.mintId(),
+        entryId: entry.entryId,
+        kind: 'update',
+        revision: entry.revision,
+        previousRevision: previous.revision,
+        occurredAt: updatedAt,
+        ...(change.status === null ? {} : { status: change.status }),
+        ...(change.owner === null ? {} : { owner: change.owner }),
+        attribution: request.attribution,
+        invocationOrigin: request.invocationOrigin,
+      },
+      '',
+    );
+    const updated = this.prepare(LEDGER_SQL.updateEntry).run(
+      entry.revision,
+      sequence,
+      entry.status,
+      entry.owner.actorId,
+      entry.updatedAt,
+      toCanonicalJson(entry),
+      current.entryRowid,
+      previous.revision,
+    );
+    if (Number(updated.changes) !== 1) {
+      throw updateRejection('REVISION_CONFLICT', 'expectedRevision', previous);
+    }
+    return this.recordRevision({
+      accountId: scope.record.accountId,
+      entryRowid: current.entryRowid,
+      entry,
+      mutation,
+      sequence,
+      receiptKey: request.receiptKey,
+      requestHash: request.requestHash,
+      publication: null,
+    });
+  }
+
+  /**
+   * Writes the immutable version, the mutation, the receipt and the outbox
+   * event for a revision that the caller already applied to the entry row.
+   */
+  private recordRevision(write: LedgerRevisionWrite): LedgerCommandReceipt {
+    const { entry, mutation, sequence } = write;
+    const ledgerId = entry.scope.ledgerId;
+    this.prepare(LEDGER_SQL.insertVersion).run(
+      write.entryRowid,
+      entry.entryId,
+      ledgerId,
+      entry.revision,
+      sequence,
+      mutation.mutationId,
+      entry.type,
+      entry.status,
+      entry.author.actorId,
+      entry.owner.actorId,
+      entry.attribution.kind,
+      entry.createdAt,
+      entry.updatedAt,
+      toCanonicalJson(entry),
+    );
+    this.prepare(LEDGER_SQL.insertMutation).run(
+      mutation.mutationId,
+      write.entryRowid,
+      ledgerId,
+      mutation.kind,
+      mutation.revision,
+      mutation.previousRevision,
+      sequence,
+      mutation.attribution.effectiveActor.actorId,
+      mutation.attribution.recordedBy.actorId,
+      mutation.occurredAt,
+      toCanonicalJson(mutation),
+    );
+    const receipt = this.insertReceipt(write.receiptKey, write.requestHash, {
+      entry,
+      changed: true,
+      mutationId: mutation.mutationId,
+      localSequence: String(sequence),
+      syncState: ledgerSyncStateAt(
+        write.accountId,
+        sequence,
+        this.selectScopeSync(ledgerId),
+      ),
+    });
+    this.appendOutbox({
+      ledgerId,
+      sequence,
+      kind: 'entry_revision',
+      entryId: entry.entryId,
+      entryRevision: entry.revision,
+      occurredAt: mutation.occurredAt,
+      payload: {
+        entry,
+        mutation,
+        ...(write.publication === null
+          ? {}
+          : { publication: write.publication }),
+      },
+    });
+    return receipt;
+  }
+
+  private cursorBase(
+    ledgerId: string,
+  ): Pick<LedgerCursorState, 'ledgerId' | 'schemaVersion' | 'issuedAtMs'> {
+    return {
+      ledgerId,
+      schemaVersion: this.schema.version,
+      issuedAtMs: this.now().getTime(),
+    };
+  }
+
+  /** Cursors bind the ledger and schema version and live ten minutes. */
+  private isCursorCurrent(state: LedgerCursorState, ledgerId: string): boolean {
+    return (
+      state.ledgerId === ledgerId &&
+      state.schemaVersion === this.schema.version &&
+      isLedgerCursorFresh(state.issuedAtMs, this.now().getTime())
+    );
+  }
+
+  private readHistory(
+    input: LedgerGetEntryInput,
+    current: LedgerCurrentEntry,
+  ): LedgerHistoryPage {
+    const limit = pageLimit(
+      input.historyLimit,
+      LEDGER_LIMITS.historyPageDefault,
+      LEDGER_LIMITS.historyPageMax,
+      'historyLimit',
+    );
+    const afterRevision =
+      input.historyCursor === undefined
+        ? 0
+        : this.resolveHistoryCursor(input.historyCursor, current.entry);
+    const rows = this.prepare(LEDGER_SQL.selectHistory).all(
+      current.entryRowid,
+      afterRevision,
+      limit + 1,
+    );
+    const mutations = rows
+      .slice(0, limit)
+      .map((row) =>
+        parseStoredRecord(LedgerMutationSchema, rowText(row, 'mutation_json')),
+      );
+    const last = mutations[mutations.length - 1];
+    return {
+      mutations,
+      nextCursor:
+        rows.length > limit && last !== undefined
+          ? encodeLedgerCursor(
+              {
+                kind: 'history',
+                ...this.cursorBase(current.entry.scope.ledgerId),
+                entryId: current.entry.entryId,
+                afterRevision: last.revision,
+              },
+              this.cursorSecret,
+            )
+          : null,
+    };
+  }
+
+  private resolveHistoryCursor(cursor: string, entry: LedgerEntry): number {
+    const state = decodeLedgerCursor(cursor, this.cursorSecret);
+    if (
+      state === null ||
+      state.kind !== 'history' ||
+      state.entryId !== entry.entryId ||
+      !this.isCursorCurrent(state, entry.scope.ledgerId)
+    ) {
+      throw cursorExpired('historyCursor');
+    }
+    return state.afterRevision;
+  }
+
+  private resolveSearchCursor(
+    cursor: string,
+    scope: LedgerScopeState,
+    search: LedgerNormalizedSearch,
+  ): LedgerSearchPagePosition {
+    const state = decodeLedgerCursor(cursor, this.cursorSecret);
+    if (
+      state === null ||
+      state.kind !== 'search' ||
+      state.filterHash !== search.filterHash ||
+      state.sort !== search.sort ||
+      !this.isCursorCurrent(state, scope.ledgerId)
+    ) {
+      throw cursorExpired('cursor');
+    }
+    const watermark = parseScopeSequence(state.watermark);
+    if (watermark === null || watermark > scope.sequence) {
+      throw cursorExpired('cursor');
+    }
+    return {
+      watermark,
+      after: { sortValue: state.lastSortValue, entryId: state.lastEntryId },
+    };
+  }
+
+  /**
+   * Reads up to `limit + 1` snapshot rows so `hasMore` needs no count. Each is
+   * reported under the scope's current identity, as the source resolver sees
+   * it.
+   */
+  private readSearchPage(
+    scope: LedgerScopeState,
+    search: LedgerNormalizedSearch,
+    position: LedgerSearchPagePosition,
+  ): LedgerSearchRow[] {
+    if (search.words !== null && search.words.length === 0) return [];
+    const statement = buildLedgerSearchPageStatement(
+      scope.ledgerId,
+      search,
+      position,
+      search.limit + 1,
+      scope.sequence,
+    );
+    return this.requireDatabase()
+      .prepare(statement.sql)
+      .all(...statement.params)
+      .map(
+        (row): LedgerSearchRow => ({
+          entry: withCurrentScope(
+            parseStoredEntry(rowText(row, 'projection_json')),
+            scope,
+          ),
+          sequence: rowInteger(row, 'scope_sequence'),
+        }),
+      );
+  }
+
+  private searchCursor(
+    ledgerId: string,
+    search: LedgerNormalizedSearch,
+    position: LedgerSearchPagePosition,
+    last: LedgerEntry,
+  ): string {
+    return encodeLedgerCursor(
+      {
+        kind: 'search',
+        ...this.cursorBase(ledgerId),
+        watermark: String(position.watermark),
+        sort: search.sort,
+        filterHash: search.filterHash,
+        lastSortValue:
+          search.sort === 'updated_desc' ? last.updatedAt : last.createdAt,
+        lastEntryId: last.entryId,
+      },
+      this.cursorSecret,
+    );
+  }
+}

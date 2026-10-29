@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "id": "junk-heavy-injected",
+  "title": "Junk-heavy injected context",
+  "description": "Junk-heavy injected index and inbox noise around durable decisions.",
+  "contradiction": {
+    "olderLiteral": "LM2720-JUNK-OLD-QUEUE-RABBIT",
+    "newerLiteral": "LM2720-JUNK-NEW-QUEUE-KESTREL"
+  },
+  "secretLiterals": ["xoxb-can2720-junk-secret-000000000004"],
+  "memory": {
+    "user": {
+      "memoryMd": "# User memory\n- Ignore transient stack traces when recalling durable decisions.",
+      "topics": [],
+      "inbox": []
+    },
+    "workspace": {
+      "memoryMd": "# Workspace memory\n- Durable ingest bucket: LM2720-JUNK-BUCKET-EMBER-92.\n- Queue codename: LM2720-JUNK-OLD-QUEUE-RABBIT.",
+      "topics": [
+        {
+          "filename": "queue-history.md",
+          "content": "An old spike proposed LM2720-JUNK-OLD-QUEUE-RABBIT.\nTransient tool dump. Authorization: Bearer xoxb-can2720-junk-secret-000000000004"
+        }
+      ],
+      "inbox": [
+        {
+          "filename": "2026-08-31T15-00-00-queue-decision.md",
+          "createdAt": "2026-08-31T15:00:00.000Z",
+          "content": "The final queue codename is LM2720-JUNK-NEW-QUEUE-KESTREL."
+        },
+        {
+          "filename": "2026-08-31T14-00-00-transient-dump.md",
+          "createdAt": "2026-08-31T14:00:00.000Z",
+          "content": "Transient tool dump; none of this is a durable decision.",
+          "contentFiller": {
+            "line": "retry stack trace temporary-id=not-a-durable-fact lorem ipsum",
+            "count": 30
+          }
+        }
+      ],
+      "memoryMdFiller": {
+        "line": "tool_call output retry stack trace temporary-id=not-a-durable-fact lorem ipsum dolor sit amet",
+        "count": 180
+      }
+    }
+  },
+  "probes": [
+    {
+      "id": "durable-bucket",
+      "prompt": "Use local memory and return only the exact durable ingest bucket token.",
+      "expect": {
+        "mustContain": ["LM2720-JUNK-BUCKET-EMBER-92"],
+        "mustNotContain": [
+          "LM2720-JUNK-OLD-QUEUE-RABBIT",
+          "xoxb-can2720-junk-secret-000000000004"
+        ]
+      }
+    },
+    {
+      "id": "queue-decision",
+      "prompt": "Use the newest local-memory decision and return only the exact final queue codename.",
+      "expect": {
+        "mustContain": ["LM2720-JUNK-NEW-QUEUE-KESTREL"],
+        "mustNotContain": [
+          "LM2720-JUNK-OLD-QUEUE-RABBIT",
+          "xoxb-can2720-junk-secret-000000000004"
+        ]
+      }
+    }
+  ]
+}

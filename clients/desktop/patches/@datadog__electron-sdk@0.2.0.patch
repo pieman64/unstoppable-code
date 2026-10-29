@@ -1,0 +1,232 @@
+diff --git a/dist/index.cjs b/dist/index.cjs
+index f741145..a6fd15b 100644
+--- a/dist/index.cjs
++++ b/dist/index.cjs
+@@ -424,6 +424,12 @@ const LifecycleKind = {
+     SESSION_RENEW: 'session_renew',
+ };
+ 
++/**
++ * Stable user identity merged into every assembled RUM event as `usr`.
++ * Set via the patched `setUser()` export; `undefined` until then (combine()
++ * skips undefined values, so events emitted before `setUser` simply omit it).
++ */
++let currentRumUser;
+ /**
+  * Transforms RawEvents into ServerEvents by enriching them with contextual
+  * attributes (session, application, view, etc.) via format hooks.
+@@ -471,11 +477,12 @@ class Assembly {
+         if (hookResult === DISCARDED) {
+             return DISCARDED;
+         }
+         const { session, application, view } = hookResult ?? {};
+         const mainProcessAttributes = {
+             session: { id: session?.id },
+             application: { id: application?.id },
+             container: { view: { id: view?.id }, source: 'electron' },
++            usr: currentRumUser,
+         };
+         return {
+             kind: EventKind.SERVER,
+@@ -579,7 +586,11 @@ function registerCommonContext(configuration, hooks) {
+         version: configuration.version,
+         application: { id: configuration.applicationId },
+         session: { type: 'user' },
+-        ddtags: `sdk_version:${"0.2.0"}`,
++        usr: currentRumUser,
++        ddtags: [
++            `sdk_version:${"0.2.0"}`,
++            configuration.variant ? `variant:${configuration.variant}` : undefined,
++        ].filter(Boolean).join(','),
+         _dd: { format_version: 2 },
+     }));
+     hooks.registerTelemetry(() => ({
+@@ -706,6 +717,7 @@ function buildConfiguration(initConfig) {
+         applicationId,
+         env: validateOptionalString(initConfig.env),
+         version: validateOptionalString(initConfig.version),
++        variant: validateOptionalString(initConfig.variant),
+         proxy,
+         telemetrySampleRate: validateTelemetrySampleRate(initConfig.telemetrySampleRate),
+         defaultPrivacyLevel: validateDefaultPrivacyLevel(initConfig.defaultPrivacyLevel),
+@@ -2474,6 +2486,33 @@ async function init(configuration) {
+ function stopSession() {
+     monitorExports.callMonitored(() => sessionManager?.expire());
+ }
++/**
++ * Renew the current session by notifying the session manager of activity.
++ *
++ * Mirrors how `stopSession` reaches the module-level `sessionManager`.
++ * `updateActivity()` resets the inactivity timer and, when the session has
++ * already expired, synchronously registers a fresh session id in the in-memory
++ * history before its first `await`. Canopy calls this immediately before
++ * emitting an operation so the operation always lands in a live session.
++ */
++function notifyActivity() {
++    monitorExports.callMonitored(() => { void sessionManager?.updateActivity(); });
++}
++/**
++ * Set the user identity attached to every assembled RUM event as `usr`.
++ *
++ * The upstream alpha SDK exposes no user API, but the RUM event schema (and
++ * the Datadog UI's session/user attribution) expects `usr.id`. The value is
++ * merged by the common-context hook for main-process events and into the
++ * main-process attribute override for bridged renderer events, mirroring how
++ * `@datadog/browser-rum`'s `setUser` applies to every subsequent event.
++ * Pass `undefined` to clear it.
++ */
++function setUser(user) {
++    monitorExports.callMonitored(() => {
++        currentRumUser = user ? deepClone(user) : undefined;
++    });
++}
+ /**
+  * Report a manually handled error
+  */
+@@ -2567,6 +2606,8 @@ exports.addError = addError;
+ exports.failFeatureOperation = failFeatureOperation;
+ exports.failOperation = failOperation;
+ exports.init = init;
++exports.notifyActivity = notifyActivity;
++exports.setUser = setUser;
+ exports.startFeatureOperation = startFeatureOperation;
+ exports.startOperation = startOperation;
+ exports.stopSession = stopSession;
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+index 4adfa69..d5ca734 100644
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -31,6 +31,7 @@ interface InitConfiguration {
+     applicationId: string;
+     env?: string;
+     version?: string;
++    variant?: string;
+     telemetrySampleRate?: number;
+     batchSize?: BatchSize;
+     uploadFrequency?: UploadFrequency;
+@@ -1761,6 +1762,25 @@ declare function init(configuration: InitConfiguration): Promise<boolean>;
+  * Stop the current session
+  */
+ declare function stopSession(): void;
++/**
++ * Renew the current session by notifying the session manager of activity.
++ */
++declare function notifyActivity(): void;
++/**
++ * User identity attached to every assembled RUM event as `usr`.
++ * Mirrors the `User` shape of `@datadog/browser-rum`'s `setUser`.
++ */
++interface RumUser {
++    id?: string;
++    name?: string;
++    email?: string;
++    [key: string]: unknown;
++}
++/**
++ * Set the user identity attached to every assembled RUM event as `usr`.
++ * Pass `undefined` to clear it.
++ */
++declare function setUser(user?: RumUser): void;
+ /**
+  * Report a manually handled error
+  */
+@@ -1823,5 +1843,5 @@ declare function failFeatureOperation(name: string, failureReason: FailureReason
+ declare function _flushTransport(): Promise<void>;
+ declare function _generateTelemetryError(): undefined;
+ 
+-export { SESSION_TIME_OUT_DELAY, _flushTransport, _generateTelemetryError, addError, failFeatureOperation, failOperation, init, startFeatureOperation, startOperation, stopSession, succeedFeatureOperation, succeedOperation };
+-export type { FailureReason, FeatureOperationOptions, InitConfiguration, RumErrorEvent, RumViewEvent, RumVitalEvent, RumVitalOperationStepEvent, TelemetryErrorEvent };
++export { SESSION_TIME_OUT_DELAY, _flushTransport, _generateTelemetryError, addError, failFeatureOperation, failOperation, init, notifyActivity, setUser, startFeatureOperation, startOperation, stopSession, succeedFeatureOperation, succeedOperation };
++export type { FailureReason, FeatureOperationOptions, InitConfiguration, RumErrorEvent, RumUser, RumViewEvent, RumVitalEvent, RumVitalOperationStepEvent, TelemetryErrorEvent };
+diff --git a/dist/index.mjs b/dist/index.mjs
+index 7a4d36f..0b6670a 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -402,6 +402,12 @@ const LifecycleKind = {
+     SESSION_RENEW: 'session_renew',
+ };
+ 
++/**
++ * Stable user identity merged into every assembled RUM event as `usr`.
++ * Set via the patched `setUser()` export; `undefined` until then (combine()
++ * skips undefined values, so events emitted before `setUser` simply omit it).
++ */
++let currentRumUser;
+ /**
+  * Transforms RawEvents into ServerEvents by enriching them with contextual
+  * attributes (session, application, view, etc.) via format hooks.
+@@ -449,11 +455,12 @@ class Assembly {
+         if (hookResult === DISCARDED) {
+             return DISCARDED;
+         }
+         const { session, application, view } = hookResult ?? {};
+         const mainProcessAttributes = {
+             session: { id: session?.id },
+             application: { id: application?.id },
+             container: { view: { id: view?.id }, source: 'electron' },
++            usr: currentRumUser,
+         };
+         return {
+             kind: EventKind.SERVER,
+@@ -557,7 +564,11 @@ function registerCommonContext(configuration, hooks) {
+         version: configuration.version,
+         application: { id: configuration.applicationId },
+         session: { type: 'user' },
+-        ddtags: `sdk_version:${"0.2.0"}`,
++        usr: currentRumUser,
++        ddtags: [
++            `sdk_version:${"0.2.0"}`,
++            configuration.variant ? `variant:${configuration.variant}` : undefined,
++        ].filter(Boolean).join(','),
+         _dd: { format_version: 2 },
+     }));
+     hooks.registerTelemetry(() => ({
+@@ -684,6 +695,7 @@ function buildConfiguration(initConfig) {
+         applicationId,
+         env: validateOptionalString(initConfig.env),
+         version: validateOptionalString(initConfig.version),
++        variant: validateOptionalString(initConfig.variant),
+         proxy,
+         telemetrySampleRate: validateTelemetrySampleRate(initConfig.telemetrySampleRate),
+         defaultPrivacyLevel: validateDefaultPrivacyLevel(initConfig.defaultPrivacyLevel),
+@@ -2452,6 +2464,33 @@ async function init(configuration) {
+ function stopSession() {
+     monitorExports.callMonitored(() => sessionManager?.expire());
+ }
++/**
++ * Renew the current session by notifying the session manager of activity.
++ *
++ * Mirrors how `stopSession` reaches the module-level `sessionManager`.
++ * `updateActivity()` resets the inactivity timer and, when the session has
++ * already expired, synchronously registers a fresh session id in the in-memory
++ * history before its first `await`. Canopy calls this immediately before
++ * emitting an operation so the operation always lands in a live session.
++ */
++function notifyActivity() {
++    monitorExports.callMonitored(() => { void sessionManager?.updateActivity(); });
++}
++/**
++ * Set the user identity attached to every assembled RUM event as `usr`.
++ *
++ * The upstream alpha SDK exposes no user API, but the RUM event schema (and
++ * the Datadog UI's session/user attribution) expects `usr.id`. The value is
++ * merged by the common-context hook for main-process events and into the
++ * main-process attribute override for bridged renderer events, mirroring how
++ * `@datadog/browser-rum`'s `setUser` applies to every subsequent event.
++ * Pass `undefined` to clear it.
++ */
++function setUser(user) {
++    monitorExports.callMonitored(() => {
++        currentRumUser = user ? deepClone(user) : undefined;
++    });
++}
+ /**
+  * Report a manually handled error
+  */
+@@ -2538,5 +2577,5 @@ function _generateTelemetryError() {
+     });
+ }
+ 
+-export { SESSION_TIME_OUT_DELAY, _flushTransport, _generateTelemetryError, addError, failFeatureOperation, failOperation, init, startFeatureOperation, startOperation, stopSession, succeedFeatureOperation, succeedOperation };
++export { SESSION_TIME_OUT_DELAY, _flushTransport, _generateTelemetryError, addError, failFeatureOperation, failOperation, init, notifyActivity, setUser, startFeatureOperation, startOperation, stopSession, succeedFeatureOperation, succeedOperation };
+ //# sourceMappingURL=index.mjs.map

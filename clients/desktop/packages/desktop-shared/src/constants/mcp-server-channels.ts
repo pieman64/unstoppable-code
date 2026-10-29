@@ -1,0 +1,38 @@
+// ---------------------------------------------------------------------------
+// MCP Server IPC channels
+// ---------------------------------------------------------------------------
+
+export const MCP_SERVER_CHANNELS = {
+  LIST_ACCOUNT_CONNECTIONS: 'mcp-servers:list-account-connections',
+  START_ACCOUNT: 'mcp-servers:start-account',
+  GET_ACCOUNT: 'mcp-servers:get-account',
+  UPDATE_ACCOUNT: 'mcp-servers:update-account',
+  REMOVE_ACCOUNT: 'mcp-servers:remove-account',
+  REWRITE_REFS: 'mcp-servers:rewrite-refs',
+  DISCONNECT_ACCOUNT: 'mcp-servers:disconnect-account',
+  SET_ACCOUNT_TOOLS: 'mcp-servers:set-account-tools',
+  LIST_ACCOUNT_UPSTREAM_TOOLS: 'mcp-servers:list-account-upstream-tools',
+  AWAIT_ACCOUNT: 'mcp-servers:await-account',
+  LOAD_INDEX: 'mcp-servers:load-index',
+  LOAD_SERVER: 'mcp-servers:load-server',
+  SAVE_SERVER: 'mcp-servers:save-server',
+  DELETE_SERVER: 'mcp-servers:delete-server',
+  CHECK_HEALTH: 'mcp-servers:check-health',
+  TEST_CONNECTION: 'mcp-servers:test-connection',
+  LIST_DETECTED: 'mcp-servers:list-detected',
+  CANCEL_OAUTH_LOGIN: 'mcp-servers:cancel-oauth-login',
+  START_OAUTH_LOGIN: 'mcp-servers:start-oauth-login',
+  CLEAR_OAUTH_TOKEN: 'mcp-servers:clear-oauth-token',
+  GET_PROXY_STATE: 'mcp-servers:get-proxy-state',
+  APPLY_PROXY_PORT: 'mcp-servers:apply-proxy-port',
+  PROXY_STATUS: 'mcp-servers:proxy-status',
+  AUTH_CHANGED: 'mcp-servers:auth-changed',
+  LIST_PROVIDER_CONNECTORS: 'mcp-servers:list-provider-connectors',
+  OPEN_PROVIDER_CONNECTOR_SETTINGS:
+    'mcp-servers:open-provider-connector-settings',
+  LIST_CURATED: 'mcp-servers:list-curated',
+  REFRESH_CURATED: 'mcp-servers:refresh-curated',
+  RESOLVE_REMOTE_IMAGE: 'mcp-servers:resolve-remote-image',
+  LIST_STATUS: 'mcp-servers:list-status',
+  GET_TOOLS: 'mcp-servers:get-tools',
+} as const;

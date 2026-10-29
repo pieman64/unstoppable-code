@@ -1,0 +1,1346 @@
+{
+  "v1_basic": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string"
+      },
+      "limit": {
+        "type": "integer"
+      }
+    },
+    "required": ["query"]
+  },
+  "v2_nested_items": {
+    "type": "object",
+    "properties": {
+      "rows": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "q": {
+              "type": "string"
+            },
+            "limit": {
+              "type": "integer"
+            }
+          },
+          "required": ["q"]
+        }
+      }
+    },
+    "required": ["rows"]
+  },
+  "v3_already_nullable": {
+    "type": "object",
+    "properties": {
+      "a": {
+        "type": ["string", "null"]
+      }
+    }
+  },
+  "v4_enum": {
+    "type": "object",
+    "properties": {
+      "mode": {
+        "type": "string",
+        "enum": ["a", "b"]
+      }
+    }
+  },
+  "v5_keyword_names": {
+    "type": "object",
+    "properties": {
+      "if": {
+        "type": "string"
+      },
+      "anyOf": {
+        "type": "number"
+      },
+      "required": {
+        "type": "boolean"
+      }
+    },
+    "required": ["if"]
+  },
+  "v6_open_record": {
+    "type": "object",
+    "additionalProperties": true
+  },
+  "bare_object": {
+    "type": "object"
+  },
+  "props_plus_open": {
+    "type": "object",
+    "properties": {
+      "a": {
+        "type": "string"
+      }
+    },
+    "required": ["a"],
+    "additionalProperties": true
+  },
+  "record_schema": {
+    "type": "object",
+    "additionalProperties": {
+      "type": "string"
+    }
+  },
+  "optional_type_plus_anyof": {
+    "type": "object",
+    "properties": {
+      "x": {
+        "type": "string",
+        "anyOf": [
+          {
+            "minLength": 1
+          },
+          {
+            "maxLength": 0
+          }
+        ]
+      }
+    }
+  },
+  "optional_ref": {
+    "type": "object",
+    "properties": {
+      "x": {
+        "$ref": "#/$defs/X"
+      }
+    },
+    "$defs": {
+      "X": {
+        "type": "object",
+        "properties": {
+          "y": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "optional_type_plus_ref": {
+    "type": "object",
+    "properties": {
+      "x": {
+        "type": "object",
+        "$ref": "#/$defs/X"
+      }
+    },
+    "$defs": {
+      "X": {
+        "type": "object",
+        "properties": {
+          "y": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "optional_const": {
+    "type": "object",
+    "properties": {
+      "c": {
+        "const": "k"
+      }
+    }
+  },
+  "optional_no_type": {
+    "type": "object",
+    "properties": {
+      "any": {},
+      "desc": {
+        "description": "free"
+      }
+    }
+  },
+  "oneof_only": {
+    "type": "object",
+    "properties": {
+      "u": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "number"
+          }
+        ]
+      }
+    },
+    "required": ["u"]
+  },
+  "oneof_and_anyof": {
+    "type": "object",
+    "properties": {
+      "u": {
+        "oneOf": [
+          {
+            "type": "string"
+          }
+        ],
+        "anyOf": [
+          {
+            "type": "number"
+          }
+        ]
+      }
+    },
+    "required": ["u"]
+  },
+  "allof_single": {
+    "type": "object",
+    "properties": {
+      "a": {
+        "allOf": [
+          {
+            "type": "object",
+            "properties": {
+              "z": {
+                "type": "string"
+              }
+            },
+            "required": ["z"]
+          }
+        ]
+      }
+    },
+    "required": ["a"]
+  },
+  "allof_chain": {
+    "type": "object",
+    "properties": {
+      "a": {
+        "allOf": [
+          {
+            "allOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "z": {
+                    "type": "string"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "required": ["a"]
+  },
+  "allof_multi": {
+    "type": "object",
+    "properties": {
+      "a": {
+        "allOf": [
+          {
+            "type": "object",
+            "properties": {
+              "z": {
+                "type": "string"
+              }
+            },
+            "required": ["z"]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "w": {
+                "type": "number"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "required": ["a"]
+  },
+  "conditionals": {
+    "type": "object",
+    "properties": {
+      "a": {
+        "type": "string",
+        "default": "x"
+      }
+    },
+    "if": {
+      "properties": {
+        "a": {
+          "const": "x"
+        }
+      }
+    },
+    "then": {
+      "required": ["a"]
+    },
+    "not": {
+      "required": ["b"]
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema"
+  },
+  "tuple": {
+    "type": "object",
+    "properties": {
+      "t": {
+        "type": "array",
+        "prefixItems": [
+          {
+            "type": "object",
+            "properties": {
+              "p": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "number"
+          }
+        ]
+      }
+    },
+    "required": ["t"]
+  },
+  "description_move": {
+    "type": "object",
+    "properties": {
+      "d": {
+        "$ref": "#/$defs/D",
+        "description": "doc"
+      }
+    },
+    "required": []
+  },
+  "zod_like": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string"
+      },
+      "limit": {
+        "type": "number",
+        "minimum": 1,
+        "maximum": 500
+      },
+      "offset": {
+        "type": "integer",
+        "exclusiveMinimum": -1
+      }
+    },
+    "required": ["path"],
+    "additionalProperties": false
+  },
+  "branch_local_defs_oneof": {
+    "type": "object",
+    "properties": {
+      "v": {
+        "oneOf": [
+          {
+            "$defs": {
+              "Item": {
+                "type": "object",
+                "properties": {
+                  "n": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "type": "array",
+            "items": {
+              "$ref": "#/properties/v/oneOf/0/$defs/Item"
+            }
+          },
+          {
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "required": ["v"]
+  },
+  "nullable_ref_wrapper": {
+    "type": "object",
+    "properties": {
+      "filter": {
+        "$defs": {
+          "Value": {
+            "type": "string"
+          }
+        },
+        "anyOf": [
+          {
+            "$ref": "#/properties/filter/$defs/Value"
+          },
+          {
+            "type": "number"
+          }
+        ]
+      }
+    }
+  },
+  "ref_union_members": {
+    "type": "object",
+    "$defs": {
+      "A": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "a"
+          },
+          "extra": {
+            "type": "string"
+          }
+        },
+        "required": ["kind"]
+      },
+      "B": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "b"
+          },
+          "n": {
+            "type": "number"
+          }
+        },
+        "required": ["kind", "n"]
+      }
+    },
+    "anyOf": [
+      {
+        "$ref": "#/$defs/A"
+      },
+      {
+        "$ref": "#/$defs/B"
+      }
+    ]
+  },
+  "ref_to_property": {
+    "type": "object",
+    "properties": {
+      "a": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "anyOf": [
+      {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": 1
+          },
+          "other": {
+            "$ref": "#/properties/a"
+          }
+        },
+        "required": ["kind"]
+      },
+      {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": 2
+          }
+        },
+        "required": ["kind"]
+      }
+    ]
+  },
+  "ref_to_branch": {
+    "type": "object",
+    "properties": {
+      "source": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string"
+              }
+            },
+            "required": ["url"]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": ["path"]
+          }
+        ]
+      },
+      "fallback": {
+        "$ref": "#/properties/source/oneOf/0"
+      }
+    }
+  },
+  "tuple_rest": {
+    "type": "object",
+    "properties": {
+      "t": {
+        "type": "array",
+        "prefixItems": [
+          {
+            "type": "object",
+            "properties": {
+              "p": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "number"
+          }
+        ],
+        "items": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "limit": {
+              "type": "integer"
+            }
+          },
+          "required": ["name"]
+        }
+      }
+    },
+    "required": ["t"]
+  },
+  "tuple_rest_union": {
+    "type": "object",
+    "properties": {
+      "v": {
+        "anyOf": [
+          {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "string"
+              }
+            ],
+            "items": {
+              "type": "object",
+              "properties": {
+                "n": {
+                  "type": "number"
+                }
+              }
+            }
+          },
+          {
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "required": ["v"]
+  },
+  "sibling_type_allof": {
+    "type": "object",
+    "properties": {
+      "limit": {
+        "type": "integer",
+        "allOf": [
+          {
+            "type": ["integer", "null"]
+          }
+        ]
+      }
+    }
+  },
+  "sibling_type_ref": {
+    "type": "object",
+    "properties": {
+      "limit": {
+        "type": "integer",
+        "$ref": "#/$defs/N"
+      }
+    },
+    "$defs": {
+      "N": {
+        "type": ["integer", "null"]
+      }
+    }
+  },
+  "sibling_enum_anyof": {
+    "type": "object",
+    "properties": {
+      "mode": {
+        "enum": ["a", "b"],
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    }
+  },
+  "allof_nullable_minimum": {
+    "type": "object",
+    "properties": {
+      "v": {
+        "minimum": 1,
+        "allOf": [
+          {
+            "type": ["integer", "null"]
+          }
+        ]
+      }
+    }
+  },
+  "annotation_only": {
+    "type": "object",
+    "properties": {
+      "payload": {
+        "description": "JSON payload"
+      }
+    }
+  },
+  "allof_ref_only": {
+    "type": "object",
+    "properties": {
+      "item": {
+        "type": "object",
+        "allOf": [
+          {
+            "$ref": "#/$defs/Item"
+          }
+        ]
+      }
+    },
+    "required": ["item"],
+    "$defs": {
+      "Item": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": ["name"]
+      }
+    }
+  },
+  "required_only_union": {
+    "type": "object",
+    "properties": {
+      "executionId": {
+        "type": "string"
+      },
+      "pipelineId": {
+        "type": "string"
+      },
+      "label": {
+        "type": "string"
+      }
+    },
+    "anyOf": [
+      {
+        "required": ["executionId"]
+      },
+      {
+        "required": ["pipelineId"]
+      }
+    ]
+  },
+  "mixed_type_union": {
+    "type": "object",
+    "properties": {
+      "v": {
+        "type": ["object", "string"],
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "a": {
+                "type": "string"
+              }
+            },
+            "required": ["a"]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "b": {
+                "type": "number"
+              }
+            },
+            "required": ["b"]
+          }
+        ]
+      }
+    },
+    "required": ["v"]
+  },
+  "large_artifact": {
+    "type": "object",
+    "anyOf": [
+      {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "domains"
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "domain": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "score": {
+                      "type": "number"
+                    }
+                  },
+                  "required": ["domain"]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "tags": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": ["name"]
+                }
+              ]
+            }
+          }
+        },
+        "required": ["kind", "rows"]
+      },
+      {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "document"
+          },
+          "title": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          }
+        },
+        "required": ["kind", "title"]
+      }
+    ]
+  },
+  "nested_discriminator": {
+    "type": "object",
+    "anyOf": [
+      {
+        "type": "object",
+        "properties": {
+          "settings": {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "const": "a"
+              },
+              "note": {
+                "type": ["string", "null"]
+              }
+            },
+            "required": ["mode"]
+          }
+        },
+        "required": ["settings"]
+      },
+      {
+        "type": "object",
+        "properties": {
+          "settings": {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "const": "b"
+              },
+              "note": {
+                "type": "string"
+              }
+            },
+            "required": ["mode"]
+          }
+        },
+        "required": ["settings"]
+      }
+    ]
+  },
+  "array_union_branch_items": {
+    "type": "object",
+    "properties": {
+      "rows": {
+        "type": "array",
+        "anyOf": [
+          {
+            "items": {
+              "type": "string"
+            }
+          },
+          {
+            "items": {
+              "type": "object",
+              "properties": {
+                "k": {
+                  "type": "string"
+                },
+                "limit": {
+                  "type": "integer"
+                }
+              },
+              "required": ["k"]
+            }
+          }
+        ]
+      }
+    },
+    "required": ["rows"]
+  },
+  "multi_array": {
+    "type": "object",
+    "properties": {
+      "entries": {
+        "anyOf": [
+          {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "limit": {
+                  "type": "integer"
+                }
+              },
+              "required": ["name"]
+            }
+          }
+        ]
+      }
+    }
+  },
+  "branch_defs": {
+    "type": "object",
+    "anyOf": [
+      {
+        "properties": {
+          "kind": {
+            "const": "a"
+          },
+          "item": {
+            "$ref": "#/anyOf/0/$defs/Item"
+          }
+        },
+        "required": ["kind"],
+        "$defs": {
+          "Item": {
+            "type": "object",
+            "properties": {
+              "n": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "b"
+          }
+        },
+        "required": ["kind"]
+      }
+    ]
+  },
+  "cyclic_union": {
+    "type": "object",
+    "anyOf": [
+      {
+        "$ref": "#"
+      },
+      {
+        "$ref": "#"
+      }
+    ]
+  },
+  "nested_union": {
+    "type": "object",
+    "anyOf": [
+      {
+        "properties": {
+          "kind": {
+            "const": "a"
+          }
+        },
+        "required": ["kind"],
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "x": {
+                "type": "string"
+              }
+            },
+            "required": ["x"]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "y": {
+                "type": "number"
+              }
+            },
+            "required": ["y"]
+          }
+        ]
+      },
+      {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "b"
+          },
+          "z": {
+            "type": "boolean"
+          }
+        },
+        "required": ["kind"]
+      }
+    ]
+  },
+  "recursive_ref": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string"
+      },
+      "limit": {
+        "type": "integer"
+      },
+      "children": {
+        "type": "array",
+        "items": {
+          "$ref": "#"
+        }
+      }
+    },
+    "required": ["name"]
+  },
+  "ref_object": {
+    "type": "object",
+    "properties": {
+      "item": {
+        "type": "object",
+        "$ref": "#/$defs/Item"
+      }
+    },
+    "required": ["item"],
+    "$defs": {
+      "Item": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          }
+        },
+        "required": ["name"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "typed_union": {
+    "type": "object",
+    "anyOf": [
+      {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "note": {
+            "type": ["string", "null"]
+          }
+        },
+        "required": ["id"],
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "note": {
+            "type": "string"
+          }
+        },
+        "required": ["id"],
+        "additionalProperties": false
+      }
+    ]
+  },
+  "enum_union": {
+    "type": "object",
+    "anyOf": [
+      {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "enum": ["a", "b"]
+          },
+          "note": {
+            "type": ["string", "null"]
+          }
+        },
+        "required": ["kind", "note"],
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "enum": ["c", "d"]
+          },
+          "note": {
+            "type": "string"
+          }
+        },
+        "required": ["kind"],
+        "additionalProperties": false
+      }
+    ]
+  },
+  "nullable_obj_union": {
+    "type": "object",
+    "properties": {
+      "opt": {
+        "type": ["object", "null"],
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "x": {
+                "const": 1
+              }
+            },
+            "required": ["x"]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "y": {
+                "const": 2
+              }
+            },
+            "required": ["y"]
+          }
+        ]
+      }
+    },
+    "required": ["opt"]
+  },
+  "allof_nullable": {
+    "type": "object",
+    "properties": {
+      "v": {
+        "allOf": [
+          {
+            "type": ["string", "null"]
+          },
+          {
+            "maxLength": 5
+          }
+        ]
+      }
+    }
+  },
+  "nullable_array": {
+    "type": "object",
+    "properties": {
+      "entries": {
+        "anyOf": [
+          {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "limit": {
+                  "type": "integer"
+                }
+              },
+              "required": ["name"]
+            }
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    }
+  },
+  "bare_root_union": {
+    "anyOf": [
+      {
+        "type": "object",
+        "properties": {
+          "a": {
+            "type": "string"
+          }
+        },
+        "required": ["a"]
+      },
+      {
+        "type": "object",
+        "properties": {
+          "b": {
+            "type": "number"
+          }
+        }
+      }
+    ]
+  },
+  "bare_root_mixed": {
+    "anyOf": [
+      {
+        "type": "object",
+        "properties": {
+          "a": {
+            "type": "string"
+          }
+        },
+        "required": ["a"]
+      },
+      {
+        "type": "string"
+      }
+    ]
+  },
+  "dispatch_union": {
+    "type": "object",
+    "properties": {
+      "kind": {
+        "type": "string"
+      },
+      "label": {
+        "type": "string"
+      }
+    },
+    "required": ["kind"],
+    "anyOf": [
+      {
+        "properties": {
+          "kind": {
+            "const": "task"
+          }
+        },
+        "required": ["kind"]
+      },
+      {
+        "properties": {
+          "kind": {
+            "const": "named"
+          },
+          "profileId": {
+            "type": "string"
+          }
+        },
+        "required": ["kind", "profileId"]
+      }
+    ]
+  },
+  "watcher_union": {
+    "type": "object",
+    "properties": {
+      "items": {
+        "type": "array",
+        "items": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "workflow_run"
+                },
+                "target": {
+                  "type": "string"
+                },
+                "repository": {
+                  "type": "string"
+                },
+                "runAttempt": {
+                  "type": "integer"
+                }
+              },
+              "required": ["kind", "target"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "pull_request"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": ["kind", "target"],
+              "additionalProperties": false
+            }
+          ]
+        }
+      }
+    },
+    "required": ["items"]
+  },
+  "required_a": {
+    "type": "object",
+    "properties": {
+      "a": {
+        "type": "string"
+      }
+    },
+    "required": ["a"]
+  },
+  "nullable_ref": {
+    "type": "object",
+    "properties": {
+      "note": {
+        "$ref": "#/$defs/NullableNote"
+      }
+    },
+    "$defs": {
+      "NullableNote": {
+        "type": ["string", "null"]
+      }
+    }
+  },
+  "union_root": {
+    "type": "object",
+    "anyOf": [
+      {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "document"
+          },
+          "name": {
+            "type": "string"
+          },
+          "payload": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": "string"
+              },
+              "body": {
+                "type": "string"
+              }
+            },
+            "required": ["title"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["kind", "payload"],
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "domain"
+          },
+          "name": {
+            "type": "string"
+          },
+          "payload": {
+            "type": "object",
+            "properties": {
+              "domains": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "limit": {
+                "type": "integer"
+              }
+            },
+            "required": ["domains"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["kind", "payload"],
+        "additionalProperties": false
+      }
+    ]
+  },
+  "mutation_probe": {
+    "type": "object",
+    "properties": {
+      "a": {
+        "type": "string",
+        "default": "x"
+      },
+      "n": {
+        "type": "object",
+        "properties": {
+          "b": {
+            "type": "number",
+            "default": 1
+          }
+        }
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "if": {
+      "required": ["a"]
+    },
+    "then": {}
+  }
+}

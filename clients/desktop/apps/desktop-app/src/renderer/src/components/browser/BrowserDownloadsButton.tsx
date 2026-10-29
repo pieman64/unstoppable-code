@@ -1,0 +1,69 @@
+import type { JSX } from 'react';
+import { CircularProgress } from '@canopy/ui-shared';
+import { HeaderActionButton } from '@canopy/ui-shared/components';
+import { DownloadIcon } from '@canopy/ui-shared/icons/AppIcons';
+import {
+  selectActiveTransferCount,
+  useBrowserStore,
+} from '@/stores/browserStore';
+import { activeTransfersPercentage } from './browserTransferFormat';
+
+interface BrowserDownloadsButtonProps {
+  browserId: string;
+}
+
+/**
+ * Opens the inspector's Files tab. While downloads are in flight it shows
+ * their combined progress as a ring, with their count as a badge.
+ */
+export function BrowserDownloadsButton({
+  browserId,
+}: BrowserDownloadsButtonProps): JSX.Element {
+  const activeCount = useBrowserStore((s) =>
+    selectActiveTransferCount(s, browserId),
+  );
+  const percentage = useBrowserStore((s) =>
+    activeTransfersPercentage(s.transfers[browserId] ?? []),
+  );
+  const filesOpen = useBrowserStore(
+    (s) =>
+      s.inspectorOpen[browserId] === true &&
+      s.inspectorTab[browserId] === 'files',
+  );
+  const openFilesPanel = useBrowserStore((s) => s.openFilesPanel);
+  const setInspectorOpen = useBrowserStore((s) => s.setInspectorOpen);
+  const label = filesOpen
+    ? 'Hide downloads'
+    : activeCount > 0
+      ? `Show downloads, ${activeCount} in progress`
+      : 'Show downloads';
+
+  return (
+    <HeaderActionButton
+      stateStyle="toolbar"
+      iconOnly
+      tone="neutral"
+      aria-label={label}
+      aria-pressed={filesOpen}
+      data-testid="browser-files-button"
+      onClick={(): void => {
+        if (filesOpen) {
+          setInspectorOpen(browserId, false);
+        } else {
+          openFilesPanel(browserId);
+        }
+      }}
+    >
+      {activeCount > 0 ? (
+        <>
+          <CircularProgress percentage={percentage} tone="neutral" size={16} />
+          <span className="pointer-events-none absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-fg-info px-1 text-3xs font-semibold tabular-nums fg-emphasis">
+            {activeCount > 99 ? '99+' : activeCount}
+          </span>
+        </>
+      ) : (
+        <DownloadIcon size={16} aria-hidden="true" />
+      )}
+    </HeaderActionButton>
+  );
+}

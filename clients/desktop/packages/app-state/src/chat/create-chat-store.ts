@@ -1,0 +1,1936 @@
+import { create } from 'zustand';
+import type {
+  CanopyClient,
+  ChatMessageEvent,
+  ChatTabSettings,
+  PersistChatTabSettingsArgs,
+} from '@canopy/app-core';
+import type {
+  ChatInputDeliveryView,
+  ChatSteeringCapabilities,
+  PortalChatMessage,
+  PortalChatMessageAttachment,
+  PortalQueuedMessage,
+  PortalChatThinkingLevel,
+  PortalChatTurnGroup,
+} from '@canopy/protocol/portal';
+import type { ModelCatalogThinkingLevel } from '@canopy/protocol/models';
+import {
+  advanceThinkingLevel,
+  providerFallbackThinkingLevels,
+} from '@canopy/protocol/thinking';
+import {
+  CLIENT_STORE_ACTIVATE,
+  CLIENT_STORE_DISPOSE,
+  type ClientStore,
+} from '../create-client-store';
+import { useCanopyClientStore } from '../CanopyClientProvider';
+import {
+  computeIncrementalTurnGroups,
+  createEmptyTurnGroupCache,
+  type TurnGroupCache,
+} from './turn-groups';
+import {
+  hasAuthoritativeMatch,
+  isOptimisticMessage,
+  makeOptimisticUserMessage,
+  OPTIMISTIC_ID_PREFIX,
+  reconcileOptimistic,
+  RECONCILE_SKEW_MS,
+} from './optimistic';
+import {
+  CHAT_SEMANTIC_STALE_MS,
+  hasChatRepairRequester,
+  requestChatRepair,
+} from './chat-repair';
+
+/** Coarse streaming state of a single chat thread. */
+export type ChatThreadStatus = 'idle' | 'streaming' | 'error';
+
+/** Default composer thinking level (matches the desktop default). */
+const DEFAULT_THINKING_LEVEL: PortalChatThinkingLevel = 'high';
+
+/** Debounce window for settings persistence, mirroring the desktop 500ms save. */
+const PERSIST_DEBOUNCE_MS = 500;
+
+const normalizeOptimisticLocalId = (localId: string): string =>
+  localId.startsWith(OPTIMISTIC_ID_PREFIX)
+    ? localId
+    : `${OPTIMISTIC_ID_PREFIX}${localId}`;
+
+/** Routing context for a chat, captured from `chat.message` events. */
+export interface ChatRoute {
+  readonly scope: 'worktree' | 'standalone' | 'app_advisor';
+  readonly workspaceLocalId?: string;
+  readonly worktreeLocalId?: string;
+}
+
+/** Optional authoritative host state supplied with a transcript snapshot. */
+export interface ChatHydrationOptions {
+  /** Replace the transcript exactly instead of merging a late history page. */
+  readonly replaceMessages?: boolean;
+  readonly status?: ChatThreadStatus;
+  readonly error?: string | null;
+  readonly turnActive?: boolean;
+  readonly route?: ChatRoute;
+  readonly settings?: ChatTabSettings;
+  readonly queuedMessages?: readonly PortalQueuedMessage[];
+  readonly inputDelivery?: readonly ChatInputDeliveryView[];
+  readonly steeringCapabilities?: ChatSteeringCapabilities;
+}
+
+/** Live state for one chat thread, keyed by `chatId`. */
+export interface ChatThreadState {
+  readonly chatId: string;
+  /** Messages ordered by `createdAtMs` ascending. */
+  readonly messages: readonly PortalChatMessage[];
+  /** Turn groups with completed-group object identity preserved across frames. */
+  readonly turnGroups: readonly PortalChatTurnGroup[];
+  readonly status: ChatThreadStatus;
+  /** Failure text when `status === 'error'`, else `null`. */
+  readonly error: string | null;
+  /**
+   * Whether the relay's turn timer is currently streaming (a turn is in flight).
+   * The authoritative turn-active signal on the portal path, where content
+   * frames arrive already `complete` and so cannot drive the working indicator
+   * (CAN-1006). Independent of assistant-frame streaming.
+   */
+  readonly turnActive: boolean;
+  /** Host-authoritative queue mirror. */
+  readonly queuedMessages: readonly PortalQueuedMessage[];
+  readonly inputDelivery?: readonly ChatInputDeliveryView[];
+  readonly steeringCapabilities?: ChatSteeringCapabilities;
+  /** Epoch-ms of the most recent message frame, for "last activity" derivations. */
+  readonly lastEventAt?: number;
+  // ---- Persisted composer settings (CAN-739) ----
+  readonly planMode: boolean;
+  readonly proposalMode: 'optional' | 'required';
+  readonly thinkingLevel: PortalChatThinkingLevel;
+  /** Opaque provider tool-input for a pending plan exit, carried across restart. */
+  readonly pendingPlanExit?: Readonly<Record<string, unknown>>;
+  /** Routing context captured from events, needed to address persistence. */
+  readonly route?: ChatRoute;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function partToolUseId(data: unknown): string | undefined {
+  if (!isRecord(data)) return undefined;
+  return typeof data.toolUseId === 'string' && data.toolUseId.length > 0
+    ? data.toolUseId
+    : undefined;
+}
+
+/** Stable description of repairable semantic staleness in the latest turn. */
+export function semanticStalenessSignature(
+  thread: ChatThreadState,
+): string | null {
+  let latestTurnStart = 0;
+  for (let index = thread.messages.length - 1; index >= 0; index -= 1) {
+    if (thread.messages[index]?.role === 'user') {
+      latestTurnStart = index;
+      break;
+    }
+  }
+
+  const completedToolUseIds = new Set<string>();
+  const pendingToolUseIds = new Set<string>();
+  let anonymousPendingToolUses = 0;
+  let openTimer = false;
+  for (
+    let index = latestTurnStart;
+    index < thread.messages.length;
+    index += 1
+  ) {
+    const message = thread.messages[index];
+    if (!message) continue;
+    for (const part of message.parts ?? []) {
+      const toolUseId = partToolUseId(part.data);
+      if (part.kind === 'tool_result' && toolUseId) {
+        completedToolUseIds.add(toolUseId);
+      }
+      if (part.kind === 'tool_use') {
+        if (
+          isRecord(part.data) &&
+          Object.prototype.hasOwnProperty.call(part.data, 'result')
+        ) {
+          if (toolUseId) completedToolUseIds.add(toolUseId);
+        } else if (toolUseId) {
+          pendingToolUseIds.add(toolUseId);
+        } else {
+          anonymousPendingToolUses += 1;
+        }
+      }
+      if (part.kind === 'turn_timer' && message.status === 'streaming') {
+        openTimer = true;
+      }
+    }
+  }
+
+  const unmatchedToolUses =
+    anonymousPendingToolUses +
+    Array.from(pendingToolUseIds).filter(
+      (toolUseId) => !completedToolUseIds.has(toolUseId),
+    ).length;
+  if (!openTimer && unmatchedToolUses === 0) return null;
+  const lastMessage = thread.messages[thread.messages.length - 1];
+  return [
+    thread.messages.length,
+    lastMessage?.messageId ?? '',
+    lastMessage?.updatedAtMs ?? '',
+    unmatchedToolUses,
+    openTimer ? 1 : 0,
+  ].join(':');
+}
+
+/**
+ * The shared chat store. Ingests {@link ChatMessageEvent}s into per-thread
+ * transcript state (CAN-738) and owns the persisted composer settings —
+ * plan-mode, thinking-level — plus the optimistic user echo (CAN-739). Settings
+ * mutations are persisted through `client.command('chat.persistTabSettings')` on
+ * a 500ms debounce.
+ */
+export interface ChatStoreState {
+  /** Per-chat thread state, keyed by `chatId`. */
+  readonly threads: Readonly<Record<string, ChatThreadState>>;
+  /** Chats whose composer settings have received at least one seed. */
+  readonly seededSettingsChatIds?: Readonly<Record<string, true>>;
+  /**
+   * Merge authoritative snapshot/history messages into a thread. Existing live
+   * and optimistic frames are retained so a late full-history response can
+   * fill the older transcript without rewinding an in-flight turn.
+   */
+  hydrate(
+    chatId: string,
+    messages: readonly PortalChatMessage[],
+    options?: ChatHydrationOptions,
+  ): void;
+  /** Drop a thread's state, its turn-group cache, and any pending persist. */
+  reset(chatId: string): void;
+  /**
+   * Apply one transport-delivered message frame. Public so the
+   * {@link createChatStore} subscription can route events in; not intended to
+   * be called by feature components, which only read state via selectors.
+   */
+  ingestMessageEvent(event: ChatMessageEvent): void;
+  /** Insert an optimistic user echo for immediate display (reconciled on ingest). */
+  addOptimisticUserMessage(
+    chatId: string,
+    args: {
+      text: string;
+      createdAtMs: number;
+      localId?: string;
+      attachments?: readonly PortalChatMessageAttachment[];
+    },
+  ): void;
+  /**
+   * Bind an in-flight send's optimistic echo to the host user-message identity
+   * it will echo back under. Hosts call this right after dispatching a send,
+   * pairing the panel-minted `optimisticLocalId` with the `userMessageId` they
+   * put on the wire. When an authoritative user frame with that exact
+   * `messageId` is later ingested for `chatId`, the bound optimistic row is
+   * removed by identity — regardless of the `RECONCILE_SKEW_MS` window the
+   * text-based reconcile is limited to. That window is deliberately narrow (it
+   * keeps genuinely repeated identical sends apart), but slow host round trips
+   * (e.g. the App Advisor waited send: window ensure + provider session
+   * spin-up) stamp the echo's `createdAtMs` well past it, which stranded the
+   * optimistic bubble next to the authoritative one.
+   *
+   * Semantics: latest binding per chat wins; a binding is consumed on the
+   * matching ingest, cleared by {@link rollbackOptimisticSend} of the same
+   * `localId`, and carried to the target chat by {@link adoptThread} (the App
+   * Advisor first-send adoption). The text+skew reconcile stays in place as
+   * the fallback for unbound sends.
+   */
+  bindOptimisticSend(
+    chatId: string,
+    args: {
+      readonly optimisticLocalId: string;
+      readonly userMessageId: string;
+    },
+  ): void;
+  /**
+   * Roll a pre-host optimistic send back on a portal transport rejection
+   * (CAN-1429). The UI supplies the exact `localId` it minted via
+   * {@link addOptimisticUserMessage} for the send it is abandoning.
+   *
+   * - Removes a **pre-host** optimistic send **only if** the supplied `localId`
+   *   still owns the optimistic working-state raise for `chatId`.
+   * - On a valid rollback: removes only that exact optimistic bubble, recomputes
+   *   turn groups, and restores the `status`/`error`/`turnActive` baseline
+   *   captured when the raise was applied (e.g. a prior error banner comes
+   *   back instead of landing on `idle`), while preserving authoritative
+   *   messages, queue state, route, settings, and activity timestamps.
+   * - Otherwise (stale ID, replaced owner, already-reconciled bubble,
+   *   authoritative or newer turn took over, disposed store): a **no-op** that
+   *   returns the existing state object unchanged (referentially equal — must
+   *   not trigger a render).
+   * - Never lowers an authoritative or newer turn. Never deletes an
+   *   authoritative message.
+   */
+  rollbackOptimisticSend(
+    chatId: string,
+    args: { readonly localId: string },
+  ): void;
+  /**
+   * Move a provisional browser thread onto the canonical host chat id.
+   * Canonical frames that won the response race are merged rather than
+   * replaced, and the optimistic working-state owner follows the move.
+   */
+  adoptThread(sourceChatId: string, targetChatId: string): void;
+  /**
+   * Seed a chat's composer settings from host persistence (the
+   * `chat.getTabSettings` restore path) WITHOUT scheduling a persist. When
+   * `ifAbsent` is true, preserve whichever settings source seeded first.
+   */
+  seedTabSettings(
+    chatId: string,
+    settings: ChatTabSettings,
+    options?: { ifAbsent?: boolean },
+  ): void;
+  /** Toggle plan mode for a chat (debounced-persisted). */
+  setPlanMode(chatId: string, planMode: boolean): void;
+  /** Set whether a produced plan requires approval (debounced-persisted). */
+  setProposalMode(chatId: string, proposalMode: 'optional' | 'required'): void;
+  /** Set the composer thinking level directly (debounced-persisted). */
+  setThinkingLevel(chatId: string, level: PortalChatThinkingLevel): void;
+  /**
+   * Advance the thinking level by one step (debounced-persisted).
+   *
+   * `supportedLevels` are the efforts the connected desktop projected for the
+   * active model (CAN-2441); when omitted the provider-level cycle applies.
+   */
+  cycleThinkingLevel(
+    chatId: string,
+    providerType?: string,
+    supportedLevels?: readonly ModelCatalogThinkingLevel[],
+  ): void;
+  /** Set or clear the pending plan-exit payload (debounced-persisted). */
+  setPendingPlanExit(
+    chatId: string,
+    pendingPlanExit: Readonly<Record<string, unknown>> | undefined,
+  ): void;
+  /** Cancel a chat's pending debounce and persist its settings immediately. */
+  flushPersist(chatId: string): void;
+}
+
+interface UnrefableTimer {
+  unref(): void;
+}
+
+function isUnrefableTimer(value: unknown): value is UnrefableTimer {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof Reflect.get(value, 'unref') === 'function'
+  );
+}
+
+function emptyThread(chatId: string): ChatThreadState {
+  return {
+    chatId,
+    messages: [],
+    turnGroups: [],
+    status: 'idle',
+    error: null,
+    turnActive: false,
+    queuedMessages: [],
+    lastEventAt: undefined,
+    planMode: false,
+    proposalMode: 'optional',
+    thinkingLevel: DEFAULT_THINKING_LEVEL,
+    pendingPlanExit: undefined,
+    route: undefined,
+  };
+}
+
+/** Omitted metadata in legacy frames must not erase known user files. */
+function retainUserAttachments(
+  incoming: PortalChatMessage,
+  existing: PortalChatMessage | undefined,
+): PortalChatMessage {
+  return incoming.role === 'user' &&
+    existing?.role === 'user' &&
+    incoming.attachments === undefined &&
+    existing.attachments !== undefined
+    ? { ...incoming, attachments: existing.attachments }
+    : incoming;
+}
+
+function refreshPresentationOrder(
+  existing: PortalChatMessage,
+  incoming: PortalChatMessage,
+): PortalChatMessage {
+  return incoming.presentationOrder === undefined ||
+    incoming.presentationOrder === existing.presentationOrder
+    ? existing
+    : { ...existing, presentationOrder: incoming.presentationOrder };
+}
+
+const messageIndexes = new WeakMap<
+  readonly PortalChatMessage[],
+  ReadonlyMap<string, number>
+>();
+
+function indexMessages(
+  messages: readonly PortalChatMessage[],
+): ReadonlyMap<string, number> {
+  let index = messageIndexes.get(messages);
+  if (!index) {
+    index = new Map(messages.map((message, i) => [message.messageId, i]));
+    messageIndexes.set(messages, index);
+  }
+  return index;
+}
+
+let chatBatchDepth = 0;
+const pendingChatCommits = new Set<() => void>();
+
+export function batchChatStoreUpdates(callback: () => void): void {
+  chatBatchDepth++;
+  try {
+    callback();
+  } finally {
+    if (--chatBatchDepth === 0) {
+      const commits = Array.from(pendingChatCommits);
+      pendingChatCommits.clear();
+      for (const commit of commits) commit();
+    }
+  }
+}
+
+function orderMessages(
+  messages: readonly PortalChatMessage[],
+): PortalChatMessage[] {
+  const chronological = messages
+    .slice()
+    .sort((a, b) => a.createdAtMs - b.createdAtMs);
+  const presentationOrdered = messages
+    .filter((message) => message.presentationOrder !== undefined)
+    .sort(
+      (a, b) =>
+        (a.presentationOrder ?? 0) - (b.presentationOrder ?? 0) ||
+        a.createdAtMs - b.createdAtMs,
+    );
+  let presentationIndex = 0;
+  for (let index = 0; index < chronological.length; index++) {
+    if (chronological[index]?.presentationOrder === undefined) continue;
+    const orderedMessage = presentationOrdered[presentationIndex++];
+    if (orderedMessage !== undefined) chronological[index] = orderedMessage;
+  }
+  return chronological;
+}
+
+/** Upsert by `messageId`, retaining any authoritative presentation order. */
+function upsertMessage(
+  messages: readonly PortalChatMessage[],
+  incoming: PortalChatMessage,
+  knownIndex?: number,
+): PortalChatMessage[] {
+  const indexes = indexMessages(messages);
+  const index = knownIndex ?? indexes.get(incoming.messageId) ?? -1;
+  if (
+    index >= 0 &&
+    messages[index].createdAtMs === incoming.createdAtMs &&
+    messages[index].presentationOrder === incoming.presentationOrder
+  ) {
+    const next = messages.slice();
+    next[index] = retainUserAttachments(incoming, messages[index]);
+    messageIndexes.set(next, indexes);
+    return next;
+  }
+  const next = messages.slice();
+  if (index >= 0)
+    next[index] = retainUserAttachments(incoming, messages[index]);
+  else next.push(incoming);
+  const ordered = orderMessages(next);
+  indexMessages(ordered);
+  return ordered;
+}
+
+function messageRevision(message: PortalChatMessage): number {
+  const frameRevision = message.updatedAtMs ?? message.createdAtMs;
+  // Persisted timer messages retain their start timestamp; completion advances
+  // only the embedded timer block.
+  const timerData = message.parts?.find(
+    (part) => part.kind === 'turn_timer',
+  )?.data;
+  const completedAt =
+    typeof timerData === 'object' &&
+    timerData !== null &&
+    'completedAt' in timerData
+      ? timerData.completedAt
+      : undefined;
+  return typeof completedAt === 'number'
+    ? Math.max(frameRevision, completedAt)
+    : frameRevision;
+}
+
+function supersedesCachedMessage(
+  cached: PortalChatMessage,
+  incoming: PortalChatMessage,
+): boolean {
+  const revisionDelta = messageRevision(incoming) - messageRevision(cached);
+  return (
+    revisionDelta > 0 ||
+    (revisionDelta === 0 &&
+      cached.status === 'streaming' &&
+      incoming.status !== 'streaming')
+  );
+}
+
+/**
+ * A `turn_timer` frame: the system message the relay bookends every turn with
+ * (a `streaming` start frame and a `complete`/`cancelled` end frame). It is the
+ * authoritative turn-active signal for relayed chats — over the portal, content
+ * frames arrive already `complete` (the non-delta path finalizes each block),
+ * so they cannot drive the working indicator; the timer can.
+ */
+function isTurnTimerFrame(message: PortalChatMessage): boolean {
+  return (
+    message.role === 'system' &&
+    (message.parts?.some((part) => part.kind === 'turn_timer') ?? false)
+  );
+}
+
+const TURN_TIMER_ID_SUFFIX = ':turn-timer';
+
+/** Return the user-message identity carried by a canonical turn-timer id. */
+function turnTimerUserMessageId(
+  message: PortalChatMessage,
+): string | undefined {
+  if (
+    !isTurnTimerFrame(message) ||
+    !message.messageId.endsWith(TURN_TIMER_ID_SUFFIX)
+  ) {
+    return undefined;
+  }
+  const userMessageId = message.messageId.slice(
+    0,
+    -TURN_TIMER_ID_SUFFIX.length,
+  );
+  return userMessageId.length > 0 ? userMessageId : undefined;
+}
+
+/**
+ * Whether an authoritative frame proves that the host owns the turn lifecycle.
+ * Content-only terminal assistant frames are deliberately excluded: a delayed
+ * completed block from an older turn must not defeat a pending rollback.
+ */
+function isAuthoritativeTurnLifecycleFrame(
+  message: PortalChatMessage,
+): boolean {
+  return (
+    isTurnTimerFrame(message) ||
+    (message.role === 'assistant' &&
+      (message.status === 'streaming' || message.status === 'failed'))
+  );
+}
+
+function isTerminalTurnTimerFrame(message: PortalChatMessage): boolean {
+  return (
+    isTurnTimerFrame(message) &&
+    (message.status === 'complete' ||
+      message.status === 'cancelled' ||
+      message.status === 'failed')
+  );
+}
+
+/** A frame advances transcript identity when it is new or supersedes its row. */
+function isNewOrSupersedingMessage(
+  existing: PortalChatMessage | undefined,
+  incoming: PortalChatMessage,
+): boolean {
+  return existing === undefined || supersedesCachedMessage(existing, incoming);
+}
+
+/**
+ * Derive thread status/error/turn-active from an incoming message frame.
+ *
+ * Two independent signals raise the working indicator, and `status` is
+ * `streaming` while EITHER holds:
+ *  - `turnActive` — the relay's turn timer (a `system` `turn_timer` frame):
+ *    a `streaming` start frame marks the turn active, a terminal frame ends it.
+ *    This is what surfaces the indicator on the portal path, where content
+ *    frames arrive already `complete` and cannot drive it (CAN-1006).
+ *  - assistant-frame streaming — the delta path (desktop, when wired), where an
+ *    assistant message streams and then completes.
+ */
+function deriveStatus(
+  prev: ChatThreadState,
+  message: PortalChatMessage,
+): { status: ChatThreadStatus; error: string | null; turnActive: boolean } {
+  if (isTurnTimerFrame(message)) {
+    switch (message.status) {
+      case 'streaming':
+        return { status: 'streaming', error: null, turnActive: true };
+      case 'failed':
+        return {
+          status: 'error',
+          error: prev.error ?? 'Agent run failed',
+          turnActive: false,
+        };
+      case 'complete':
+      case 'cancelled':
+        // The turn ended: clear turn-active. But do NOT stomp an error the turn
+        // already surfaced — on the portal path a failed turn emits an assistant
+        // `failed` frame (→ error) immediately before the timer's terminal frame,
+        // which the projector always hardcodes to `complete`. Preserving the
+        // error keeps the transcript's error banner visible (CAN-1006 review).
+        return prev.status === 'error'
+          ? { status: 'error', error: prev.error, turnActive: false }
+          : { status: 'idle', error: null, turnActive: false };
+      default:
+        // Exhaustiveness guard (mirrors the assistant switch): the four cases
+        // cover `PortalChatMessage['status']`; a new status fails to compile.
+        message.status satisfies never;
+        return {
+          status: prev.status,
+          error: prev.error,
+          turnActive: prev.turnActive,
+        };
+    }
+  }
+  // Non-assistant, non-timer frames (e.g. user echoes) leave the indicator as is.
+  if (message.role !== 'assistant') {
+    return {
+      status: prev.status,
+      error: prev.error,
+      turnActive: prev.turnActive,
+    };
+  }
+  switch (message.status) {
+    case 'streaming':
+      return { status: 'streaming', error: null, turnActive: prev.turnActive };
+    case 'failed':
+      return {
+        status: 'error',
+        error: message.text.trim() || 'Agent run failed',
+        turnActive: prev.turnActive,
+      };
+    case 'complete':
+    case 'cancelled':
+      // This assistant message's own stream ended. Keep the indicator up only
+      // if the relay turn timer is still active (portal path, where content is
+      // always `complete`); otherwise go idle (delta path: streaming → complete).
+      return {
+        status: prev.turnActive ? 'streaming' : 'idle',
+        error: null,
+        turnActive: prev.turnActive,
+      };
+    default: {
+      // Exhaustiveness guard: `message.status` is `never` here only while the
+      // four cases above cover the union. A new protocol status would make this
+      // fail to compile rather than silently return undefined.
+      message.status satisfies never;
+      return {
+        status: prev.status,
+        error: prev.error,
+        turnActive: prev.turnActive,
+      };
+    }
+  }
+}
+
+/**
+ * Create a chat store bound to a single {@link CanopyClient}. Wrapped by
+ * the provider store registry so each client gets exactly one lazily-created
+ * store. The store subscribes to `chat.message` for its provider/client
+ * lifecycle; `CanopyClientProvider` disposes that subscription on a client swap
+ * or unmount.
+ */
+export function createChatStore(
+  client: CanopyClient,
+): ClientStore<ChatStoreState> {
+  // Turn-group caches are mutable and live outside Zustand state, one per chat
+  // — the same role `useRef` plays in the desktop renderer.
+  const caches = new Map<string, TurnGroupCache>();
+  const cacheFor = (chatId: string): TurnGroupCache => {
+    let cache = caches.get(chatId);
+    if (!cache) {
+      cache = createEmptyTurnGroupCache();
+      caches.set(chatId, cache);
+    }
+    return cache;
+  };
+
+  // Per-chat debounce timers for settings persistence.
+  const persistTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const semanticTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  let pending: ChatStoreState | undefined;
+  const repairedSemanticSignatures = new Map<string, string>();
+  const lastAuthoritativeArrivalAt = new Map<string, number>();
+
+  const scheduleSemanticCheck = (chatId: string): void => {
+    const existing = semanticTimers.get(chatId);
+    if (existing !== undefined) clearTimeout(existing);
+    const current = (pending ?? holder.store?.getState())?.threads[chatId];
+    if (!current || semanticStalenessSignature(current) === null) {
+      semanticTimers.delete(chatId);
+      return;
+    }
+    const timer = setTimeout(() => {
+      semanticTimers.delete(chatId);
+      const thread = holder.store?.getState().threads[chatId];
+      if (!thread) return;
+      const signature = semanticStalenessSignature(thread);
+      if (
+        signature === null ||
+        repairedSemanticSignatures.get(chatId) === signature
+      ) {
+        return;
+      }
+      if (!hasChatRepairRequester(client)) {
+        scheduleSemanticCheck(chatId);
+        return;
+      }
+      const silentFor =
+        Date.now() - (lastAuthoritativeArrivalAt.get(chatId) ?? Date.now());
+      if (silentFor < CHAT_SEMANTIC_STALE_MS) {
+        scheduleSemanticCheck(chatId);
+        return;
+      }
+      repairedSemanticSignatures.set(chatId, signature);
+      const accepted = requestChatRepair(client, {
+        chatId,
+        scope: thread.route?.scope ?? 'worktree',
+        workspaceLocalId: thread.route?.workspaceLocalId,
+        worktreeLocalId: thread.route?.worktreeLocalId,
+        trigger: 'semantic',
+        onDispatchFailure: (): void => {
+          if (repairedSemanticSignatures.get(chatId) === signature) {
+            repairedSemanticSignatures.delete(chatId);
+            scheduleSemanticCheck(chatId);
+          }
+        },
+      });
+      if (!accepted) repairedSemanticSignatures.delete(chatId);
+    }, CHAT_SEMANTIC_STALE_MS);
+    // Node/Jest timers should not keep an otherwise-idle process alive. Browser
+    // timers are numeric and simply skip this optional lifecycle hook.
+    if (isUnrefableTimer(timer)) timer.unref();
+    semanticTimers.set(chatId, timer);
+  };
+  // Counts authoritative arrivals applied by this store. This store-local
+  // generation is deliberately unrelated to host/client wall clocks.
+  let authoritativeSeq = 0;
+  // The exact optimistic echo that currently owns each chat's temporary
+  // working-state raise, plus the turn identity allowed to advance it. The turn
+  // identity starts as the optimistic id, rebinds to the authoritative user echo,
+  // and remains live until a matching lifecycle frame or explicit host state
+  // takes over. The pre-raise runtime fields are restored on a pre-host rollback.
+  const optimisticRaiseOwners = new Map<
+    string,
+    {
+      localId: string;
+      turnUserMessageId: string;
+      baselineSeq: number;
+      baseline: Pick<ChatThreadState, 'status' | 'error' | 'turnActive'>;
+    }
+  >();
+  // Identity bindings from `bindOptimisticSend`: the optimistic echo each chat's
+  // latest dispatched send inserted, paired with the wire `userMessageId` its
+  // authoritative echo will carry. Lets ingest/hydrate reconcile by id when the
+  // host round trip outlives the text-skew window. Latest-per-chat wins;
+  // consumed on the matching echo, cleared on rollback/reset, carried on adopt.
+  const optimisticSendBindings = new Map<
+    string,
+    { optimisticLocalId: string; userMessageId: string }
+  >();
+  // Echoes whose identity bindings were already consumed, per chat. A
+  // consumed echo stays in the transcript, so no text-skew match site may
+  // mistake it for the authoritative counterpart of a NEW same-text send.
+  // Entries are pruned by time rather than count: an echo can only collide
+  // while an optimistic row within RECONCILE_SKEW_MS of it exists, so
+  // anything older than 10x the skew window relative to the newest entry is
+  // provably irrelevant (no burst size can evict a still-relevant id).
+  const consumedBindingEchoes = new Map<
+    string,
+    Array<{ echoId: string; createdAtMs: number }>
+  >();
+  // Cutoff derives from the NEWEST entry (not the just-received echo, which
+  // may arrive out of timestamp order), so the invariant holds regardless of
+  // arrival order or merge source.
+  const pruneConsumedEchoes = (
+    entries: Array<{ echoId: string; createdAtMs: number }>,
+  ): Array<{ echoId: string; createdAtMs: number }> => {
+    const newest = entries.reduce(
+      (max, entry) => Math.max(max, entry.createdAtMs),
+      0,
+    );
+    const cutoff = newest - RECONCILE_SKEW_MS * 10;
+    return entries.filter((entry) => entry.createdAtMs >= cutoff);
+  };
+  const rememberConsumedEcho = (
+    chatId: string,
+    echo: { messageId: string; createdAtMs: number },
+  ): void => {
+    const entries = consumedBindingEchoes.get(chatId) ?? [];
+    entries.push({ echoId: echo.messageId, createdAtMs: echo.createdAtMs });
+    consumedBindingEchoes.set(chatId, pruneConsumedEchoes(entries));
+  };
+  const consumedEchoIdsFor = (chatId: string): ReadonlySet<string> | null => {
+    const entries = consumedBindingEchoes.get(chatId);
+    if (!entries?.length) return null;
+    return new Set(entries.map((entry) => entry.echoId));
+  };
+  // Shared exclusion for every text-skew match site: consumed echoes never
+  // participate, whether consumed in this operation or a previous one.
+  const withoutConsumedEchoes = (
+    chatId: string,
+    messages: readonly PortalChatMessage[],
+    alsoExclude?: PortalChatMessage,
+  ): readonly PortalChatMessage[] => {
+    const consumed = consumedEchoIdsFor(chatId);
+    if (!consumed && alsoExclude === undefined) return messages;
+    return messages.filter(
+      (message) => message !== alsoExclude && !consumed?.has(message.messageId),
+    );
+  };
+  // Holder so the debounce helpers can read the store lazily (at timer-fire
+  // time) without a forward `let` binding: the store is assigned once, below.
+  const holder: { store: ClientStore<ChatStoreState> | null } = {
+    store: null,
+  };
+  const doPersist = (chatId: string): void => {
+    const thread = holder.store?.getState().threads[chatId];
+    if (!thread) {
+      return;
+    }
+    const args: PersistChatTabSettingsArgs = {
+      chatId,
+      scope: thread.route?.scope,
+      workspaceLocalId: thread.route?.workspaceLocalId,
+      worktreeLocalId: thread.route?.worktreeLocalId,
+      settings: {
+        planMode: thread.planMode,
+        proposalMode: thread.proposalMode,
+        thinkingLevel: thread.thinkingLevel,
+        pendingPlanExit: thread.pendingPlanExit,
+      },
+    };
+    // Best-effort: a failed persist must not crash the store. The adopt ticket
+    // wires real error surfacing; until then the adapters are inert.
+    void client.command('chat.persistTabSettings', args).catch((): void => {});
+  };
+
+  const cancelPersist = (chatId: string): void => {
+    const timer = persistTimers.get(chatId);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      persistTimers.delete(chatId);
+    }
+  };
+
+  const schedulePersist = (chatId: string): void => {
+    cancelPersist(chatId);
+    const timer = setTimeout(() => {
+      persistTimers.delete(chatId);
+      doPersist(chatId);
+    }, PERSIST_DEBOUNCE_MS);
+    persistTimers.set(chatId, timer);
+  };
+
+  const store: ClientStore<ChatStoreState> = create<ChatStoreState>(
+    (rawSet, get) => {
+      const commit = (): void => {
+        const next = pending;
+        pending = undefined;
+        if (next) rawSet(next);
+      };
+      const set = (
+        update: (state: ChatStoreState) => Partial<ChatStoreState>,
+      ): void => {
+        if (chatBatchDepth === 0) {
+          rawSet(update);
+          return;
+        }
+        const previous = pending ?? get();
+        const patch = update(previous);
+        pending = patch === previous ? previous : { ...previous, ...patch };
+        pendingChatCommits.add(commit);
+      };
+      const patchThread = (
+        chatId: string,
+        patch: Partial<ChatThreadState>,
+      ): void => {
+        set((state) => {
+          const prev = state.threads[chatId] ?? emptyThread(chatId);
+          return {
+            threads: { ...state.threads, [chatId]: { ...prev, ...patch } },
+          };
+        });
+      };
+
+      return {
+        threads: {},
+        seededSettingsChatIds: {},
+
+        hydrate(chatId, messages, options): void {
+          const arrivalSeq = ++authoritativeSeq;
+          let authoritativeContentChanged = false;
+          set((state) => {
+            // Dedupe by messageId (last-wins) before ordering: snapshot inputs can
+            // legitimately carry the same logical message twice (e.g. a cached
+            // live frame plus its history re-push), and rendering both would
+            // duplicate transcript rows. Live ingest already upserts by id;
+            // hydrate must apply the same identity rule.
+            const byId = new Map<string, PortalChatMessage>();
+            for (const message of messages) {
+              byId.set(
+                message.messageId,
+                retainUserAttachments(message, byId.get(message.messageId)),
+              );
+            }
+            const prev = state.threads[chatId] ?? emptyThread(chatId);
+            const previousById = new Map(
+              prev.messages.map((message) => [message.messageId, message]),
+            );
+            const owner = optimisticRaiseOwners.get(chatId);
+            const ownedOptimistic = owner
+              ? prev.messages.find(
+                  (message) =>
+                    message.messageId === owner.localId &&
+                    isOptimisticMessage(message),
+                )
+              : undefined;
+            const binding = optimisticSendBindings.get(chatId);
+            const incoming = Array.from(byId.values()).map((message) => {
+              const previous =
+                previousById.get(message.messageId) ??
+                (message.role === 'user' &&
+                binding?.userMessageId === message.messageId
+                  ? previousById.get(binding.optimisticLocalId)
+                  : message.role === 'user' && message.attachments === undefined
+                    ? prev.messages.find(
+                        (candidate) =>
+                          isOptimisticMessage(candidate) &&
+                          hasAuthoritativeMatch(
+                            withoutConsumedEchoes(chatId, [message]),
+                            candidate,
+                          ),
+                      )
+                    : undefined);
+              return retainUserAttachments(message, previous);
+            });
+            const authoritativeIncoming = incoming.filter(
+              (message) => !isOptimisticMessage(message),
+            );
+            // Identity-bound reconcile (bindOptimisticSend): a snapshot carrying
+            // the bound authoritative echo supersedes the bound optimistic row
+            // regardless of the text-skew window, consuming the binding.
+            const boundEcho = binding
+              ? authoritativeIncoming.find(
+                  (message) =>
+                    message.role === 'user' &&
+                    message.messageId === binding.userMessageId,
+                )
+              : undefined;
+            if (binding && boundEcho) {
+              optimisticSendBindings.delete(chatId);
+              rememberConsumedEcho(chatId, boundEcho);
+            }
+            // A consumed bound echo is excluded from EVERY text-skew match —
+            // including the raise-owner reconciliation below: when the bound
+            // row is not the owner (two same-text in-flight sends), letting the
+            // consumed echo text-match the surviving send would rebind its turn
+            // lifecycle onto the wrong turn. The bound-is-owner case is handled
+            // explicitly by the first branch.
+            const textMatchCandidates = withoutConsumedEchoes(
+              chatId,
+              authoritativeIncoming,
+              boundEcho,
+            );
+            const reconcilesOwnedOptimistic =
+              ownedOptimistic !== undefined &&
+              hasAuthoritativeMatch(textMatchCandidates, ownedOptimistic);
+            const authoritativeEcho = reconcilesOwnedOptimistic
+              ? textMatchCandidates.find((message) =>
+                  hasAuthoritativeMatch([message], ownedOptimistic),
+                )
+              : undefined;
+            if (
+              owner &&
+              boundEcho &&
+              binding?.optimisticLocalId === owner.localId
+            ) {
+              owner.turnUserMessageId = boundEcho.messageId;
+            } else if (owner && authoritativeEcho) {
+              owner.turnUserMessageId = authoritativeEcho.messageId;
+            }
+            if (owner?.turnUserMessageId.startsWith(OPTIMISTIC_ID_PREFIX)) {
+              const streamingTimers = authoritativeIncoming
+                .filter(
+                  (message) =>
+                    message.status === 'streaming' &&
+                    turnTimerUserMessageId(message) !== undefined &&
+                    isNewOrSupersedingMessage(
+                      previousById.get(message.messageId),
+                      message,
+                    ),
+                )
+                .sort((a, b) => messageRevision(a) - messageRevision(b));
+              const newestStreamingTimer =
+                streamingTimers[streamingTimers.length - 1];
+              const timerUserMessageId = newestStreamingTimer
+                ? turnTimerUserMessageId(newestStreamingTimer)
+                : undefined;
+              if (timerUserMessageId) {
+                owner.turnUserMessageId = timerUserMessageId;
+              }
+            }
+            const endsOwnedTurn = authoritativeIncoming.some(
+              (message) =>
+                isNewOrSupersedingMessage(
+                  previousById.get(message.messageId),
+                  message,
+                ) &&
+                ((isTerminalTurnTimerFrame(message) &&
+                  turnTimerUserMessageId(message) ===
+                    owner?.turnUserMessageId) ||
+                  (message.role === 'assistant' &&
+                    message.status === 'failed')),
+            );
+            const suppliesAuthoritativeRuntimeState =
+              options?.status !== undefined ||
+              options?.error !== undefined ||
+              options?.turnActive !== undefined;
+            // Preserve optimistic rows until history confirms them. Same-id live
+            // rows stay below unless history carries a newer revision, so a late
+            // prefix cannot rewind the live tail. The identity-bound row is
+            // confirmed by its bound echo regardless of skew; other optimistic
+            // rows match against `textMatchCandidates` (bound echo excluded,
+            // see above).
+            const retained = prev.messages.filter(
+              (message) =>
+                !isOptimisticMessage(message) ||
+                (!hasAuthoritativeMatch(textMatchCandidates, message) &&
+                  !(
+                    boundEcho !== undefined &&
+                    message.messageId === binding?.optimisticLocalId
+                  )),
+            );
+            const mergedById = new Map(
+              retained.map((message) => [message.messageId, message]),
+            );
+            // Same clientRequestId = same user message: the cloud send path
+            // echoes it under a client-minted id while a later hydrate carries
+            // the canonical uuid. Unify onto the incoming (canonical) identity
+            // so future refetches keep matching one row instead of duplicating.
+            const retainedUserIdByClientRequestId = new Map<string, string>();
+            for (const message of retained) {
+              if (
+                message.role === 'user' &&
+                !isOptimisticMessage(message) &&
+                message.clientRequestId !== undefined
+              ) {
+                retainedUserIdByClientRequestId.set(
+                  message.clientRequestId,
+                  message.messageId,
+                );
+              }
+            }
+            const replacements: PortalChatMessage[] = [];
+            for (const message of incoming) {
+              const existing = mergedById.get(message.messageId);
+              if (!existing) {
+                const echoId =
+                  message.role === 'user' &&
+                  !isOptimisticMessage(message) &&
+                  message.clientRequestId !== undefined
+                    ? retainedUserIdByClientRequestId.get(
+                        message.clientRequestId,
+                      )
+                    : undefined;
+                const withAttachments = retainUserAttachments(
+                  message,
+                  echoId === undefined ? undefined : mergedById.get(echoId),
+                );
+                if (echoId !== undefined && echoId !== message.messageId) {
+                  mergedById.delete(echoId);
+                }
+                mergedById.set(message.messageId, withAttachments);
+              } else if (supersedesCachedMessage(existing, message)) {
+                mergedById.set(
+                  message.messageId,
+                  retainUserAttachments(message, existing),
+                );
+                if (
+                  messageRevision(message) >=
+                  (prev.lastEventAt ?? Number.NEGATIVE_INFINITY)
+                ) {
+                  replacements.push(message);
+                }
+              } else if (
+                messageRevision(message) === messageRevision(existing)
+              ) {
+                mergedById.set(
+                  message.messageId,
+                  refreshPresentationOrder(
+                    retainUserAttachments(existing, message),
+                    message,
+                  ),
+                );
+              }
+            }
+            const merged = options?.replaceMessages
+              ? incoming.map((message) =>
+                  retainUserAttachments(
+                    message,
+                    mergedById.get(message.messageId),
+                  ),
+                )
+              : Array.from(mergedById.values());
+            // REG-2981: an accepted queue row names the host user-message id it
+            // stands for. When this tab bound an optimistic bubble to that id,
+            // the row supersedes the bubble — drop it so a queued send has
+            // exactly one representation instead of bubble plus queue entry.
+            // The match is on that exact id, so an in-flight outbox row (which
+            // supersedes nothing) keeps rendering normally.
+            const supersededOptimisticId =
+              binding !== undefined &&
+              (options?.queuedMessages ?? []).some(
+                (message) =>
+                  message.supersedesUserMessageId === binding.userMessageId,
+              )
+                ? binding.optimisticLocalId
+                : undefined;
+            if (supersededOptimisticId !== undefined) {
+              optimisticSendBindings.delete(chatId);
+            }
+            const ordered = orderMessages(
+              supersededOptimisticId === undefined
+                ? merged
+                : merged.filter(
+                    (message) => message.messageId !== supersededOptimisticId,
+                  ),
+            );
+            const messagesUnchanged =
+              ordered.length === prev.messages.length &&
+              ordered.every(
+                (message, index) => message === prev.messages[index],
+              );
+            authoritativeContentChanged =
+              state.threads[chatId] === undefined || !messagesUnchanged;
+            let hydratedState = prev;
+            const lifecycleAdditions = owner
+              ? authoritativeIncoming.filter(
+                  (message) =>
+                    ((isTurnTimerFrame(message) &&
+                      turnTimerUserMessageId(message) ===
+                        owner.turnUserMessageId) ||
+                      (message.role === 'assistant' &&
+                        message.status === 'failed')) &&
+                    isNewOrSupersedingMessage(
+                      previousById.get(message.messageId),
+                      message,
+                    ) &&
+                    !replacements.includes(message),
+                )
+              : [];
+            const runtimeFrames = [...replacements, ...lifecycleAdditions]
+              .filter(
+                (message) =>
+                  !owner ||
+                  !isTurnTimerFrame(message) ||
+                  turnTimerUserMessageId(message) === owner.turnUserMessageId,
+              )
+              .sort((a, b) => messageRevision(a) - messageRevision(b));
+            for (const message of runtimeFrames) {
+              hydratedState = {
+                ...hydratedState,
+                ...deriveStatus(hydratedState, message),
+              };
+            }
+            const status = options?.status ?? hydratedState.status;
+            const error =
+              options?.status !== undefined
+                ? (options.error ?? null)
+                : (options?.error ?? hydratedState.error);
+            const turnActive = options?.turnActive ?? hydratedState.turnActive;
+            if (
+              owner &&
+              arrivalSeq > owner.baselineSeq &&
+              (endsOwnedTurn || suppliesAuthoritativeRuntimeState)
+            ) {
+              optimisticRaiseOwners.delete(chatId);
+            }
+            // The superseded bubble also held this thread's optimistic runtime
+            // raise (status/turnActive), which is what shows Stop in the
+            // composer. Release it with the bubble: the later ACK rollback
+            // returns early once the bubble is gone, and the authoritative
+            // RUNNING/terminal frames carry the canonical id, so neither would
+            // ever clear a stale owner. Read after the authoritative-state
+            // branch above, so this only fires when nothing else cleared it.
+            const supersededOwner =
+              supersededOptimisticId === undefined
+                ? undefined
+                : optimisticRaiseOwners.get(chatId);
+            const supersededBaseline =
+              supersededOwner !== undefined &&
+              supersededOwner.localId === supersededOptimisticId
+                ? supersededOwner.baseline
+                : undefined;
+            if (supersededBaseline !== undefined) {
+              optimisticRaiseOwners.delete(chatId);
+            }
+            const queuedMessages =
+              options?.queuedMessages ?? prev.queuedMessages;
+            const inputDelivery = options?.inputDelivery ?? prev.inputDelivery;
+            const steeringCapabilities =
+              options !== undefined &&
+              Object.prototype.hasOwnProperty.call(
+                options,
+                'steeringCapabilities',
+              )
+                ? options.steeringCapabilities
+                : prev.steeringCapabilities;
+            const route = options?.route
+              ? prev.route &&
+                prev.route.scope === options.route.scope &&
+                prev.route.workspaceLocalId ===
+                  options.route.workspaceLocalId &&
+                prev.route.worktreeLocalId === options.route.worktreeLocalId
+                ? prev.route
+                : options.route
+              : prev.route;
+            const planMode = options?.settings?.planMode ?? prev.planMode;
+            const proposalMode =
+              options?.settings?.proposalMode ?? prev.proposalMode;
+            const thinkingLevel =
+              options?.settings?.thinkingLevel ?? prev.thinkingLevel;
+            const pendingPlanExit = options?.settings
+              ? options.settings.pendingPlanExit
+              : prev.pendingPlanExit;
+
+            // Snapshot arrays are rebuilt whenever the portal projection changes,
+            // including unrelated chats. If neither the transcript nor explicit
+            // host state changed, retain every existing reference so a frame for
+            // another chat cannot defeat incremental rendering.
+            if (
+              messagesUnchanged &&
+              status === prev.status &&
+              error === prev.error &&
+              turnActive === prev.turnActive &&
+              queuedMessages === prev.queuedMessages &&
+              inputDelivery === prev.inputDelivery &&
+              steeringCapabilities === prev.steeringCapabilities &&
+              route === prev.route &&
+              planMode === prev.planMode &&
+              proposalMode === prev.proposalMode &&
+              thinkingLevel === prev.thinkingLevel &&
+              pendingPlanExit === prev.pendingPlanExit
+            ) {
+              return state;
+            }
+
+            let turnGroups = prev.turnGroups;
+            if (!messagesUnchanged || turnActive !== prev.turnActive) {
+              // Older history can be inserted before completed groups, so a
+              // transcript change resets the cache. An activity-only change
+              // reuses it while recomputing the latest group's fold state.
+              const cache = cacheFor(chatId);
+              if (!messagesUnchanged) {
+                cache.chatId = '';
+                cache.completedGroups = new Map();
+              }
+              turnGroups = computeIncrementalTurnGroups(
+                chatId,
+                messagesUnchanged ? prev.messages : ordered,
+                cache,
+                turnActive,
+              );
+            }
+            const thread: ChatThreadState = {
+              ...prev,
+              messages: messagesUnchanged ? prev.messages : ordered,
+              turnGroups,
+              status,
+              error,
+              turnActive,
+              queuedMessages,
+              inputDelivery,
+              steeringCapabilities,
+              route,
+              planMode,
+              proposalMode,
+              thinkingLevel,
+              pendingPlanExit,
+              ...(supersededBaseline ?? {}),
+            };
+            return { threads: { ...state.threads, [chatId]: thread } };
+          });
+          if (authoritativeContentChanged) {
+            lastAuthoritativeArrivalAt.set(chatId, Date.now());
+            scheduleSemanticCheck(chatId);
+          }
+        },
+
+        reset(chatId): void {
+          consumedBindingEchoes.delete(chatId);
+          cancelPersist(chatId);
+          caches.delete(chatId);
+          optimisticRaiseOwners.delete(chatId);
+          optimisticSendBindings.delete(chatId);
+          const semanticTimer = semanticTimers.get(chatId);
+          if (semanticTimer !== undefined) clearTimeout(semanticTimer);
+          semanticTimers.delete(chatId);
+          repairedSemanticSignatures.delete(chatId);
+          lastAuthoritativeArrivalAt.delete(chatId);
+          set((state) => {
+            if (!(chatId in state.threads)) {
+              return state;
+            }
+            const threads = { ...state.threads };
+            delete threads[chatId];
+            return { threads };
+          });
+        },
+
+        ingestMessageEvent(event): void {
+          const isAuthoritative = !isOptimisticMessage(event.message);
+          if (isAuthoritative) {
+            lastAuthoritativeArrivalAt.set(event.chatId, Date.now());
+          }
+          const arrivalSeq = isAuthoritative
+            ? ++authoritativeSeq
+            : authoritativeSeq;
+          set((state) => {
+            const { chatId } = event;
+            const prev = state.threads[chatId] ?? emptyThread(chatId);
+            const attachmentBinding = optimisticSendBindings.get(chatId);
+            const attachmentSource =
+              event.message.role === 'user' &&
+              event.message.attachments === undefined
+                ? prev.messages.find(
+                    (candidate) =>
+                      candidate.messageId === event.message.messageId ||
+                      (attachmentBinding?.userMessageId ===
+                      event.message.messageId
+                        ? candidate.messageId ===
+                          attachmentBinding.optimisticLocalId
+                        : isOptimisticMessage(candidate) &&
+                          hasAuthoritativeMatch(
+                            withoutConsumedEchoes(chatId, [event.message]),
+                            candidate,
+                          )),
+                  )
+                : undefined;
+            const message = retainUserAttachments(
+              event.message,
+              attachmentSource,
+            );
+            const existingMessageIndex =
+              indexMessages(prev.messages).get(message.messageId) ?? -1;
+            const existingMessage =
+              existingMessageIndex >= 0
+                ? prev.messages[existingMessageIndex]
+                : undefined;
+            const owner = optimisticRaiseOwners.get(chatId);
+            const ownedIndex = owner
+              ? indexMessages(prev.messages).get(owner.localId)
+              : undefined;
+            const ownedMessage =
+              ownedIndex === undefined ? undefined : prev.messages[ownedIndex];
+            const ownedOptimistic =
+              ownedMessage && isOptimisticMessage(ownedMessage)
+                ? ownedMessage
+                : undefined;
+            if (
+              owner?.turnUserMessageId.startsWith(OPTIMISTIC_ID_PREFIX) &&
+              message.status === 'streaming' &&
+              isNewOrSupersedingMessage(existingMessage, message)
+            ) {
+              const timerUserMessageId = turnTimerUserMessageId(message);
+              if (timerUserMessageId) {
+                owner.turnUserMessageId = timerUserMessageId;
+              }
+            }
+            const advancesTurnLifecycle =
+              isAuthoritative &&
+              isAuthoritativeTurnLifecycleFrame(message) &&
+              isNewOrSupersedingMessage(existingMessage, message) &&
+              (!isTurnTimerFrame(message) ||
+                owner === undefined ||
+                turnTimerUserMessageId(message) === owner.turnUserMessageId);
+            // Same clientRequestId = same user message: when a late echo arrives
+            // after the canonical row already hydrated (under the server uuid),
+            // keep that authoritative row instead of adding a second copy. The
+            // canonical data and id survive so future refetches keep matching it.
+            const requestDuplicateIndex =
+              message.role === 'user' &&
+              !isOptimisticMessage(message) &&
+              message.clientRequestId !== undefined &&
+              existingMessageIndex < 0
+                ? prev.messages.findIndex(
+                    (candidate) =>
+                      candidate.role === 'user' &&
+                      !isOptimisticMessage(candidate) &&
+                      candidate.clientRequestId === message.clientRequestId,
+                  )
+                : -1;
+            let messages =
+              requestDuplicateIndex >= 0
+                ? upsertMessage(
+                    prev.messages,
+                    retainUserAttachments(
+                      prev.messages[requestDuplicateIndex],
+                      message,
+                    ),
+                    requestDuplicateIndex,
+                  )
+                : upsertMessage(prev.messages, message, existingMessageIndex);
+            // An authoritative frame supersedes any matching optimistic echo.
+            if (isAuthoritative && message.role === 'user') {
+              // Identity-bound reconcile first (bindOptimisticSend): the frame
+              // carrying the bound `userMessageId` removes the bound optimistic
+              // row regardless of the text-skew window, consuming the binding.
+              // The owner rebinding below then observes the removal exactly as
+              // it does for a text-skew reconcile.
+              const binding = optimisticSendBindings.get(chatId);
+              const consumesBinding =
+                binding !== undefined &&
+                message.role === 'user' &&
+                message.messageId === binding.userMessageId;
+              if (consumesBinding) {
+                optimisticSendBindings.delete(chatId);
+                rememberConsumedEcho(chatId, message);
+                messages = messages.filter(
+                  (candidate) =>
+                    candidate.messageId !== binding.optimisticLocalId ||
+                    !isOptimisticMessage(candidate),
+                );
+              } else {
+                // Text-skew fallback ONLY for frames that did not consume an
+                // identity binding: a bound echo has exactly one optimistic
+                // counterpart, and letting it also text-match would collapse a
+                // genuinely repeated identical send into it.
+                messages = reconcileOptimistic(messages, message);
+              }
+              const reconciledOwnedOptimistic =
+                ownedOptimistic !== undefined &&
+                !messages.some(
+                  (candidate) => candidate.messageId === owner?.localId,
+                );
+              if (owner && reconciledOwnedOptimistic) {
+                owner.turnUserMessageId = message.messageId;
+              }
+            }
+            const runtimeState =
+              owner &&
+              isTurnTimerFrame(message) &&
+              turnTimerUserMessageId(message) !== owner.turnUserMessageId
+                ? {
+                    status: prev.status,
+                    error: prev.error,
+                    turnActive: prev.turnActive,
+                  }
+                : deriveStatus(prev, message);
+            const { status, error, turnActive } = runtimeState;
+            const turnGroups = computeIncrementalTurnGroups(
+              chatId,
+              messages,
+              cacheFor(chatId),
+              turnActive,
+            );
+            if (
+              owner &&
+              arrivalSeq > owner.baselineSeq &&
+              advancesTurnLifecycle &&
+              (isTerminalTurnTimerFrame(message) ||
+                (message.role === 'assistant' && message.status === 'failed'))
+            ) {
+              optimisticRaiseOwners.delete(chatId);
+            }
+            // Reuse the previous route object when the scope/ids are unchanged so
+            // `thread.route` keeps referential identity across the streaming
+            // frames of a turn (a downstream `React.memo` can then skip on it).
+            const nextRoute: ChatRoute = {
+              scope: event.scope,
+              workspaceLocalId: event.workspaceLocalId,
+              worktreeLocalId: event.worktreeLocalId,
+            };
+            const route =
+              prev.route &&
+              prev.route.scope === nextRoute.scope &&
+              prev.route.workspaceLocalId === nextRoute.workspaceLocalId &&
+              prev.route.worktreeLocalId === nextRoute.worktreeLocalId
+                ? prev.route
+                : nextRoute;
+            const thread: ChatThreadState = {
+              ...prev,
+              chatId,
+              messages,
+              turnGroups,
+              status,
+              error,
+              turnActive,
+              lastEventAt: message.updatedAtMs ?? message.createdAtMs,
+              route,
+            };
+            return { threads: { ...state.threads, [chatId]: thread } };
+          });
+          if (
+            event.message.status !== 'streaming' ||
+            isAuthoritativeTurnLifecycleFrame(event.message)
+          )
+            scheduleSemanticCheck(event.chatId);
+        },
+
+        addOptimisticUserMessage(chatId, args): void {
+          set((state) => {
+            const prev = state.threads[chatId] ?? emptyThread(chatId);
+            const optimistic = makeOptimisticUserMessage({ chatId, ...args });
+            // Raise the working indicator at send time. The authoritative
+            // `turn_timer` streaming frame only arrives after the full host
+            // round trip (send command → desktop turn start → relay), and until
+            // then the transcript showed no progress and the composer offered
+            // Send instead of Stop — so follow-up sends silently queued behind
+            // an invisible active turn. Terminal timer frames (or a failed
+            // assistant frame) lower/replace this exactly as they do for an
+            // authoritative raise.
+            //
+            // The inserted optimistic ID owns this temporary raise until a
+            // post-baseline authoritative ingest/hydration takes over, or the
+            // matching pre-host send rejection rolls it back. Ownership uses a
+            // store-local arrival generation, never host/client timestamps.
+            const raised: Pick<
+              ChatThreadState,
+              'status' | 'error' | 'turnActive'
+            > = { status: 'streaming', error: null, turnActive: true };
+            // Late-echo guard: if the authoritative frame already arrived (server
+            // faster than the UI), inserting the echo now would strand it — its
+            // reconciliation pass already ran against an empty optimistic set.
+            // The turn is in flight either way, so the indicator still raises.
+            // No `computeIncrementalTurnGroups` here: messages are unchanged on
+            // this path, so only the runtime status fields are patched.
+            const lateEchoCandidates = withoutConsumedEchoes(
+              chatId,
+              prev.messages,
+            );
+            if (hasAuthoritativeMatch(lateEchoCandidates, optimistic)) {
+              const authoritativeEcho = lateEchoCandidates.find((message) =>
+                hasAuthoritativeMatch([message], optimistic),
+              );
+              optimisticRaiseOwners.set(chatId, {
+                localId: optimistic.messageId,
+                turnUserMessageId:
+                  authoritativeEcho?.messageId ?? optimistic.messageId,
+                baselineSeq: authoritativeSeq,
+                baseline: {
+                  status: prev.status,
+                  error: prev.error,
+                  turnActive: prev.turnActive,
+                },
+              });
+              return {
+                threads: { ...state.threads, [chatId]: { ...prev, ...raised } },
+              };
+            }
+            optimisticRaiseOwners.set(chatId, {
+              localId: optimistic.messageId,
+              turnUserMessageId: optimistic.messageId,
+              baselineSeq: authoritativeSeq,
+              baseline: {
+                status: prev.status,
+                error: prev.error,
+                turnActive: prev.turnActive,
+              },
+            });
+            const messages = upsertMessage(prev.messages, optimistic);
+            const turnGroups = computeIncrementalTurnGroups(
+              chatId,
+              messages,
+              cacheFor(chatId),
+              raised.turnActive,
+            );
+            return {
+              threads: {
+                ...state.threads,
+                [chatId]: { ...prev, messages, turnGroups, ...raised },
+              },
+            };
+          });
+        },
+
+        bindOptimisticSend(chatId, args): void {
+          // Normalize exactly like `makeOptimisticUserMessage` so the binding
+          // always names the inserted row's id, whatever form the host passed.
+          const optimisticLocalId = normalizeOptimisticLocalId(
+            args.optimisticLocalId,
+          );
+          // Latest binding per chat wins: a newer send's identity supersedes an
+          // unconsumed older one (whose echo, if it ever lands, still reconciles
+          // through the text-skew fallback or stays as authoritative history).
+          optimisticSendBindings.set(chatId, {
+            optimisticLocalId,
+            userMessageId: args.userMessageId,
+          });
+        },
+
+        rollbackOptimisticSend(chatId, args): void {
+          const optimisticLocalId = normalizeOptimisticLocalId(args.localId);
+          // The abandoned send's identity binding dies with it — a late echo of
+          // a rolled-back send must not delete a future send's optimistic row.
+          // Scoped to the exact localId so a newer send's binding survives.
+          const binding = optimisticSendBindings.get(chatId);
+          if (binding?.optimisticLocalId === optimisticLocalId) {
+            optimisticSendBindings.delete(chatId);
+          }
+          set((state) => {
+            const prev = state.threads[chatId];
+            if (!prev) {
+              return state;
+            }
+            const owner = optimisticRaiseOwners.get(chatId);
+            if (owner?.localId !== optimisticLocalId) {
+              return state;
+            }
+            const ownedOptimistic = prev.messages.find(
+              (message) =>
+                message.messageId === optimisticLocalId &&
+                isOptimisticMessage(message),
+            );
+            if (!ownedOptimistic) {
+              return state;
+            }
+
+            optimisticRaiseOwners.delete(chatId);
+            const messages = prev.messages.filter(
+              (message) => message.messageId !== optimisticLocalId,
+            );
+            const turnGroups = computeIncrementalTurnGroups(
+              chatId,
+              messages,
+              cacheFor(chatId),
+              owner.baseline.turnActive,
+            );
+            return {
+              threads: {
+                ...state.threads,
+                [chatId]: {
+                  ...prev,
+                  messages,
+                  turnGroups,
+                  ...owner.baseline,
+                },
+              },
+            };
+          });
+        },
+
+        adoptThread(sourceChatId, targetChatId): void {
+          if (sourceChatId === targetChatId) {
+            return;
+          }
+          cancelPersist(sourceChatId);
+          caches.delete(sourceChatId);
+          // The send identity binding follows the thread (the App Advisor
+          // first-send adoption): the echo will arrive under the canonical chat
+          // id, so the binding must be waiting there. Latest-per-chat still
+          // wins if the target already carried one.
+          const carriedBinding = optimisticSendBindings.get(sourceChatId);
+          if (carriedBinding) {
+            optimisticSendBindings.delete(sourceChatId);
+            optimisticSendBindings.set(targetChatId, carriedBinding);
+          }
+          const carriedConsumed = consumedBindingEchoes.get(sourceChatId);
+          if (carriedConsumed?.length) {
+            consumedBindingEchoes.delete(sourceChatId);
+            const existing = consumedBindingEchoes.get(targetChatId) ?? [];
+            consumedBindingEchoes.set(
+              targetChatId,
+              pruneConsumedEchoes([...existing, ...carriedConsumed]),
+            );
+          }
+          set((state) => {
+            const source = state.threads[sourceChatId];
+            if (!source) {
+              return state;
+            }
+            const target =
+              state.threads[targetChatId] ?? emptyThread(targetChatId);
+            const sourceMessages = source.messages.map((message) =>
+              message.chatId === targetChatId
+                ? message
+                : { ...message, chatId: targetChatId },
+            );
+            // Identify the bound echo FIRST: like ingest and hydrate, a
+            // consumed bound echo is excluded from every text-skew match in
+            // this merge — both the per-message reconcile and the owner
+            // fallback below — so it can never collapse a second same-text
+            // in-flight send during adoption.
+            const binding = optimisticSendBindings.get(targetChatId);
+            const boundEcho = binding
+              ? target.messages.find(
+                  (message) =>
+                    !isOptimisticMessage(message) &&
+                    message.role === 'user' &&
+                    message.messageId === binding.userMessageId,
+                )
+              : undefined;
+            const targetConsumed = consumedEchoIdsFor(targetChatId);
+            let messages = sourceMessages;
+            for (const message of target.messages) {
+              messages = upsertMessage(messages, message);
+              if (
+                !isOptimisticMessage(message) &&
+                message !== boundEcho &&
+                !targetConsumed?.has(message.messageId)
+              ) {
+                messages = reconcileOptimistic(messages, message);
+              }
+            }
+            messages = orderMessages(messages);
+
+            // Identity-bound reconcile against frames the target already holds:
+            // when the canonical echo won the race and landed before adoption,
+            // the bound optimistic row is superseded here regardless of skew.
+            if (binding && boundEcho) {
+              optimisticSendBindings.delete(targetChatId);
+              rememberConsumedEcho(targetChatId, boundEcho);
+              messages = messages.filter(
+                (message) =>
+                  message.messageId !== binding.optimisticLocalId ||
+                  !isOptimisticMessage(message),
+              );
+            }
+
+            const owner = optimisticRaiseOwners.get(sourceChatId);
+            if (owner) {
+              const ownedOptimistic = sourceMessages.find(
+                (message) =>
+                  message.messageId === owner.localId &&
+                  isOptimisticMessage(message),
+              );
+              const authoritativeEcho =
+                (binding?.optimisticLocalId === owner.localId
+                  ? boundEcho
+                  : undefined) ??
+                (ownedOptimistic
+                  ? target.messages.find(
+                      (message) =>
+                        message !== boundEcho &&
+                        !targetConsumed?.has(message.messageId) &&
+                        hasAuthoritativeMatch([message], ownedOptimistic),
+                    )
+                  : undefined);
+              if (authoritativeEcho) {
+                owner.turnUserMessageId = authoritativeEcho.messageId;
+              } else if (
+                owner.turnUserMessageId.startsWith(OPTIMISTIC_ID_PREFIX)
+              ) {
+                const streamingTimers = target.messages
+                  .filter(
+                    (message) =>
+                      message.status === 'streaming' &&
+                      turnTimerUserMessageId(message) !== undefined,
+                  )
+                  .sort((a, b) => messageRevision(a) - messageRevision(b));
+                const streamingTimer =
+                  streamingTimers[streamingTimers.length - 1];
+                const timerUserMessageId = streamingTimer
+                  ? turnTimerUserMessageId(streamingTimer)
+                  : undefined;
+                if (timerUserMessageId) {
+                  owner.turnUserMessageId = timerUserMessageId;
+                }
+              }
+              optimisticRaiseOwners.delete(sourceChatId);
+              const ownedTurnEnded = target.messages.some(
+                (message) =>
+                  (isTerminalTurnTimerFrame(message) &&
+                    turnTimerUserMessageId(message) ===
+                      owner.turnUserMessageId) ||
+                  (message.role === 'assistant' && message.status === 'failed'),
+              );
+              if (!ownedTurnEnded) {
+                optimisticRaiseOwners.set(targetChatId, owner);
+              }
+            }
+
+            let runtimeState: Pick<
+              ChatThreadState,
+              'status' | 'error' | 'turnActive'
+            > = {
+              status: source.status,
+              error: source.error,
+              turnActive: source.turnActive,
+            };
+            for (const message of target.messages
+              .slice()
+              .sort((a, b) => messageRevision(a) - messageRevision(b))) {
+              if (
+                owner &&
+                isTurnTimerFrame(message) &&
+                turnTimerUserMessageId(message) !== owner.turnUserMessageId
+              ) {
+                continue;
+              }
+              runtimeState = deriveStatus(
+                { ...source, ...runtimeState },
+                message,
+              );
+            }
+
+            const targetCache = cacheFor(targetChatId);
+            targetCache.chatId = '';
+            targetCache.completedGroups = new Map();
+            const turnGroups = computeIncrementalTurnGroups(
+              targetChatId,
+              messages,
+              targetCache,
+              runtimeState.turnActive,
+            );
+            const thread: ChatThreadState = {
+              ...target,
+              chatId: targetChatId,
+              messages,
+              turnGroups,
+              ...runtimeState,
+              queuedMessages: target.queuedMessages,
+              inputDelivery: target.inputDelivery,
+              steeringCapabilities: target.steeringCapabilities,
+              lastEventAt:
+                target.lastEventAt === undefined
+                  ? source.lastEventAt
+                  : source.lastEventAt === undefined
+                    ? target.lastEventAt
+                    : Math.max(target.lastEventAt, source.lastEventAt),
+              planMode: source.planMode,
+              proposalMode: source.proposalMode,
+              thinkingLevel: source.thinkingLevel,
+              pendingPlanExit: source.pendingPlanExit,
+              route: target.route ?? source.route,
+            };
+            const threads = { ...state.threads, [targetChatId]: thread };
+            delete threads[sourceChatId];
+            const seededSettingsChatIds = {
+              ...(state.seededSettingsChatIds ?? {}),
+            };
+            if (seededSettingsChatIds[sourceChatId]) {
+              seededSettingsChatIds[targetChatId] = true;
+            }
+            delete seededSettingsChatIds[sourceChatId];
+            return { threads, seededSettingsChatIds };
+          });
+        },
+
+        seedTabSettings(chatId, settings, options): void {
+          if (
+            options?.ifAbsent === true &&
+            holder.store?.getState().seededSettingsChatIds?.[chatId]
+          ) {
+            return;
+          }
+          set((state) => ({
+            seededSettingsChatIds: {
+              ...(state.seededSettingsChatIds ?? {}),
+              [chatId]: true,
+            },
+          }));
+          // Restore path: apply persisted settings WITHOUT scheduling a persist —
+          // echoing freshly-read values back through `chat.persistTabSettings`
+          // would be a pointless round-trip (and on slow hosts could clobber a
+          // newer edit made between read and echo).
+          patchThread(chatId, {
+            planMode: settings.planMode,
+            proposalMode: settings.proposalMode,
+            thinkingLevel: settings.thinkingLevel,
+            ...(settings.pendingPlanExit !== undefined
+              ? { pendingPlanExit: settings.pendingPlanExit }
+              : {}),
+          });
+        },
+
+        setPlanMode(chatId, planMode): void {
+          patchThread(chatId, { planMode });
+          schedulePersist(chatId);
+        },
+
+        setProposalMode(chatId, proposalMode): void {
+          patchThread(chatId, { proposalMode });
+          schedulePersist(chatId);
+        },
+
+        setThinkingLevel(chatId, thinkingLevel): void {
+          patchThread(chatId, { thinkingLevel });
+          schedulePersist(chatId);
+        },
+
+        cycleThinkingLevel(chatId, providerType, supportedLevels): void {
+          set((state) => {
+            const prev = state.threads[chatId] ?? emptyThread(chatId);
+            const thinkingLevel = advanceThinkingLevel(
+              prev.thinkingLevel,
+              supportedLevels ?? providerFallbackThinkingLevels(providerType),
+            );
+            return {
+              threads: {
+                ...state.threads,
+                [chatId]: { ...prev, thinkingLevel },
+              },
+            };
+          });
+          schedulePersist(chatId);
+        },
+
+        setPendingPlanExit(chatId, pendingPlanExit): void {
+          patchThread(chatId, { pendingPlanExit });
+          schedulePersist(chatId);
+        },
+
+        flushPersist(chatId): void {
+          cancelPersist(chatId);
+          doPersist(chatId);
+        },
+      };
+    },
+  );
+  holder.store = store;
+
+  let unsubscribe: (() => void) | null = null;
+  store[CLIENT_STORE_ACTIVATE] = (): void => {
+    if (unsubscribe) return;
+    unsubscribe = client.subscribe('chat.message', (event) => {
+      store.getState().ingestMessageEvent(event);
+    });
+  };
+  store[CLIENT_STORE_DISPOSE] = (): void => {
+    unsubscribe?.();
+    unsubscribe = null;
+    persistTimers.forEach((timer) => clearTimeout(timer));
+    persistTimers.clear();
+    semanticTimers.forEach((timer) => clearTimeout(timer));
+    semanticTimers.clear();
+    repairedSemanticSignatures.clear();
+    lastAuthoritativeArrivalAt.clear();
+    optimisticRaiseOwners.clear();
+    optimisticSendBindings.clear();
+    consumedBindingEchoes.clear();
+    caches.clear();
+  };
+
+  return store;
+}
+
+/**
+ * Selector hook for the shared chat store, bound to the ambient
+ * {@link CanopyClient} from `CanopyClientProvider`.
+ *
+ * @example
+ *   const thread = useChatStore((s) => s.threads[chatId]);
+ */
+const chatStoreKey = Symbol('chat-store');
+
+export function useChatStoreApi(): ClientStore<ChatStoreState> {
+  return useCanopyClientStore<ChatStoreState>(chatStoreKey, createChatStore);
+}
+
+export function useChatStore<TSelected>(
+  selector: (state: ChatStoreState) => TSelected,
+): TSelected {
+  return useChatStoreApi()(selector);
+}

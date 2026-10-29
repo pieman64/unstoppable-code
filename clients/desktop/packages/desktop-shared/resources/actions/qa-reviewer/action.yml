@@ -1,0 +1,41 @@
+name: QA Reviewer
+description: Review the implementation against the spec.
+log_format_hint: agent
+inputs:
+  model:
+    description: Optional Claude model override.
+    required: false
+outputs:
+  passed:
+    description: Whether the implementation passed QA review.
+    value: ${{ steps.emit.outputs.passed }}
+  feedback:
+    description: QA feedback summary.
+    value: ${{ steps.emit.outputs.feedback }}
+  transcript_file:
+    description: QA review transcript file.
+    value: ${{ steps.review.outputs.transcript_file }}
+runs:
+  using: composite
+  steps:
+    - id: review
+      uses: builtin/agent-prompt
+      with:
+        model: ${{ inputs.model }}
+        permission_preset: read_only
+        structured_output_schema: '{"type":"object","properties":{"passed":{"type":"boolean"},"feedback":{"type":"string"}},"required":["passed","feedback"]}'
+        prompt: |
+          Review the current workspace changes against the task and specification.
+
+          Return whether the changes pass QA review and provide concise actionable feedback.
+    - id: emit
+      shell: node
+      run: |
+        const fs = require('node:fs');
+        const parsed = JSON.parse(process.env.RESPONSE_JSON ?? '{}');
+        const passed = parsed.passed === true ? 'true' : 'false';
+        const feedback = String(parsed.feedback ?? '').replace(/\r?\n/g, ' ');
+        fs.appendFileSync(process.env.{{BRAND_ENV_PREFIX}}_OUTPUT, `passed=${passed}\n`);
+        fs.appendFileSync(process.env.{{BRAND_ENV_PREFIX}}_OUTPUT, `feedback=${feedback}\n`);
+      env:
+        RESPONSE_JSON: ${{ steps.review.outputs.json_response }}

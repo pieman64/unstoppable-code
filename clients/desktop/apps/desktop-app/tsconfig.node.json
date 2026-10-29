@@ -1,0 +1,41 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "outDir": "out",
+    "rootDir": "../.."
+  },
+  "include": [
+    "electron.vite.config.ts",
+    "src/main/**/*.ts",
+    "src/shared/**/*.ts",
+    "src/preload/**/*.ts",
+    "src/preload/**/*.d.ts",
+    "src/renderer/src/components/activity/dag-tiers.ts",
+    "src/brand-defines.d.ts",
+    "../../packages/desktop-shared/src/build-constants.d.ts",
+    "../../packages/desktop-instrumentation/src/build-constants.d.ts",
+    "../../.cache/brand/**/*.ts"
+  ],
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx",
+    "src/**/__tests__/**",
+    "../../packages/desktop-shared/src/builtin-actions/**"
+  ],
+  "references": [
+    { "path": "../../packages/mcp-oauth-core" },
+    { "path": "../../packages/protocol" },
+    { "path": "../../packages/agent-actions" },
+    { "path": "../../packages/core-runtime" },
+    { "path": "../../packages/core-platform" },
+    { "path": "../../packages/core-client" },
+    { "path": "../../packages/core-transport" },
+    { "path": "../../packages/artifact-crypto" },
+    { "path": "../../packages/plugin-interop" },
+    { "path": "../../packages/desktop-shared" },
+    { "path": "../../packages/desktop-instrumentation" },
+    { "path": "../../packages/ui-shared" },
+    { "path": "../../packages/ui-app" }
+  ]
+}

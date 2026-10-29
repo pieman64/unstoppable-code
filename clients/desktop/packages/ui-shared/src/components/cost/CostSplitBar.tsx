@@ -1,0 +1,66 @@
+import type { JSX } from 'react';
+import { formatCostAmount, type CostSegment } from './cost-format';
+
+export interface CostSplitBarProps {
+  readonly segments: readonly CostSegment[];
+  /** What the bar measures, e.g. `Fix flaky checkout test cost` or `Cost in this entry`. */
+  readonly label: string;
+  /** The filled length, 0..1: the row's share of the scale maximum. Defaults to 1. */
+  readonly scale?: number;
+  /** `row` (h-1) under a list row, `summary` (h-1.5) for an entry or chat bar. */
+  readonly size?: 'row' | 'summary';
+  readonly testId?: string;
+}
+
+export function CostSplitBar({
+  segments,
+  label,
+  scale = 1,
+  size = 'row',
+  testId,
+}: CostSplitBarProps): JSX.Element {
+  const visibleSegments = segments.filter((segment) => segment.value > 0);
+  const visibleTotal = visibleSegments.reduce(
+    (sum, segment) => sum + segment.value,
+    0,
+  );
+  const description = visibleSegments
+    .map((segment) => `${segment.label} ${formatCostAmount(segment.value)}`)
+    .join(', ');
+  const boundedScale = Number.isNaN(scale)
+    ? 0
+    : Math.min(Math.max(scale, 0), 1);
+  const filledScale = visibleTotal > 0 ? Math.max(boundedScale, 0.02) : 0;
+
+  return (
+    <div
+      role="img"
+      aria-label={
+        visibleTotal > 0 ? `${label}: ${description}` : `${label}: none`
+      }
+      data-testid={testId}
+      className={`flex w-full overflow-hidden rounded-full bg-muted ${
+        size === 'summary' ? 'h-1.5' : 'h-1'
+      }`}
+    >
+      {visibleTotal > 0 ? (
+        <div
+          className="flex h-full gap-px"
+          style={{ width: `${filledScale * 100}%` }}
+        >
+          {visibleSegments.map((segment) => (
+            <span
+              key={segment.key}
+              className="h-full"
+              style={{
+                flexGrow: segment.value / visibleTotal,
+                flexBasis: 0,
+                backgroundColor: segment.color,
+              }}
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}

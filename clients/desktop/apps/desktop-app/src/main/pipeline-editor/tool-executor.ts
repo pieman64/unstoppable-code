@@ -1,0 +1,141 @@
+import type { PipelineEditorToolKey } from '@canopy/desktop-shared/lib/pipeline-editor-tools';
+import {
+  executeCanopyInjectedTool,
+  type CanopyInjectedToolContext,
+  type CanopyInjectedToolTextResult,
+} from '../canopy-tools/core';
+import {
+  emptyArgsSchema,
+  pipelineGetActionDefinitionSchema,
+  pipelineOpenSchema,
+  pipelineSetYamlSchema,
+} from './definitions';
+import type { PipelineEditorToolRuntime } from './runtime';
+
+function invalidArguments(toolName: string): CanopyInjectedToolTextResult {
+  return {
+    text: `Invalid arguments for ${toolName}.`,
+    isError: true,
+  };
+}
+
+function jsonText(value: unknown): string {
+  return JSON.stringify(value, null, 2);
+}
+
+function toolResultFromRendererResponse(response: {
+  ok: boolean;
+  error?: string;
+}): CanopyInjectedToolTextResult {
+  return {
+    text: jsonText(response),
+    isError: response.ok !== true,
+  };
+}
+
+export async function executePipelineEditorTool(
+  canonicalKey: PipelineEditorToolKey,
+  rawArgs: unknown,
+  runtime: PipelineEditorToolRuntime,
+  context?: CanopyInjectedToolContext,
+): Promise<CanopyInjectedToolTextResult> {
+  if (canonicalKey === 'ask_user_question') {
+    return executeCanopyInjectedTool(canonicalKey, rawArgs, runtime, context);
+  }
+
+  if (
+    canonicalKey === 'search_deferred_tools' ||
+    canonicalKey === 'load_deferred_tools'
+  ) {
+    return executeCanopyInjectedTool(canonicalKey, rawArgs, runtime, context);
+  }
+
+  switch (canonicalKey) {
+    case 'pipeline_list': {
+      const parsed = emptyArgsSchema.safeParse(rawArgs);
+      if (!parsed.success) return invalidArguments('ListPipelines');
+      try {
+        return { text: jsonText({ pipelines: await runtime.listPipelines() }) };
+      } catch (error) {
+        return {
+          text:
+            error instanceof Error
+              ? error.message
+              : 'Failed to list pipelines.',
+          isError: true,
+        };
+      }
+    }
+    case 'pipeline_open': {
+      const parsed = pipelineOpenSchema.safeParse(rawArgs);
+      if (!parsed.success) return invalidArguments('OpenPipeline');
+      return toolResultFromRendererResponse(
+        await runtime.dispatchEditorAction(
+          { type: 'pipeline.open', locator: parsed.data },
+          context?.toolUseId,
+        ),
+      );
+    }
+    case 'pipeline_create': {
+      const parsed = emptyArgsSchema.safeParse(rawArgs);
+      if (!parsed.success) return invalidArguments('CreatePipeline');
+      return toolResultFromRendererResponse(
+        await runtime.dispatchEditorAction(
+          { type: 'pipeline.create' },
+          context?.toolUseId,
+        ),
+      );
+    }
+    case 'pipeline_get_current': {
+      const parsed = emptyArgsSchema.safeParse(rawArgs);
+      if (!parsed.success) return invalidArguments('GetCurrentPipeline');
+      return toolResultFromRendererResponse(
+        await runtime.requestEditorState(context?.toolUseId),
+      );
+    }
+    case 'pipeline_set_yaml': {
+      const parsed = pipelineSetYamlSchema.safeParse(rawArgs);
+      if (!parsed.success) return invalidArguments('SetPipelineYaml');
+      return toolResultFromRendererResponse(
+        await runtime.dispatchEditorAction(
+          { type: 'pipeline.set_yaml', yaml: parsed.data.yaml },
+          context?.toolUseId,
+        ),
+      );
+    }
+    case 'pipeline_save': {
+      const parsed = emptyArgsSchema.safeParse(rawArgs);
+      if (!parsed.success) return invalidArguments('SavePipeline');
+      return toolResultFromRendererResponse(
+        await runtime.dispatchEditorAction(
+          { type: 'pipeline.save' },
+          context?.toolUseId,
+        ),
+      );
+    }
+    case 'pipeline_get_action_definition': {
+      const parsed = pipelineGetActionDefinitionSchema.safeParse(rawArgs);
+      if (!parsed.success)
+        return invalidArguments('GetBuiltinActionDefinition');
+      const result = runtime.getBuiltinActionDefinition(parsed.data.name);
+      return { text: jsonText(result), isError: result.found !== true };
+    }
+    case 'navigation_to_list': {
+      const parsed = emptyArgsSchema.safeParse(rawArgs);
+      if (!parsed.success) return invalidArguments('NavigateToPipelineList');
+      return toolResultFromRendererResponse(
+        await runtime.dispatchEditorAction(
+          { type: 'navigation.to_list' },
+          context?.toolUseId,
+        ),
+      );
+    }
+    default: {
+      const exhaustive: never = canonicalKey;
+      return {
+        text: `Unhandled Pipeline Editor tool key: ${String(exhaustive)}.`,
+        isError: true,
+      };
+    }
+  }
+}

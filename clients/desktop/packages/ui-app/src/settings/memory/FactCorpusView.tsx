@@ -1,0 +1,490 @@
+'use client';
+import { SettingsControlSelect } from '@canopy/ui-shared/components';
+
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type FormEvent,
+  type JSX,
+} from 'react';
+import {
+  EXPLORER_EVIDENCE_TYPES,
+  EXPLORER_LIVENESS_FILTERS,
+  type ExplorerFact,
+  type ExplorerFactDetail,
+  type ExplorerRankedFact,
+} from '@canopy/protocol/settings/organization-memory';
+import {
+  DelayedLoadingPlaceholder,
+  EmptyState,
+  ErrorBanner,
+  SettingsListSkeleton,
+  Sheet,
+  buttonClassName,
+} from '@canopy/ui-shared/components';
+import { SettingsLink, useSettingsClient } from '../host';
+import { fetchMemoryFact, fetchMemoryFacts } from './api';
+import {
+  INITIAL_FACT_CORPUS_FILTERS,
+  isDefaultFilters,
+  isEmptyCorpus,
+  type EvidenceFilter,
+  type FactCorpusMode,
+  type LivenessFilter,
+} from './fact-corpus-filters';
+import { FactCard } from './FactCard';
+import { FactDetailDrawer } from './FactDetailDrawer';
+import { useMemoryErrorCopy } from './memory-error-copy';
+import { RetrievalPreview } from './RetrievalPreview';
+
+interface FactCorpusViewProps {
+  orgId: string;
+  initialFacts: Array<ExplorerFact | ExplorerRankedFact>;
+  initialNextCursor: string | null;
+  /**
+   * Where a viewer chooses who contributes to memory, when their role can
+   * edit the organization's Policies; `null` otherwise.
+   */
+  policiesHref: string | null;
+}
+
+function isEvidenceFilter(value: string): value is EvidenceFilter {
+  return value === '' || EXPLORER_EVIDENCE_TYPES.some((type) => type === value);
+}
+
+function isLivenessFilter(value: string): value is LivenessFilter {
+  return EXPLORER_LIVENESS_FILTERS.some((liveness) => liveness === value);
+}
+
+/** Optional filter values; an empty input sends no filter. */
+function optionalFilter(value: string): string | undefined {
+  return value.length > 0 ? value : undefined;
+}
+
+const MEMORY_EMPTY_SUBTITLE =
+  "Facts appear here as agents learn from chats in this organization's projects.";
+
+/** The read a Retry runs again: the list, its next page, or one fact. */
+type FailedRead =
+  | { readonly kind: 'list' }
+  | { readonly kind: 'more' }
+  | { readonly kind: 'fact'; readonly factId: string };
+
+interface FactCorpusError {
+  readonly copy: string;
+  readonly retry: FailedRead;
+}
+
+const MODES: ReadonlyArray<{
+  key: FactCorpusMode;
+  label: string;
+}> = [
+  { key: 'search', label: 'Search corpus' },
+  { key: 'preview', label: 'Preview retrieval' },
+];
+
+export function FactCorpusView({
+  orgId,
+  initialFacts,
+  initialNextCursor,
+  policiesHref,
+}: FactCorpusViewProps): JSX.Element {
+  const client = useSettingsClient();
+  const errorCopy = useMemoryErrorCopy();
+  const initial = INITIAL_FACT_CORPUS_FILTERS;
+  const [mode, setMode] = useState<FactCorpusMode>(initial.mode);
+  const [facts, setFacts] =
+    useState<Array<ExplorerFact | ExplorerRankedFact>>(initialFacts);
+  const [nextCursor, setNextCursor] = useState(initialNextCursor);
+  // Page data reads the first page without filters.
+  const [readWithDefaultFilters, setReadWithDefaultFilters] = useState(true);
+  const [query, setQuery] = useState(initial.query);
+  // Corpus search hits the paid embed + rerank pipeline, so it only fires on
+  // explicit submit (Enter / Search button), never per keystroke.
+  const [submittedQuery, setSubmittedQuery] = useState(initial.submittedQuery);
+  const [submissionVersion, setSubmissionVersion] = useState(0);
+  const [evidenceType, setEvidenceType] = useState<EvidenceFilter>(
+    initial.evidenceType,
+  );
+  const [liveness, setLiveness] = useState<LivenessFilter>(initial.liveness);
+  const [from, setFrom] = useState(initial.from);
+  const [to, setTo] = useState(initial.to);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<FactCorpusError | null>(null);
+  const [detail, setDetail] = useState<ExplorerFactDetail | null>(null);
+  // No live facts can still leave superseded ones, reachable through the
+  // filters; the empty state waits until a check for this organization finds
+  // none.
+  const [supersededCheck, setSupersededCheck] = useState<{
+    readonly orgId: string;
+    readonly found: boolean;
+  } | null>(null);
+  const requestSequence = useRef(0);
+  const isInitialRender = useRef(true);
+
+  useEffect(() => {
+    if (isInitialRender.current) {
+      isInitialRender.current = false;
+      return;
+    }
+    // Claim a fresh sequence number so any in-flight fetch (earlier filter
+    // change or loadMore) is superseded the moment this fetch starts.
+    const sequence = requestSequence.current + 1;
+    requestSequence.current = sequence;
+    const requestDefaults = isDefaultFilters({
+      ...INITIAL_FACT_CORPUS_FILTERS,
+      submittedQuery,
+      evidenceType,
+      liveness,
+      from,
+      to,
+    });
+    const load = async (): Promise<void> => {
+      setLoading(true);
+      setError(null);
+      try {
+        const payload = await fetchMemoryFacts(client, {
+          organizationId: orgId,
+          q: optionalFilter(submittedQuery),
+          evidenceType: evidenceType === '' ? undefined : evidenceType,
+          liveness,
+          from: optionalFilter(from),
+          to: optionalFilter(to),
+        });
+        if (requestSequence.current === sequence) {
+          setFacts(payload.facts);
+          setNextCursor(payload.nextCursor);
+          setReadWithDefaultFilters(requestDefaults);
+        }
+      } catch (caught) {
+        if (requestSequence.current === sequence) {
+          setError({
+            copy: errorCopy.loadCopy(caught),
+            retry: { kind: 'list' },
+          });
+        }
+      } finally {
+        if (requestSequence.current === sequence) {
+          setLoading(false);
+        }
+      }
+    };
+    void load();
+  }, [
+    client,
+    errorCopy,
+    evidenceType,
+    from,
+    liveness,
+    orgId,
+    submittedQuery,
+    submissionVersion,
+    to,
+  ]);
+
+  const submitSearch = (event: FormEvent<HTMLFormElement>): void => {
+    event.preventDefault();
+    setSubmittedQuery(query.trim());
+    setSubmissionVersion((current) => current + 1);
+  };
+
+  const onQueryChange = (event: ChangeEvent<HTMLInputElement>): void => {
+    const value = event.target.value;
+    setQuery(value);
+    // Clearing the input immediately restores the cheap paged list without
+    // requiring another submit; non-empty edits still wait for one.
+    if (value.trim().length === 0) {
+      setSubmittedQuery('');
+    }
+  };
+
+  const openFact = useCallback(
+    async (factId: string): Promise<void> => {
+      setError(null);
+      try {
+        setDetail(await fetchMemoryFact(client, orgId, factId));
+      } catch (caught) {
+        setError({
+          copy: errorCopy.loadCopy(caught),
+          retry: { kind: 'fact', factId },
+        });
+      }
+    },
+    [client, errorCopy, orgId],
+  );
+
+  // Stable reference so memoized FactCards do not re-render per fetch.
+  const selectFact = useCallback(
+    (factId: string): void => {
+      void openFact(factId);
+    },
+    [openFact],
+  );
+
+  const loadMore = async (): Promise<void> => {
+    if (nextCursor === null) return;
+    // Claim a fresh sequence number (not just read the current one): a filter
+    // change claims a newer number for its fetch, so this page request is
+    // superseded in BOTH directions — it can neither append onto fresher
+    // filter results nor be clobbered silently.
+    const sequence = requestSequence.current + 1;
+    requestSequence.current = sequence;
+    setLoading(true);
+    setError(null);
+    try {
+      const payload = await fetchMemoryFacts(
+        client,
+        {
+          organizationId: orgId,
+          cursor: nextCursor,
+          liveness,
+          evidenceType: evidenceType === '' ? undefined : evidenceType,
+          from: optionalFilter(from),
+          to: optionalFilter(to),
+        },
+        {
+          unexpected: 'Unexpected fact response',
+          fallback: 'Unable to load more facts',
+        },
+      );
+      if (requestSequence.current !== sequence) return;
+      setFacts((current) => [...current, ...payload.facts]);
+      setNextCursor(payload.nextCursor);
+    } catch (caught) {
+      if (requestSequence.current !== sequence) return;
+      setError({ copy: errorCopy.loadCopy(caught), retry: { kind: 'more' } });
+    } finally {
+      if (requestSequence.current === sequence) {
+        setLoading(false);
+      }
+    }
+  };
+
+  // Retry clears the error and runs the failed read again; a list read
+  // clears it itself and shows the list placeholder while it runs.
+  const retry = (failed: FailedRead): void => {
+    if (failed.kind === 'list') {
+      setSubmissionVersion((current) => current + 1);
+      return;
+    }
+    setError(null);
+    if (failed.kind === 'more') void loadMore();
+    else void openFact(failed.factId);
+  };
+
+  const onEvidenceTypeChange = (
+    event: ChangeEvent<HTMLSelectElement>,
+  ): void => {
+    const value = event.target.value;
+    if (isEvidenceFilter(value)) setEvidenceType(value);
+  };
+
+  const onLivenessChange = (event: ChangeEvent<HTMLSelectElement>): void => {
+    const value = event.target.value;
+    if (isLivenessFilter(value)) setLiveness(value);
+  };
+
+  // An organization with no memory yet has nothing to search or filter, so
+  // the view explains where facts come from instead of offering controls.
+  const emptyLiveCorpus =
+    !loading &&
+    error === null &&
+    isEmptyCorpus(
+      { mode, query, submittedQuery, evidenceType, liveness, from, to },
+      { facts, nextCursor, readWithDefaultFilters },
+    );
+  const supersededFound =
+    supersededCheck?.orgId === orgId ? supersededCheck.found : null;
+  useEffect(() => {
+    if (!emptyLiveCorpus || supersededFound !== null) return;
+    let cancelled = false;
+    void fetchMemoryFacts(client, {
+      organizationId: orgId,
+      liveness: 'all',
+      limit: 1,
+    })
+      .then((payload): void => {
+        if (!cancelled)
+          setSupersededCheck({ orgId, found: payload.facts.length > 0 });
+      })
+      .catch((): void => {
+        // Unknown counts as found: the filters stay, so nothing is hidden.
+        if (!cancelled) setSupersededCheck({ orgId, found: true });
+      });
+    return (): void => {
+      cancelled = true;
+    };
+  }, [client, emptyLiveCorpus, orgId, supersededFound]);
+  if (emptyLiveCorpus && supersededFound === null) {
+    return (
+      <DelayedLoadingPlaceholder>
+        <SettingsListSkeleton />
+      </DelayedLoadingPlaceholder>
+    );
+  }
+  const emptyCorpus = emptyLiveCorpus && supersededFound === false;
+  if (emptyCorpus) {
+    return (
+      <EmptyState
+        testId="memory-facts-empty"
+        title="No organization memory yet"
+        subtitle={
+          policiesHref === null
+            ? MEMORY_EMPTY_SUBTITLE
+            : `${MEMORY_EMPTY_SUBTITLE} Choose who contributes in Policies.`
+        }
+        action={
+          policiesHref === null ? undefined : (
+            <SettingsLink
+              href={policiesHref}
+              className={buttonClassName({ variant: 'secondary' })}
+              data-testid="memory-facts-empty-policies"
+            >
+              Open Policies
+            </SettingsLink>
+          )
+        }
+      />
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div
+        className="flex w-fit rounded-lg border bg-card p-1"
+        role="group"
+        aria-label="Facts tab mode"
+      >
+        {MODES.map((item) => (
+          <button
+            key={item.key}
+            type="button"
+            aria-pressed={mode === item.key}
+            onClick={() => setMode(item.key)}
+            className={`rounded-md px-3 py-1.5 text-s font-medium ${
+              mode === item.key
+                ? 'bg-accent-subtle fg-accent'
+                : 'fg-secondary hover:bg-base hover:fg-primary'
+            }`}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+
+      {mode === 'preview' ? (
+        <RetrievalPreview orgId={orgId} />
+      ) : (
+        <>
+          <div className="rounded-xl border bg-card p-4">
+            <form onSubmit={submitSearch} className="flex gap-2">
+              <input
+                type="search"
+                value={query}
+                onChange={onQueryChange}
+                placeholder="Search organization memory"
+                aria-label="Search organization memory"
+                className="w-full rounded-lg border bg-base px-3 py-2.5 text-s fg-primary placeholder:fg-tertiary focus:border-line-accent focus:outline-none"
+              />
+              <button
+                type="submit"
+                disabled={loading || query.trim().length === 0}
+                className="shrink-0 rounded-lg border bg-base px-4 py-2 text-s font-medium fg-primary hover:bg-card disabled:opacity-50"
+              >
+                Search
+              </button>
+            </form>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+              <SettingsControlSelect
+                value={evidenceType}
+                onChange={onEvidenceTypeChange}
+                fill
+                aria-label="Evidence type"
+              >
+                <option value="">All evidence</option>
+                <option value="OBSERVED">Observed</option>
+                <option value="ASSERTED">Asserted</option>
+                <option value="INFERRED">Inferred</option>
+              </SettingsControlSelect>
+              <SettingsControlSelect
+                value={liveness}
+                onChange={onLivenessChange}
+                fill
+                aria-label="Fact liveness"
+              >
+                <option value="live">Live</option>
+                <option value="superseded">Superseded</option>
+                <option value="all">All</option>
+              </SettingsControlSelect>
+              <input
+                type="date"
+                value={from}
+                onChange={(event) => setFrom(event.target.value)}
+                className="rounded-lg border bg-base px-3 py-2 text-s fg-primary"
+                aria-label="Created from"
+              />
+              <input
+                type="date"
+                value={to}
+                onChange={(event) => setTo(event.target.value)}
+                className="rounded-lg border bg-base px-3 py-2 text-s fg-primary"
+                aria-label="Created to"
+              />
+            </div>
+          </div>
+
+          {error !== null && (
+            <ErrorBanner
+              className=""
+              error={error.copy}
+              onRetry={() => retry(error.retry)}
+            />
+          )}
+          {loading && facts.length === 0 ? (
+            <DelayedLoadingPlaceholder>
+              <SettingsListSkeleton />
+            </DelayedLoadingPlaceholder>
+          ) : facts.length === 0 ? (
+            <div className="rounded-xl border border-dashed py-16 text-center">
+              <p className="text-s fg-secondary">No matching memory facts.</p>
+            </div>
+          ) : (
+            <div className="grid gap-3 lg:grid-cols-2">
+              {facts.map((fact) => (
+                <FactCard key={fact.id} fact={fact} onSelect={selectFact} />
+              ))}
+            </div>
+          )}
+          {nextCursor !== null && submittedQuery.length === 0 && (
+            <button
+              type="button"
+              disabled={loading}
+              onClick={() => void loadMore()}
+              className="rounded-lg border bg-card px-4 py-2 text-s font-medium fg-primary hover:bg-base disabled:opacity-50"
+            >
+              {loading ? 'Loading…' : 'Load more'}
+            </button>
+          )}
+          <Sheet
+            side="right"
+            open={detail !== null}
+            onClose={() => setDetail(null)}
+            ariaLabel="Memory fact detail"
+            widthClassName="w-full max-w-xl"
+          >
+            {detail !== null && (
+              <FactDetailDrawer
+                orgId={orgId}
+                detail={detail}
+                onClose={() => setDetail(null)}
+              />
+            )}
+          </Sheet>
+        </>
+      )}
+    </div>
+  );
+}

@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      /*
+       * A real table: sortable, numbers aligned, a bar where magnitude
+       * matters, and status as a glyph plus a word. No library.
+       */
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+      th,
+      td {
+        padding: 7px 12px 7px 0;
+        text-align: left;
+        border-bottom: 1px solid var(--line-primary);
+        white-space: nowrap;
+      }
+      th:last-child,
+      td:last-child {
+        padding-right: 0;
+      }
+      thead th {
+        position: sticky;
+        top: 0;
+        background: var(--bg-base);
+        color: var(--fg-secondary);
+        font-weight: 500;
+        font-size: 12px;
+      }
+      th button {
+        all: unset;
+        cursor: pointer;
+      }
+      th button:focus-visible {
+        outline: 2px solid var(--line-focus);
+        outline-offset: 2px;
+        border-radius: var(--radius-sm);
+      }
+      th[aria-sort='ascending'] button::after {
+        content: ' ▲';
+      }
+      th[aria-sort='descending'] button::after {
+        content: ' ▼';
+      }
+      .num {
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }
+      /* The bar shares the cell with its number, so the value is always printed. */
+      .meter {
+        display: inline-block;
+        width: 72px;
+        height: 6px;
+        margin-right: 8px;
+        vertical-align: middle;
+        border-radius: 3px;
+        background: var(--bg-muted);
+      }
+      .meter i {
+        display: block;
+        height: 100%;
+        border-radius: 3px;
+        background: var(--categorical-1);
+      }
+      /* A fixed width for the number keeps every bar on the same left edge. */
+      .meter + span {
+        display: inline-block;
+        min-width: 6ch;
+      }
+      .ok {
+        color: var(--fg-positive);
+      }
+      .warn {
+        color: var(--fg-attention);
+      }
+      .fail {
+        color: var(--fg-destructive);
+      }
+      /* Narrow columns: drop the least important column instead of scrolling. */
+      @media (max-width: 480px) {
+        .optional {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <table>
+      <thead>
+        <tr>
+          <th aria-sort="none"><button data-key="name">Service</button></th>
+          <th aria-sort="descending" class="num">
+            <button data-key="p95">p95</button>
+          </th>
+          <th aria-sort="none" class="num optional">
+            <button data-key="requests">Requests / min</button>
+          </th>
+          <th aria-sort="none" class="num">
+            <button data-key="errors">Errors</button>
+          </th>
+          <th aria-sort="none"><button data-key="status">Status</button></th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <script>
+      const rows = [
+        {
+          name: 'search',
+          p95: 410,
+          requests: 8200,
+          errors: 1.9,
+          status: 'fail',
+        },
+        {
+          name: 'checkout',
+          p95: 264,
+          requests: 3100,
+          errors: 0.7,
+          status: 'warn',
+        },
+        {
+          name: 'accounts',
+          p95: 182,
+          requests: 12400,
+          errors: 0.4,
+          status: 'ok',
+        },
+        { name: 'billing', p95: 131, requests: 900, errors: 0.2, status: 'ok' },
+        {
+          name: 'notifications',
+          p95: 95,
+          requests: 15800,
+          errors: 0.1,
+          status: 'ok',
+        },
+      ];
+      const status = {
+        ok: ['✓', 'Healthy'],
+        warn: ['!', 'Degraded'],
+        fail: ['✕', 'Failing'],
+      };
+      const maxP95 = Math.max(...rows.map((row) => row.p95));
+      const number = new Intl.NumberFormat('en-US');
+
+      let sort = { key: 'p95', ascending: false };
+      function render() {
+        const sorted = [...rows].sort((a, b) => {
+          const order =
+            typeof a[sort.key] === 'number'
+              ? a[sort.key] - b[sort.key]
+              : String(a[sort.key]).localeCompare(b[sort.key]);
+          return sort.ascending ? order : -order;
+        });
+        document.getElementById('rows').innerHTML = sorted
+          .map(
+            (row) => `<tr>
+              <td>${row.name}</td>
+              <td class="num"><span class="meter"><i style="width:${(row.p95 / maxP95) * 100}%"></i></span><span>${row.p95} ms</span></td>
+              <td class="num optional">${number.format(row.requests)}</td>
+              <td class="num">${row.errors.toFixed(1)}%</td>
+              <td class="${row.status}">${status[row.status].join(' ')}</td>
+            </tr>`,
+          )
+          .join('');
+        for (const header of document.querySelectorAll('th')) {
+          const key = header.querySelector('button').dataset.key;
+          header.setAttribute(
+            'aria-sort',
+            key !== sort.key
+              ? 'none'
+              : sort.ascending
+                ? 'ascending'
+                : 'descending',
+          );
+        }
+      }
+
+      // Sorting needs a click, so it works only after the reader activates
+      // the visual. The default order must already tell the story.
+      document.querySelector('thead').addEventListener('click', (event) => {
+        const key = event.target.closest('button')?.dataset.key;
+        if (!key) return;
+        sort = { key, ascending: sort.key === key ? !sort.ascending : false };
+        render();
+      });
+      render();
+    </script>
+  </body>
+</html>

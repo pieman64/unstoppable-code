@@ -1,0 +1,8 @@
+{
+  "tailwind": {
+    "css": "../../apps/desktop-app/src/renderer/src/styles/globals.css"
+  },
+  "aliases": {
+    "ui": "@canopy/ui-shared"
+  }
+}

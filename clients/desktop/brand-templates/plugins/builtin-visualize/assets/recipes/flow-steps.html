@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      /*
+       * A short process with a state per step. No library and no script:
+       * the steps turn into a column when the reply column is narrow.
+       * For a diagram with branches, use a mermaid fence in the reply or
+       * the graph recipe instead.
+       */
+      .flow {
+        display: flex;
+        /* One row until the column turns vertical at 520px; never two rows
+           with sideways arrows. */
+        flex-wrap: nowrap;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        font-size: 13px;
+      }
+      .step {
+        flex: 1 1 0;
+        min-width: 0;
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 2px 8px;
+        align-content: start;
+        padding: 10px 12px;
+        background: var(--bg-secondary);
+        border: 1px solid var(--line-primary);
+        border-radius: var(--radius-md);
+        position: relative;
+        margin-right: 22px;
+      }
+      .step:last-child {
+        margin-right: 0;
+      }
+      /* The connector between steps. */
+      .step:not(:last-child)::after {
+        content: '→';
+        position: absolute;
+        right: -18px;
+        top: 50%;
+        transform: translateY(-50%);
+        color: var(--fg-tertiary);
+      }
+      .mark {
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        font-size: 11px;
+        line-height: 1;
+      }
+      .title {
+        font-weight: 600;
+      }
+      .detail {
+        grid-column: 2;
+        color: var(--fg-secondary);
+        font-size: 12px;
+      }
+      /* State is a glyph and a word in the detail line, not color alone. */
+      .done .mark {
+        background: var(--bg-positive-muted);
+        color: var(--fg-positive);
+      }
+      .current {
+        border-color: var(--line-accent);
+      }
+      .current .mark {
+        background: var(--bg-accent);
+        color: var(--fg-emphasis);
+      }
+      .todo .mark {
+        border: 1px solid var(--line-primary);
+        color: var(--fg-tertiary);
+      }
+      .failed .mark {
+        background: var(--bg-destructive-muted);
+        color: var(--fg-destructive);
+      }
+      @media (max-width: 520px) {
+        .flow {
+          flex-direction: column;
+        }
+        .step {
+          flex-basis: auto;
+          margin: 0 0 14px;
+        }
+        .step:last-child {
+          margin-bottom: 0;
+        }
+        .step:not(:last-child)::after {
+          content: '↓';
+          right: auto;
+          left: 20px;
+          top: auto;
+          bottom: -20px;
+          transform: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <ol class="flow">
+      <li class="step done">
+        <span class="mark" aria-hidden="true">✓</span>
+        <span class="title">Build</span>
+        <span class="detail">Done in 3m 12s</span>
+      </li>
+      <li class="step done">
+        <span class="mark" aria-hidden="true">✓</span>
+        <span class="title">Test</span>
+        <span class="detail">Done, 1,204 passed</span>
+      </li>
+      <li class="step current">
+        <span class="mark" aria-hidden="true">●</span>
+        <span class="title">Canary</span>
+        <span class="detail">Running, 5% of traffic</span>
+      </li>
+      <li class="step todo">
+        <span class="mark" aria-hidden="true">4</span>
+        <span class="title">Rollout</span>
+        <span class="detail">Waiting on canary</span>
+      </li>
+    </ol>
+  </body>
+</html>

@@ -1,0 +1,17 @@
+name: builtin-security
+version: 1.0.0
+description: Diff-focused security review skills bundled with {{BRAND_DISPLAY_NAME}}, without an MCP server or external service dependency.
+author:
+  name: '{{BRAND_DISPLAY_NAME}}'
+category: security
+targets:
+  codex:
+    category: Security
+    displayName: '{{BRAND_DISPLAY_NAME}} Security'
+    shortDescription: Security review for code changes.
+    longDescription: Review pull requests, commits, branch diffs, patches, and working-tree changes for validated security vulnerabilities.
+    developerName: '{{BRAND_DISPLAY_NAME}}'
+    capabilities:
+      - Security diff review
+    defaultPrompt:
+      - Review this diff for security vulnerabilities.

@@ -1,0 +1,25 @@
+# Published to the public repository as .github/workflows/close-pull-requests.yml.
+# The public repository mirrors releases and does not accept pull requests.
+# pull_request_target is only used for the write token that closes fork pull
+# requests: never check out, build, or run pull request code in this workflow.
+name: Close pull requests
+
+on:
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  close:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Close pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr close "$PR_NUMBER" --comment "Thanks for the pull request! This repository mirrors each release, so we can't accept pull requests here. If you found a bug or have an idea, please open an issue instead. CONTRIBUTING.md has the details."

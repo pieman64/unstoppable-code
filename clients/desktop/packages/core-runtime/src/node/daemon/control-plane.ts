@@ -1,0 +1,793 @@
+import { Buffer } from 'node:buffer';
+import { Duplex } from 'node:stream';
+import {
+  createCanopyFramedConnection,
+  resolveCanopyChannelLimits,
+  type CanopyFramedAuthOptions,
+  type CanopyFramedConnectionOptions,
+} from '@canopy/core-transport';
+import type { CanopyFramedConnection } from '@canopy/core-transport/types';
+import {
+  CANOPY_JSON_RPC_PROTOCOL_ERROR_CODES,
+  CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
+  CoreRuntimeHealthGetResultSchema,
+  CoreRuntimeInitializeParamsSchema,
+  CoreRuntimeManifestGetResultSchema,
+  CanopyQueryRequestMetadataSchema,
+  CanopyRequestMetadataSchema,
+  encodeCanopyError,
+  type CanopyCallerDescriptor,
+  type CanopyErrorPayload,
+  type CanopyJsonRpcId,
+  type CanopyJsonRpcMessage,
+  type CanopyJsonRpcRequest,
+  type CoreRuntimeInitializeResult,
+} from '@canopy/protocol/canopy-core';
+
+import type { RuntimeOperation } from '../../kernel/operation-registry';
+import {
+  CanopyOperationError,
+  canopyDeadlineExceededError,
+  canopyInternalError,
+  canopyInvalidArgumentError,
+  canopyPermissionDeniedError,
+} from '../../runtime/errors';
+import type { CanopyDispatcher } from '../../runtime/types';
+import type {
+  PlatformByteStream,
+  PlatformEndpointListener,
+} from '../../platform/platform-services';
+import {
+  CANOPY_SYSTEM_CLOCK,
+  createCanopyLeaseRegistry,
+  createCanopyObligationRegistry,
+  startCanopyIdleGrace,
+  type CanopyClientLeaseView,
+  type CanopyDaemonClock,
+  type CanopyIdleGraceOptions,
+  type CanopyLeaseEnd,
+  type CanopyLeaseOptions,
+  type CanopyLeaseRegistry,
+  type CanopyObligationRegistry,
+} from './leases';
+import { createCanopyLeaseRegistrations } from './registrations';
+import {
+  CANOPY_DEFAULT_MAX_CHANNELS_PER_LEASE,
+  createCanopyChannelRegistry,
+  type CanopyChannelOptions,
+  type CanopyChannelRegistry,
+} from './channels';
+
+const INITIALIZE = 'core.runtime.initialize';
+const HEALTH = 'core.runtime.health.get';
+const MANIFEST = 'core.runtime.manifest.get';
+const LEASE_GRANT = 'core.client.manage';
+const RUNTIME_READ_GRANT = 'core.runtime.read';
+const LEASE_OPERATIONS = [
+  'core.client.lease.acquire',
+  'core.client.lease.renew',
+  'core.client.lease.release',
+  'core.client.capabilities.register',
+] as const;
+type LeaseOperation = (typeof LEASE_OPERATIONS)[number];
+// Platform streams accept bounded writes; larger frames are written in slices.
+const MAX_STREAM_WRITE_BYTES = 64 * 1024;
+const DEFAULT_MAX_ACTIVE_REQUESTS = 128;
+
+/** Per-connection identity handed to the host's caller policy. */
+export interface CanopyControlConnectionIdentity {
+  readonly connectionId: string;
+  readonly lease: CanopyClientLeaseView | null;
+}
+
+export type CanopyControlPlaneConnectionOptions = Omit<
+  CanopyFramedConnectionOptions,
+  'role' | 'auth'
+>;
+
+export interface CanopyDaemonControlPlaneOptions {
+  /** `CanopyDaemonPublication` satisfies this; the publication keeps endpoint lifetime. */
+  readonly binding: {
+    readonly listener: PlatformEndpointListener<unknown>;
+    readonly auth: CanopyFramedAuthOptions;
+  };
+  /** The kernel's dispatcher and operation registry (`CanopyRuntime`). */
+  readonly dispatcher: CanopyDispatcher;
+  readonly operations: readonly Pick<RuntimeOperation, 'name' | 'kind'>[];
+  /** Trusted host policy: principal and grants for an authenticated connection. */
+  readonly callerFor: (
+    connection: CanopyControlConnectionIdentity,
+  ) => CanopyCallerDescriptor;
+  readonly buildVersion: string;
+  readonly leases?: CanopyLeaseOptions;
+  /** Negotiates lease-bound opaque byte channels; no kinds are enabled by default. */
+  readonly channels?: CanopyChannelOptions;
+  readonly idleGrace?: CanopyIdleGraceOptions;
+  /** Called once when the idle grace elapses; the host runs the phased stop. */
+  readonly onIdle: () => void;
+  readonly connection?: CanopyControlPlaneConnectionOptions;
+  /** Requests served at once per connection; excess fails `resource_exhausted`. */
+  readonly maxActiveRequests?: number;
+  /**
+   * Operations served only while this connection holds a live client lease.
+   * Admission and the reply follow the lease's bound connection, never a
+   * declared label, a caller descriptor, or a payload claim.
+   */
+  readonly leaseBoundOperations?: readonly string[];
+  readonly clock?: CanopyDaemonClock;
+}
+
+export interface CanopyDaemonControlPlane {
+  readonly leases: CanopyLeaseRegistry;
+  readonly obligations: CanopyObligationRegistry;
+  /** Stops serving and closes every connection; the listener stays with its owner. */
+  close(): Promise<void>;
+}
+
+/** Adapts a pull-based platform stream to the duplex the framed codec reads. */
+function platformStreamDuplex(stream: PlatformByteStream): Duplex {
+  return new Duplex({
+    read(): void {
+      stream.read().then(
+        (bytes) => this.push(bytes === null ? null : Buffer.from(bytes)),
+        () => this.destroy(),
+      );
+    },
+    write(chunk: Buffer, _encoding, callback): void {
+      void (async (): Promise<void> => {
+        for (let at = 0; at < chunk.length; at += MAX_STREAM_WRITE_BYTES)
+          await stream.write(chunk.subarray(at, at + MAX_STREAM_WRITE_BYTES));
+      })().then(
+        () => callback(),
+        () => callback(new Error('Stream write failed.')),
+      );
+    },
+    final(callback): void {
+      stream.close().then(
+        () => callback(),
+        () => callback(),
+      );
+    },
+    destroy(error, callback): void {
+      stream.close().then(
+        () => callback(error),
+        () => callback(error),
+      );
+    },
+  });
+}
+
+/**
+ * Accepts every stream from `listener` and runs the D3 server handshake on
+ * it. Only authenticated connections reach `onConnection`; a failed
+ * handshake has already closed its stream.
+ */
+export function acceptCanopyFramedConnections(options: {
+  readonly listener: PlatformEndpointListener<unknown>;
+  readonly auth: CanopyFramedAuthOptions;
+  readonly connection?: CanopyControlPlaneConnectionOptions;
+  readonly onConnection: (connection: CanopyFramedConnection) => void;
+}): { readonly done: Promise<void> } {
+  const accept = async (stream: PlatformByteStream): Promise<void> => {
+    const duplex = platformStreamDuplex(stream);
+    try {
+      options.onConnection(
+        await createCanopyFramedConnection(duplex, {
+          ...options.connection,
+          role: 'server',
+          auth: options.auth,
+        }),
+      );
+    } catch {
+      duplex.destroy();
+    }
+  };
+  const done = (async (): Promise<void> => {
+    for await (const stream of options.listener.connections())
+      void accept(stream);
+  })();
+  return { done };
+}
+
+function without(value: object, key: string): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(value).filter(([name]) => name !== key),
+  );
+}
+
+/**
+ * The dispatcher's metadata rules for the operations the control plane
+ * serves itself: schema, idempotency-key presence and an elapsed deadline.
+ */
+function admitMetadata(
+  metadata: unknown,
+  kind: 'query' | 'keyed' | 'inherent',
+): void {
+  const parsed = (
+    kind === 'query'
+      ? CanopyQueryRequestMetadataSchema
+      : CanopyRequestMetadataSchema
+  ).safeParse(metadata ?? {});
+  if (!parsed.success)
+    throw canopyInvalidArgumentError('Invalid request metadata.');
+  const keyed =
+    'idempotencyKey' in parsed.data && parsed.data.idempotencyKey !== undefined;
+  if (kind === 'keyed' && !keyed)
+    throw canopyInvalidArgumentError('An idempotency key is required.');
+  if (kind === 'inherent' && keyed)
+    throw canopyInvalidArgumentError('An idempotency key is not allowed.');
+  const { deadlineAt } = parsed.data;
+  if (deadlineAt !== undefined && Date.parse(deadlineAt) <= Date.now())
+    throw canopyDeadlineExceededError(undefined, {
+      kind: kind === 'keyed' ? 'same_idempotency_key' : 'same_request',
+    });
+}
+
+function errorPayload(error: unknown): CanopyOperationError['payload'] {
+  return error instanceof CanopyOperationError
+    ? error.payload
+    : canopyInternalError().payload;
+}
+
+// Code-free: lease codes are outside the leased operations' error schemas.
+const LEASE_REQUIRED: CanopyErrorPayload = {
+  kind: 'not_found',
+  message: 'This operation requires a live client lease on this connection.',
+  retry: { kind: 'never' },
+};
+const LEASE_FENCED: Readonly<
+  Record<CanopyLeaseEnd | 'moved', CanopyErrorPayload>
+> = {
+  released: {
+    kind: 'cancelled',
+    message: 'The client lease was released.',
+    retry: { kind: 'never' },
+  },
+  evicted: {
+    kind: 'not_found',
+    message: 'The client lease expired.',
+    retry: { kind: 'never' },
+  },
+  moved: {
+    kind: 'failed_precondition',
+    message: 'The client lease moved to another connection.',
+    retry: { kind: 'never' },
+  },
+};
+
+/**
+ * Binds one leased call to the lease held at admission: its signal aborts
+ * when that lease ends or rebinds elsewhere, and `refusal` re-checks the
+ * holder synchronously, so a late result is never sent on a fenced lease.
+ * Known cost: the bundled worker is not told to stop, so a fenced read runs
+ * on and holds an in-process request slot until it settles or its deadline.
+ */
+function fenceLeasedCall(
+  leases: CanopyLeaseRegistry,
+  connectionId: string,
+): {
+  readonly signal: AbortSignal;
+  refusal(): CanopyOperationError | null;
+  dispose(): void;
+} {
+  const lease = leases.lease(connectionId);
+  if (!lease) throw new CanopyOperationError(LEASE_REQUIRED);
+  const { leaseId } = lease;
+  const controller = new AbortController();
+  let ended: CanopyLeaseEnd | 'moved' | null = null;
+  const end = (reason: CanopyLeaseEnd | 'moved'): void => {
+    ended ??= reason;
+    controller.abort();
+  };
+  const offEnd = leases.onEnd((view, reason) => {
+    if (view.leaseId === leaseId) end(reason);
+  });
+  const offChange = leases.onChange(() => {
+    if (leases.holder(leaseId) !== connectionId) end('moved');
+  });
+  return {
+    signal: controller.signal,
+    refusal: (): CanopyOperationError | null => {
+      // `holder` evicts an expired lease on access, which records the end first.
+      if (leases.holder(leaseId) !== connectionId) end('moved');
+      return ended ? new CanopyOperationError(LEASE_FENCED[ended]) : null;
+    },
+    dispose: (): void => {
+      offEnd();
+      offChange();
+    },
+  };
+}
+
+function selectProtocolVersion(
+  offered: readonly number[],
+  supported: readonly number[],
+): number | null {
+  const common = offered.filter((version) => supported.includes(version));
+  return common.length ? Math.max(...common) : null;
+}
+
+/** Serves one authenticated connection until it closes. */
+function serveControlConnection(
+  connection: CanopyFramedConnection,
+  options: CanopyDaemonControlPlaneOptions,
+  leases: CanopyLeaseRegistry,
+  channels: CanopyChannelRegistry,
+  registrations: ReturnType<typeof createCanopyLeaseRegistrations>,
+  planeSignal: AbortSignal,
+): void {
+  const kinds = new Map(options.operations.map((op) => [op.name, op.kind]));
+  const leaseBound: ReadonlySet<string> = new Set(
+    options.leaseBoundOperations ?? [],
+  );
+  const channelKinds = options.channels?.kinds ?? {};
+  const mayOpenChannel = (
+    caller: CanopyCallerDescriptor,
+    kind: string,
+  ): boolean =>
+    caller.grants.includes(LEASE_GRANT) &&
+    (channelKinds[kind]?.requiredGrants ?? []).every((grant) =>
+      caller.grants.some((held) => held === grant),
+    );
+  /** This connection's negotiated manifest; nothing outside it is served. */
+  let advertised: ReadonlySet<string> = new Set();
+  let advertisedChannelKinds: ReadonlySet<string> = new Set();
+  const identity = (): CanopyControlConnectionIdentity => ({
+    connectionId: connection.connectionId,
+    lease: leases.lease(connection.connectionId),
+  });
+  let initialization: 'none' | 'pending' | 'done' = 'none';
+  let ownedLeaseId: string | null = null;
+  let active = 0;
+  const maxActive = options.maxActiveRequests ?? DEFAULT_MAX_ACTIVE_REQUESTS;
+  const send = (message: CanopyJsonRpcMessage): Promise<void> =>
+    connection.send(message).catch(() => undefined);
+  const fail = (id: CanopyJsonRpcId, error: unknown): Promise<void> =>
+    send({ jsonrpc: '2.0', id, error: encodeCanopyError(errorPayload(error)) });
+  const offEvicted = registrations.onEvicted((event) => {
+    if (event.leaseId === ownedLeaseId)
+      void send({
+        jsonrpc: '2.0',
+        method: 'core.client.lease.evicted',
+        params: event,
+      });
+  });
+  const offOwner = leases.onChange(() => {
+    if (ownedLeaseId && leases.holder(ownedLeaseId) !== connection.connectionId)
+      ownedLeaseId = null;
+  });
+  connection.signal.addEventListener(
+    'abort',
+    () => {
+      offEvicted();
+      offOwner();
+    },
+    { once: true },
+  );
+
+  const refusal = (
+    kind:
+      | 'failed_precondition'
+      | 'capability_unavailable'
+      | 'permission_denied'
+      | 'internal',
+    message: string,
+  ): CanopyErrorPayload => ({ kind, message, retry: { kind: 'never' } });
+  connection.onChannel(
+    (channel) => {
+      if (!channels.track(connection.connectionId, channel)) return;
+      // Admission ran in this same turn, so both are present.
+      const lease = leases.lease(connection.connectionId);
+      const consumer = channelKinds[channel.kind];
+      try {
+        if (!lease || !consumer) throw new Error('Channel admission changed.');
+        consumer.accept(channel, {
+          connectionId: connection.connectionId,
+          lease,
+          caller: options.callerFor(identity()),
+        });
+      } catch {
+        channel.close(refusal('internal', 'The channel consumer failed.'));
+      }
+    },
+    {
+      admit: (attempt) => {
+        if (initialization !== 'done')
+          return refusal(
+            'failed_precondition',
+            'Call core.runtime.initialize first.',
+          );
+        if (!advertisedChannelKinds.has(attempt.kind))
+          return refusal(
+            'capability_unavailable',
+            `Channel kind ${attempt.kind} is not available on this connection.`,
+          );
+        // Grants can change after initialize; dispatcher calls re-check too.
+        if (!mayOpenChannel(options.callerFor(identity()), attempt.kind))
+          return refusal(
+            'permission_denied',
+            `The caller may not open ${attempt.kind} channels.`,
+          );
+        return channels.admit(connection.connectionId, attempt.leaseId);
+      },
+    },
+  );
+
+  const initialize = async (
+    request: CanopyJsonRpcRequest,
+    caller: CanopyCallerDescriptor,
+  ): Promise<CoreRuntimeInitializeResult> => {
+    admitMetadata(request.params._meta, 'query');
+    const params = CoreRuntimeInitializeParamsSchema.safeParse(
+      without(request.params, '_meta'),
+    );
+    if (!params.success)
+      throw canopyInvalidArgumentError('Invalid core.runtime.initialize.');
+    // Initialize requires no grant, so the runtime reads run with runtime-read
+    // added; advertised availability is still judged on the caller's grants.
+    const reader: CanopyCallerDescriptor = {
+      ...caller,
+      grants: caller.grants.includes(RUNTIME_READ_GRANT)
+        ? caller.grants
+        : [...caller.grants, RUNTIME_READ_GRANT],
+    };
+    const { runtime } = CoreRuntimeHealthGetResultSchema.parse(
+      await options.dispatcher.query(HEALTH, {}, { caller: reader }),
+    );
+    const selected = selectProtocolVersion(
+      params.data.client.protocolVersions,
+      runtime.protocolVersions,
+    );
+    if (selected === null)
+      throw new CanopyOperationError({
+        kind: 'failed_precondition',
+        message:
+          'Protocol version mismatch: restart the daemon or update this client.',
+        code: 'core.runtime.invalidState',
+        details: {
+          supportedProtocolVersions: runtime.protocolVersions,
+          action: 'restart_or_update',
+        },
+        retry: { kind: 'never' },
+      });
+    const manifest = CoreRuntimeManifestGetResultSchema.parse(
+      await options.dispatcher.query(
+        MANIFEST,
+        { includeUnavailable: true },
+        { caller: reader },
+      ),
+    );
+    const reachable = manifest.operations.filter(({ requiredGrants }) =>
+      requiredGrants.every((grant) =>
+        caller.grants.some((held) => held === grant),
+      ),
+    );
+    const channelKindsForCaller = Object.keys(channelKinds)
+      .sort()
+      .filter((name) => mayOpenChannel(caller, name));
+    advertisedChannelKinds = new Set(channelKindsForCaller);
+    const channelLimits = resolveCanopyChannelLimits(options.connection ?? {});
+    return {
+      runtime: { ...runtime, buildVersion: options.buildVersion },
+      selectedProtocolVersion: selected,
+      capabilities: {
+        operations: [
+          ...reachable
+            .filter(({ kind }) => kind !== 'stream')
+            .map(({ name }) => name),
+          ...(caller.grants.includes(LEASE_GRANT) ? LEASE_OPERATIONS : []),
+        ],
+        events: [],
+        streams: reachable
+          .filter(({ kind }) => kind === 'stream')
+          .map(({ name }) => name),
+        channels: channelKindsForCaller,
+      },
+      limits: {
+        channels: {
+          maxChannelsPerLease: channels.maxChannelsPerLease,
+          maxChunkBytes: channelLimits.maxChunkBytes,
+          maxBufferedChunks: channelLimits.maxBufferedChunks,
+          maxBufferedBytes: channelLimits.maxBufferedBytes,
+        },
+      },
+      authentication: { required: true, methods: [] },
+    };
+  };
+
+  const lease = (
+    method: LeaseOperation,
+    request: CanopyJsonRpcRequest,
+    caller: CanopyCallerDescriptor,
+  ): unknown => {
+    if (!caller.grants.includes(LEASE_GRANT))
+      throw canopyPermissionDeniedError();
+    const definitions = CORE_TRANSPORT_INSTRUCTION_DEFINITIONS;
+    const invalid = (): CanopyOperationError =>
+      canopyInvalidArgumentError(`Invalid ${method} params.`);
+    const { connectionId } = connection;
+    if (method === 'core.client.capabilities.register') {
+      admitMetadata(request.params._meta, 'keyed');
+      const params = definitions[method].params.safeParse(request.params);
+      if (!params.success) throw invalid();
+      return registrations.register(connectionId, params.data);
+    }
+    if (method === 'core.client.lease.acquire') {
+      admitMetadata(request.params._meta, 'keyed');
+      const params = definitions[method].params.safeParse(request.params);
+      if (!params.success) throw invalid();
+      const acquired = leases.acquire(connectionId, params.data);
+      ownedLeaseId = acquired.leaseId;
+      return acquired;
+    }
+    // Only keyed acquire carries request metadata in its params schema.
+    admitMetadata(request.params._meta, 'inherent');
+    const body = without(request.params, '_meta');
+    if (method === 'core.client.lease.renew') {
+      const params = definitions[method].params.safeParse(body);
+      if (!params.success) throw invalid();
+      return leases.renew(connectionId, params.data);
+    }
+    if (!definitions[method].params.safeParse(body).success) throw invalid();
+    const disposition = registrations.disposition(connectionId);
+    return {
+      released: leases.release(connectionId),
+      ...disposition,
+    };
+  };
+
+  const stream = async (
+    request: CanopyJsonRpcRequest,
+    body: Record<string, unknown>,
+    caller: CanopyCallerDescriptor,
+  ): Promise<void> => {
+    const { id, method } = request;
+    const registration = registrations.beginStream(
+      connection.connectionId,
+      method,
+      String(id),
+    );
+    try {
+      const handle = await options.dispatcher.openStream(method, body, {
+        caller,
+        metadata: request.params._meta,
+        signal: AbortSignal.any([connection.signal, registration.signal]),
+      });
+      registration.attach(() => handle.close());
+      const { subscriptionId } = handle.openResult;
+      await connection.send({ jsonrpc: '2.0', id, result: handle.openResult });
+      // Pulling applies the dispatcher's bounded buffer as backpressure.
+      for await (const frame of handle.frames) {
+        if (frame.kind === 'item')
+          await connection.send({
+            jsonrpc: '2.0',
+            method: `${method}.item`,
+            params: {
+              subscriptionId,
+              cursor: frame.cursor,
+              itemId: `item-${frame.cursor.sequence}`,
+              occurredAt: new Date(
+                (options.clock ?? CANOPY_SYSTEM_CLOCK).now(),
+              ).toISOString(),
+              item: frame.item,
+            },
+          });
+        else
+          await connection.send({
+            jsonrpc: '2.0',
+            method: `${method}.end`,
+            params: { subscriptionId, ...without(frame, 'kind') },
+          });
+      }
+    } finally {
+      registration.finish(connection.signal.aborted);
+    }
+  };
+
+  /** One query or instruction; a lease-bound call is fenced to its admitted lease. */
+  const dispatch = async (
+    request: CanopyJsonRpcRequest,
+    query: boolean,
+    caller: CanopyCallerDescriptor,
+  ): Promise<void> => {
+    const { id, method } = request;
+    const { _meta, ...body } = request.params;
+    const fence = leaseBound.has(method)
+      ? fenceLeasedCall(leases, connection.connectionId)
+      : null;
+    try {
+      const call = {
+        caller,
+        metadata: _meta,
+        signal: fence
+          ? AbortSignal.any([connection.signal, fence.signal])
+          : connection.signal,
+      };
+      let result: unknown;
+      try {
+        result = query
+          ? await options.dispatcher.query(method, body, call)
+          : await options.dispatcher.instruction(method, body, call);
+      } catch (error) {
+        throw fence?.refusal() ?? error;
+      }
+      // Checked in the same turn as the send, so no lease change slips between.
+      const refused = fence?.refusal();
+      if (refused) throw refused;
+      return await send({ jsonrpc: '2.0', id, result });
+    } finally {
+      fence?.dispose();
+    }
+  };
+
+  const serve = async (request: CanopyJsonRpcRequest): Promise<void> => {
+    const { id, method } = request;
+    const kind = kinds.get(method);
+    const leaseMethod = LEASE_OPERATIONS.find((name) => name === method);
+    if (
+      initialization === 'done' &&
+      method !== INITIALIZE &&
+      !leaseMethod &&
+      !kind
+    )
+      return send({
+        jsonrpc: '2.0',
+        id,
+        error: {
+          code: CANOPY_JSON_RPC_PROTOCOL_ERROR_CODES.methodNotFound,
+          message: `Unknown method ${method}.`,
+        },
+      });
+    try {
+      const caller = options.callerFor(identity());
+      if (method === INITIALIZE) {
+        if (initialization !== 'none')
+          throw new CanopyOperationError({
+            kind: 'failed_precondition',
+            message: 'The connection is already initialized.',
+            retry: { kind: 'never' },
+          });
+        initialization = 'pending';
+        const result = await initialize(request, caller).catch(
+          async (error: unknown) => {
+            await fail(id, error);
+            // A version mismatch fails the whole connection closed.
+            connection.close(errorPayload(error));
+            return null;
+          },
+        );
+        if (!result) return;
+        advertised = new Set([
+          ...result.capabilities.operations,
+          ...result.capabilities.streams,
+        ]);
+        initialization = 'done';
+        return await send({ jsonrpc: '2.0', id, result });
+      }
+      if (initialization !== 'done')
+        throw new CanopyOperationError({
+          kind: 'failed_precondition',
+          message: 'Call core.runtime.initialize first.',
+          retry: { kind: 'never' },
+        });
+      if (!advertised.has(method)) throw canopyPermissionDeniedError();
+      if (leaseMethod)
+        return await send({
+          jsonrpc: '2.0',
+          id,
+          result: lease(leaseMethod, request, caller),
+        });
+      if (kind !== 'stream')
+        return await dispatch(request, kind === 'query', caller);
+      if (leaseBound.has(method) && !leases.lease(connection.connectionId))
+        throw new CanopyOperationError(LEASE_REQUIRED);
+      return await stream(request, without(request.params, '_meta'), caller);
+    } catch (error) {
+      return fail(id, error);
+    }
+  };
+
+  void (async (): Promise<void> => {
+    for (;;) {
+      const message = await connection.receive().catch(() => null);
+      if (!message || planeSignal.aborted) break;
+      // Reverse RPC and client notifications are not served yet.
+      if (!('method' in message) || !('id' in message)) continue;
+      if (active >= maxActive) {
+        // Awaited, so a peer that stops reading stops being read.
+        await fail(
+          message.id,
+          new CanopyOperationError({
+            kind: 'resource_exhausted',
+            message: 'Too many requests in flight on this connection.',
+            retry: { kind: 'same_request', delayMs: 100 },
+          }),
+        );
+        continue;
+      }
+      active += 1;
+      void serve(message).finally(() => {
+        active -= 1;
+      });
+    }
+    // Detached only once frames buffered before the close have been served:
+    // lease operations apply synchronously, so a release sent just before
+    // hanging up ends the lease as released, and an acquire starts the grace.
+    leases.detach(connection.connectionId);
+  })();
+}
+
+/**
+ * The daemon control plane (doc 17 §W2): authenticated framed connections,
+ * per-connection `core.runtime.initialize` negotiation, connection-bound
+ * client leases, and the idle grace that asks the host to stop.
+ */
+export function serveCanopyDaemonControlPlane(
+  options: CanopyDaemonControlPlaneOptions,
+): CanopyDaemonControlPlane {
+  const clock = options.clock ?? CANOPY_SYSTEM_CLOCK;
+  const { maxActiveRequests } = options;
+  if (
+    maxActiveRequests !== undefined &&
+    (!Number.isSafeInteger(maxActiveRequests) || maxActiveRequests < 1)
+  )
+    throw new RangeError('maxActiveRequests must be a positive integer.');
+  const leases = createCanopyLeaseRegistry(options.leases, clock);
+  const registrations = createCanopyLeaseRegistrations(leases);
+  // A lease never gets more channels than one connection may hold.
+  const channels = createCanopyChannelRegistry(leases, {
+    maxChannelsPerLease: Math.min(
+      options.channels?.maxChannelsPerLease ??
+        CANOPY_DEFAULT_MAX_CHANNELS_PER_LEASE,
+      resolveCanopyChannelLimits(options.connection).maxChannels,
+    ),
+  });
+  const obligations = createCanopyObligationRegistry();
+  const idle = startCanopyIdleGrace(
+    leases,
+    obligations,
+    options.onIdle,
+    options.idleGrace,
+    clock,
+  );
+  const connections = new Set<CanopyFramedConnection>();
+  const closing = new AbortController();
+  let closed = false;
+  acceptCanopyFramedConnections({
+    listener: options.binding.listener,
+    auth: options.binding.auth,
+    connection: options.connection,
+    onConnection: (connection) => {
+      if (closed) return connection.close();
+      connections.add(connection);
+      connection.signal.addEventListener(
+        'abort',
+        () => connections.delete(connection),
+        { once: true },
+      );
+      serveControlConnection(
+        connection,
+        options,
+        leases,
+        channels,
+        registrations,
+        closing.signal,
+      );
+    },
+  }).done.catch(() => undefined);
+  return {
+    leases,
+    obligations,
+    close: (): Promise<void> => {
+      if (closed) return Promise.resolve();
+      closed = true;
+      closing.abort();
+      idle.close();
+      connections.forEach((connection) => connection.close());
+      channels.close();
+      registrations.close();
+      leases.close();
+      return Promise.resolve();
+    },
+  };
+}

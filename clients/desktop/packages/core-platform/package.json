@@ -1,0 +1,21 @@
+{
+  "name": "@canopy/core-platform",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Host selection of the ADR 25 PlatformServices port for the portable Canopy core runtime.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./host-platform": "./src/host-platform.ts"
+  },
+  "dependencies": {
+    "@canopy/core-runtime": "workspace:*"
+  },
+  "devDependencies": {
+    "@canopy/core-client": "workspace:*",
+    "@canopy/core-transport": "workspace:*"
+  }
+}

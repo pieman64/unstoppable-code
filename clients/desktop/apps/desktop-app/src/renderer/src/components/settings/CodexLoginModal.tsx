@@ -1,0 +1,350 @@
+import { useObservabilityStore } from '@/stores/observabilityStore';
+import {
+  computeRelevantAccountSnapshots,
+  OtherAccountSnapshotsPanel,
+} from '@/components/pages/usage/OtherAccountSnapshots';
+import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
+import type { CodexLoginState } from '@canopy/desktop-shared/types';
+import { Button } from '@canopy/ui-shared/components';
+import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
+import { DialogModal } from '@/components/shared/DialogModal';
+import { copyTextToClipboard } from '@/lib/clipboard';
+import { invalidateCodexAuthStatusCache } from '@/hooks/useCodexAuthStatus';
+import { useUsageLimitResumePromptStore } from '@/stores/usageLimitResumePromptStore';
+import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
+import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
+
+interface CodexLoginModalProps {
+  onClose: () => void;
+  ownerDocument?: Document;
+}
+
+export function CodexLoginModal({
+  onClose,
+  ownerDocument,
+}: CodexLoginModalProps): JSX.Element {
+  const settingsButtonSize = useSettingsButtonSize();
+  const [state, setState] = useState<CodexLoginState>({
+    attemptId: null,
+    phase: 'ready',
+    activeWorkCount: 0,
+  });
+  const [error, setError] = useState<string | null>(null);
+  const [method, setMethod] = useState<'chatgpt' | 'chatgptDeviceCode'>(
+    'chatgpt',
+  );
+  const [copied, setCopied] = useState(false);
+  const [snapshotsOpen, setSnapshotsOpen] = useState(false);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const usage = useObservabilityStore((store) => store.usage);
+  const initializeObservability = useObservabilityStore(
+    (store) => store.initialize,
+  );
+  useEffect(() => {
+    void initializeObservability();
+  }, [initializeObservability]);
+  useEffect(() => {
+    if (!snapshotsOpen) return;
+    const timer = setInterval(() => setNowMs(Date.now()), 30_000);
+    return (): void => clearInterval(timer);
+  }, [snapshotsOpen]);
+  const activeSummary = usage.providers.find(
+    (provider) => provider.provider === 'codex',
+  );
+  const snapshots = computeRelevantAccountSnapshots(
+    'codex',
+    activeSummary?.accountEmail,
+    activeSummary?.subscriptionLabel,
+    usage.accountSnapshots ?? [],
+    nowMs,
+  );
+  const completed = useRef(false);
+  const cancellationScheduled = useRef(false);
+  const startPromise = useRef<Promise<CodexLoginState> | null>(null);
+  const openedAttempt = useRef<string | null>(null);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  const receive = useCallback((next: CodexLoginState): void => {
+    setState(next);
+    if (
+      next.phase === 'complete' ||
+      (next.phase === 'verification-failed' && next.activeWorkCount > 0)
+    ) {
+      if (
+        next.phase === 'complete' &&
+        next.outcome === 'failed' &&
+        next.activeWorkCount === 0
+      )
+        return;
+      if (completed.current) return;
+      completed.current = true;
+      invalidateCodexAuthStatusCache();
+      if (next.activeWorkCount > 0)
+        useUsageLimitResumePromptStore.getState().openAuthentication(next);
+      closeRef.current();
+    }
+  }, []);
+
+  const cancelAfterStart = useCallback((reportError: boolean): void => {
+    if (cancellationScheduled.current) return;
+    cancellationScheduled.current = true;
+    const pending = startPromise.current ?? Promise.resolve();
+    void pending
+      .catch(() => undefined)
+      .then(() => window.api.codexLogin.cancel())
+      .catch(() => {
+        if (reportError)
+          setError("Couldn't finish cancelling sign-in. Try again.");
+      });
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    const unsubscribe = window.api.codexLogin.onState((next) => {
+      if (!disposed) receive(next);
+    });
+    const pending = window.api.codexLogin.start({
+      confirmPause: false,
+      method: 'chatgpt',
+    });
+    startPromise.current = pending;
+    void pending
+      .then((next) => {
+        if (!disposed) receive(next);
+      })
+      .catch(() => {
+        if (!disposed) setError("Couldn't start Codex sign-in. Try again.");
+      });
+    return (): void => {
+      disposed = true;
+      unsubscribe();
+      if (!completed.current) cancelAfterStart(false);
+    };
+  }, [cancelAfterStart, receive]);
+
+  useEffect(() => {
+    if (
+      state.phase !== 'waiting' ||
+      !state.attemptId ||
+      openedAttempt.current === `${state.attemptId}:${state.method}`
+    )
+      return;
+    openedAttempt.current = `${state.attemptId}:${state.method}`;
+    void window.api.codexLogin
+      .openBrowser()
+      .catch(() =>
+        setError("Couldn't open your browser. Use Open browser to try again."),
+      );
+  }, [state.attemptId, state.method, state.phase]);
+
+  const cancel = (): void => {
+    if (!state.attemptId) {
+      completed.current = true;
+      cancelAfterStart(true);
+      onClose();
+      return;
+    }
+    if (state.phase === 'complete') {
+      completed.current = true;
+      onClose();
+      return;
+    }
+    void window.api.codexLogin
+      .cancel()
+      .then(receive)
+      .catch(() => setError("Couldn't finish cancelling sign-in. Try again."));
+  };
+  const start = (nextMethod = method): void => {
+    setError(null);
+    setMethod(nextMethod);
+    const pending = window.api.codexLogin.start({
+      confirmPause: true,
+      method: nextMethod,
+    });
+    startPromise.current = pending;
+    void pending
+      .then(receive)
+      .catch(() => setError("Couldn't start Codex sign-in. Try again."));
+  };
+  useCurrentUiStateReporter('auth.loginModal', {
+    open: true,
+    provider: 'codex',
+    snapshotsAvailable: snapshots.length > 0,
+    snapshotsPanelOpen: snapshotsOpen && snapshots.length > 0,
+  });
+
+  return (
+    <DialogModal
+      title="Sign in to Codex"
+      maxWidth="md"
+      onClose={cancel}
+      ownerDocument={ownerDocument}
+    >
+      <div data-testid="auth-login-modal" className="flex flex-col">
+        <div
+          className="space-y-4 px-5 py-5 text-s fg-primary"
+          aria-live="polite"
+        >
+          {state.phase === 'confirm' ? (
+            <>
+              <p>Your active Codex work will pause during sign-in.</p>
+              <p className="fg-secondary">
+                After signing in or cancelling, you can choose which chats and
+                pipelines to resume.
+              </p>
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={method === 'chatgptDeviceCode'}
+                  onChange={(event) =>
+                    setMethod(
+                      event.target.checked ? 'chatgptDeviceCode' : 'chatgpt',
+                    )
+                  }
+                />
+                Use a device code
+              </label>
+            </>
+          ) : state.phase === 'waiting' ? (
+            <>
+              <p>Finish signing in in your browser.</p>
+              {state.userCode ? (
+                <div className="space-y-2">
+                  <p className="fg-secondary">Enter this code when asked:</p>
+                  <div className="flex items-center gap-3">
+                    <code
+                      data-testid="codex-login-device-code"
+                      className={`${POSTHOG_REPLAY_BLOCK_CLASS} font-mono text-lg`}
+                    >
+                      {state.userCode}
+                    </code>
+                    <Button
+                      size={settingsButtonSize}
+                      variant="ghost"
+                      onClick={(): void => {
+                        void copyTextToClipboard(state.userCode ?? '').then(
+                          () => setCopied(true),
+                        );
+                      }}
+                    >
+                      {copied ? 'Copied' : 'Copy code'}
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <p className="fg-secondary">
+                  This window will update when sign-in finishes. Your paused
+                  work will stay stopped until you resume it.
+                </p>
+              )}
+              <Button
+                size={settingsButtonSize}
+                variant="primary"
+                onClick={(): void => {
+                  void window.api.codexLogin
+                    .openBrowser()
+                    .catch(() =>
+                      setError("Couldn't open your browser. Try again."),
+                    );
+                }}
+              >
+                Open browser
+              </Button>
+              {state.method !== 'chatgptDeviceCode' && (
+                <Button
+                  size={settingsButtonSize}
+                  variant="ghost"
+                  onClick={() => start('chatgptDeviceCode')}
+                >
+                  Use a device code
+                </Button>
+              )}
+            </>
+          ) : state.phase === 'complete' && state.outcome === 'failed' ? (
+            <>
+              <p>Sign-in did not complete. Try again.</p>
+              <Button
+                size={settingsButtonSize}
+                variant="primary"
+                onClick={() => start()}
+              >
+                Sign in
+              </Button>
+            </>
+          ) : state.phase === 'verification-failed' ? (
+            <>
+              <p>{state.error}</p>
+              <Button
+                size={settingsButtonSize}
+                variant="primary"
+                onClick={(): void => {
+                  void window.api.codexLogin.retryVerification().then(receive);
+                }}
+              >
+                Retry verification
+              </Button>
+            </>
+          ) : (
+            <p>
+              {state.phase === 'verifying'
+                ? 'Verifying your current Codex account…'
+                : state.phase === 'pausing'
+                  ? 'Pausing Codex work…'
+                  : 'Preparing sign-in…'}
+            </p>
+          )}
+          {snapshots.length > 0 && (
+            <>
+              <Button
+                size={settingsButtonSize}
+                variant="ghost"
+                data-testid="auth-login-snapshots-toggle"
+                aria-expanded={snapshotsOpen}
+                onClick={() => setSnapshotsOpen(!snapshotsOpen)}
+              >
+                Other account snapshots
+              </Button>
+              {snapshotsOpen && (
+                <div
+                  data-testid="auth-login-snapshots-panel"
+                  className="max-h-64 overflow-y-auto"
+                >
+                  <OtherAccountSnapshotsPanel
+                    provider="codex"
+                    snapshots={snapshots}
+                    nowMs={nowMs}
+                  />
+                </div>
+              )}
+            </>
+          )}
+          {error && (
+            <p role="alert" className="fg-destructive">
+              {error}
+            </p>
+          )}
+        </div>
+        <div className="flex justify-end gap-2 border-t px-5 py-3">
+          <Button
+            size={settingsButtonSize}
+            variant="ghost"
+            data-testid="auth-login-cancel"
+            onClick={cancel}
+          >
+            Cancel
+          </Button>
+          {state.phase === 'confirm' && (
+            <Button
+              size={settingsButtonSize}
+              variant="primary"
+              data-testid="auth-login-submit"
+              onClick={() => start()}
+            >
+              Pause work and sign in
+            </Button>
+          )}
+        </div>
+      </div>
+    </DialogModal>
+  );
+}

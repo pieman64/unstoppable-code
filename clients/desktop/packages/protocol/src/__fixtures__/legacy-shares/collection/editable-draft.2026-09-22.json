@@ -1,0 +1,13 @@
+{
+  "remoteId": "",
+  "name": "Legacy helpers",
+  "description": "A Collection authored before capability packages.",
+  "items": [
+    {
+      "kind": "draft_custom_skill",
+      "clientKey": "legacy-helper",
+      "localSkillId": "custom:app/legacy-helper",
+      "skillName": "legacy-helper"
+    }
+  ]
+}

@@ -1,0 +1,98 @@
+import type { JSX, ReactNode } from 'react';
+import { Button } from './Button';
+
+export interface SettingsDangerConfirmBlockProps {
+  /** Section heading rendered inside the bordered card. */
+  title: string;
+  /** Optional supporting copy below the heading. */
+  description?: ReactNode;
+  /** Optional supplementary message rendered below `description` (e.g. an
+   * "active sessions" warning). */
+  warning?: ReactNode;
+  /** True when the destructive action should be disabled before confirmation
+   * (e.g. active sessions, missing source repo path). */
+  triggerDisabled?: boolean;
+  triggerLabel: string;
+  /** Confirm phase: action is in flight (`isWorking` true) or awaiting a
+   * second click. */
+  confirming: boolean;
+  onConfirmStart: () => void;
+  onConfirmCancel: () => void;
+  /** Click handler for the confirm button. The button shows
+   * `confirmInProgressLabel` while `isWorking` is true. */
+  onConfirm: () => void;
+  isWorking: boolean;
+  confirmLabel: string;
+  confirmInProgressLabel: string;
+  /** When `'destructive'` (default) the trigger uses destructive styling.
+   * `'warning'` mirrors the amber "Convert to ..." sections. */
+  variant?: 'destructive' | 'warning';
+}
+
+/**
+ * Single confirm/cancel pattern used for "Delete project/workspace" and
+ * "Convert to single/multi-repo" sections in both modals. Renders the trigger
+ * button until clicked, then swaps to a "Confirm / Cancel" pair.
+ */
+export function SettingsDangerConfirmBlock({
+  title,
+  description,
+  warning,
+  triggerDisabled,
+  triggerLabel,
+  confirming,
+  onConfirmStart,
+  onConfirmCancel,
+  onConfirm,
+  isWorking,
+  confirmLabel,
+  confirmInProgressLabel,
+  variant = 'destructive',
+}: SettingsDangerConfirmBlockProps): JSX.Element {
+  const cardBorderClass =
+    variant === 'destructive'
+      ? 'border-line-destructive/30'
+      : 'border-line-attention/30';
+  const titleColorClass =
+    variant === 'destructive' ? 'fg-destructive' : 'fg-primary';
+
+  return (
+    <div className={`rounded-lg border ${cardBorderClass} p-3`}>
+      <h3 className={`text-s font-medium ${titleColorClass}`}>{title}</h3>
+      {description && (
+        <p className="mt-1 text-xs fg-secondary">{description}</p>
+      )}
+      {warning}
+      {!confirming ? (
+        <Button
+          onClick={onConfirmStart}
+          disabled={triggerDisabled || isWorking}
+          variant={variant}
+          size="sm"
+          className="mt-2"
+        >
+          {triggerLabel}
+        </Button>
+      ) : (
+        <div className="mt-2 flex items-center gap-2">
+          <Button
+            onClick={onConfirm}
+            disabled={isWorking}
+            variant={variant === 'destructive' ? 'destructive' : 'primary'}
+            size="sm"
+          >
+            {isWorking ? confirmInProgressLabel : confirmLabel}
+          </Button>
+          <Button
+            onClick={onConfirmCancel}
+            disabled={isWorking}
+            variant="ghost"
+            size="sm"
+          >
+            Cancel
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}

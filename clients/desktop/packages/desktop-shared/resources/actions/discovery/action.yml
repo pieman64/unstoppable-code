@@ -1,0 +1,34 @@
+name: Discovery
+description: Scan the project and produce discovery artifacts.
+log_format_hint: agent
+inputs:
+  model:
+    description: Optional Claude model override.
+    required: false
+  permission_preset:
+    description: Optional permission preset override.
+    required: false
+    default: read_only
+outputs:
+  text_response:
+    description: Repository discovery summary.
+    value: ${{ steps.discovery.outputs.text_response }}
+  transcript_file:
+    description: Discovery transcript file.
+    value: ${{ steps.discovery.outputs.transcript_file }}
+runs:
+  using: composite
+  steps:
+    - id: discovery
+      uses: builtin/agent-prompt
+      with:
+        model: ${{ inputs.model }}
+        permission_preset: ${{ inputs.permission_preset }}
+        prompt: |
+          Scan the current repository and produce a concise discovery brief.
+
+          Include:
+          1. primary languages, frameworks, and package managers
+          2. likely entry points and major directories
+          3. important build, test, and runtime commands if they are obvious
+          4. high-risk areas or likely integration points

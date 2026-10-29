@@ -1,0 +1,127 @@
+'use client';
+
+import { useId, useState, type JSX } from 'react';
+import type { WorkspaceCreateResult } from '@canopy/app-core';
+import {
+  normalizeRepositoryCloneUrl,
+  portalRepositoryCloneErrorMessage,
+  type PortalWorkspaceCreatePayload,
+} from '@canopy/protocol/portal';
+import {
+  DialogModal,
+  LoadingSpinner,
+  RepositoryCloneError,
+} from '@canopy/ui-shared/components';
+
+export interface CreateWorkspaceDialogTestIds {
+  readonly dialog?: string;
+  readonly remoteUrl?: string;
+  readonly submit?: string;
+  readonly error?: string;
+}
+
+export interface CreateWorkspaceDialogProps {
+  readonly mode: 'remote-clone';
+  readonly onCreate?: (
+    payload: PortalWorkspaceCreatePayload,
+  ) => Promise<WorkspaceCreateResult>;
+  readonly onClose: () => void;
+  readonly testIds?: CreateWorkspaceDialogTestIds;
+}
+
+export function CreateWorkspaceDialog({
+  mode,
+  onCreate,
+  onClose,
+  testIds,
+}: CreateWorkspaceDialogProps): JSX.Element {
+  const [remoteUrl, setRemoteUrl] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const generatedErrorId = useId();
+  const errorId = testIds?.error ?? generatedErrorId;
+  const trimmedUrl = remoteUrl.trim();
+  const canSubmit =
+    mode === 'remote-clone' &&
+    onCreate !== undefined &&
+    trimmedUrl.length > 0 &&
+    !submitting;
+
+  const submit = async (): Promise<void> => {
+    if (!canSubmit || !onCreate) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await onCreate({
+        kind: 'remote-clone',
+        remoteUrl: normalizeRepositoryCloneUrl(trimmedUrl),
+      });
+      onClose();
+    } catch (createError: unknown) {
+      setError(portalRepositoryCloneErrorMessage(createError));
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <DialogModal
+      onClose={submitting ? (): void => undefined : onClose}
+      closeOnBackdrop={!submitting}
+      closeOnEscape={!submitting}
+      title="Add project"
+      maxWidth="md"
+      dataTestId={testIds?.dialog}
+    >
+      <div className="flex flex-col gap-4 px-5 pb-5 pt-4">
+        <label className="flex flex-col gap-1.5 text-s">
+          <span className="font-medium fg-primary">Git repository URL</span>
+          <input
+            type="text"
+            value={remoteUrl}
+            onChange={(event) => {
+              setRemoteUrl(event.target.value);
+              if (error) setError(null);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') void submit();
+            }}
+            placeholder="https://github.com/org/repo.git"
+            autoFocus
+            disabled={submitting || onCreate === undefined}
+            aria-invalid={error ? true : undefined}
+            aria-describedby={error ? errorId : undefined}
+            data-testid={testIds?.remoteUrl}
+            className="rounded-md border bg-base px-3 py-2 text-s fg-primary outline-none focus:border-line-focus focus:ring-1 focus:ring-line-focus disabled:cursor-not-allowed disabled:opacity-60"
+          />
+          <span className="text-xs fg-secondary">
+            The desktop clones the repo into its default repositories folder and
+            names the project after it.
+          </span>
+        </label>
+        {error && (
+          <RepositoryCloneError id={errorId} testId={errorId} message={error} />
+        )}
+        <div className="flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={submitting}
+            className="rounded-md border px-3 py-2 text-s font-medium fg-primary transition-colors hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => void submit()}
+            disabled={!canSubmit}
+            data-testid={testIds?.submit}
+            className="flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-s font-medium fg-emphasis transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {submitting && <LoadingSpinner />}
+            {submitting ? 'Cloning…' : 'Create'}
+          </button>
+        </div>
+      </div>
+    </DialogModal>
+  );
+}

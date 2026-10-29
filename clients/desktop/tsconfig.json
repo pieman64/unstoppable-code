@@ -1,0 +1,66 @@
+{
+  "extends": "./tsconfig.base.json",
+  "files": [],
+  "references": [
+    {
+      "path": "./packages/protocol"
+    },
+    {
+      "path": "./packages/artifact-crypto"
+    },
+    {
+      "path": "./packages/plugin-interop"
+    },
+    {
+      "path": "./packages/agent-actions"
+    },
+    {
+      "path": "./packages/agent-transcript"
+    },
+    {
+      "path": "./packages/app-core"
+    },
+    {
+      "path": "./packages/app-state"
+    },
+    {
+      "path": "./packages/ui-app"
+    },
+    {
+      "path": "./packages/core-runtime"
+    },
+    {
+      "path": "./packages/core-platform"
+    },
+    {
+      "path": "./packages/core-transport"
+    },
+    {
+      "path": "./packages/core-client"
+    },
+    {
+      "path": "./packages/desktop-shared"
+    },
+    {
+      "path": "./packages/desktop-instrumentation"
+    },
+    {
+      "path": "./packages/ui-shared"
+    },
+    {
+      "path": "./packages/ui-rich"
+    },
+    {
+      "path": "./apps/desktop-app/tsconfig.node.json"
+    },
+    {
+      "path": "./apps/desktop-app/tsconfig.web.json"
+    },
+    {
+      "path": "./packages/pipeline-interop"
+    },
+    {
+      "path": "./packages/mcp-oauth-core"
+    }
+  ]
+}

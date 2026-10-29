@@ -1,0 +1,74 @@
+name: GitHub Post Review Comment
+description: Post a pull request review comment with inline comments and optional threaded replies.
+scope: [directory, worktree]
+inputs:
+  pr_identifier:
+    description: Full PR URL or identifier in owner/repo#123, owner/repo/pull/123, owner/repo/123, or owner/repo 123 format.
+    required: false
+  owner:
+    description: GitHub owner. Required when pr_identifier is omitted.
+    required: false
+  repo:
+    description: GitHub repository name. Required when pr_identifier is omitted.
+    required: false
+  pr_id:
+    description: Pull request number. Required when pr_identifier is omitted.
+    required: false
+  review_json:
+    description: JSON string describing the review body, GitHub Review API inline comments, and threaded replies. Use a body that starts with the code-review marker when posting AI reviews.
+    required: false
+  review_json_file:
+    description: Path to a JSON file describing the review body, GitHub Review API inline comments, and threaded replies.
+    required: false
+  diff_file:
+    description: Optional unified diff file used to prefilter inline comments before submitting the GitHub review.
+    required: false
+  event:
+    description: GitHub review event. Defaults to COMMENT.
+    required: false
+  fail_on_existing_pending_review:
+    description: Fail without changing an existing pending review instead of escrowing, deleting, and restoring it around the automated review submission.
+    required: false
+    default: false
+outputs:
+  status:
+    description: posted, skipped, or failed.
+  failure_mode:
+    description: Machine-readable failure category when status is failed.
+  review_id:
+    description: GitHub review id when a review was posted.
+  review_comment_id:
+    description: Deprecated alias for review_id. Contains the GitHub review id when a review was posted.
+  review_url:
+    description: GitHub review URL when a review was posted.
+  inline_comment_count:
+    description: Number of inline comments submitted with the review.
+  file_level_comment_count:
+    description: Number of invalid inline comments posted separately as file-level pull request review comments.
+  file_level_failed_count:
+    description: Number of file-level pull request review comments that failed to post after the review was submitted.
+  omitted_inline_comment_count:
+    description: Number of inline comments omitted after GitHub rejected inline comment coordinates.
+  thread_reply_count:
+    description: Number of threaded replies posted.
+  thread_resolve_count:
+    description: Number of review threads resolved.
+  error_message:
+    description: Error detail when posting failed.
+  pending_review_escrow_file:
+    description: Durable JSON journal containing every pending review and draft comment captured before deletion, plus deletion and restoration state.
+  pending_review_restoration_status:
+    description: none, not_required, restored, or restore_failed.
+  payload_file:
+    description: File path containing the GitHub review API payload.
+  adjusted_payload_file:
+    description: File path containing the retry payload with only diff-valid inline comments.
+  file_level_comments_file:
+    description: File path containing invalid inline comments converted to file-level pull request review comments.
+  fallback_payload_file:
+    description: File path containing the body-only fallback payload when inline comments were rejected.
+  result_json_file:
+    description: File path containing structured posting results.
+runs:
+  using: node
+  main: index.js

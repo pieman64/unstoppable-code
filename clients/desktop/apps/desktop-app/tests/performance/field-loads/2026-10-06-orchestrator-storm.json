@@ -1,0 +1,4405 @@
+{
+  "schemaVersion": 1,
+  "kind": "desktop-field-load",
+  "label": "2026-10-06-orchestrator-storm",
+  "capturedAt": "2026-10-06T20:16:39.162Z",
+  "windowMs": 60001,
+  "host": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpuCount": 28,
+    "totalMemoryBytes": 103079215104,
+    "loadAverage": [21.45, 19.96, 19.62]
+  },
+  "totals": {
+    "scopes": 54,
+    "emptyScopes": 25,
+    "chats": 178,
+    "activeTurns": 10,
+    "committedBytes": 592143233,
+    "commitsPerMinute": 256,
+    "runningDelegationCards": 26
+  },
+  "diagnostics": {
+    "minutes": 240,
+    "chatStorage": {
+      "windows": 240,
+      "windowMs": 60000,
+      "commits": {
+        "p50": 220,
+        "p95": 428,
+        "max": 589
+      },
+      "mutations": {
+        "p50": 542,
+        "p95": 929,
+        "max": 1355
+      },
+      "bytesWritten": {
+        "p50": 761393690,
+        "p95": 1391339630,
+        "max": 1692737991
+      },
+      "fileSyncs": {
+        "p50": 1768,
+        "p95": 3406,
+        "max": 4646
+      },
+      "directorySyncs": {
+        "p50": 1832,
+        "p95": 3320,
+        "max": 4658
+      },
+      "commitMsTotal": {
+        "p50": 154764.1,
+        "p95": 312581,
+        "max": 398664.1
+      },
+      "commitMsMax": {
+        "p50": 4163.6,
+        "p95": 17306.1,
+        "max": 27100.6
+      },
+      "activeScopes": {
+        "p50": 7,
+        "p95": 13,
+        "max": 16
+      }
+    },
+    "codexStdoutHolds": {
+      "owner-admission": {
+        "count": 540,
+        "byOutcome": {
+          "released": 536,
+          "discarded": 4
+        },
+        "durationMs": {
+          "p50": 9582,
+          "p95": 37108,
+          "max": 112402
+        },
+        "durationMsTotal": 7384435,
+        "peakQueuedFrames": 3460,
+        "peakQueuedBytes": 6234419,
+        "responseQueued": 304
+      },
+      "stdout-byte-cap": {
+        "count": 20,
+        "byOutcome": {
+          "released": 19,
+          "discarded": 1
+        },
+        "durationMs": {
+          "p50": 284738,
+          "p95": 1135229,
+          "max": 1135229
+        },
+        "durationMsTotal": 7072675,
+        "peakQueuedFrames": 6007,
+        "peakQueuedBytes": 9199669,
+        "responseQueued": 1
+      }
+    },
+    "codexAppServerStops": {
+      "idle-timeout": 3,
+      "final-owner-release": 21
+    },
+    "committedRewrites": {
+      "count": 4281,
+      "bytes": 71810487591,
+      "chats": 33
+    },
+    "eventLoopStalls": {
+      "count": 6,
+      "maxDelayMs": 2444,
+      "maxUtilization": 0.83,
+      "maxActiveTurns": 21
+    },
+    "resourcePressure": {
+      "count": 6,
+      "maxRssBytes": 47662759936,
+      "maxProcessCount": 263
+    }
+  },
+  "processes": {
+    "processes": 179,
+    "classes": {
+      "app-main": {
+        "count": 1,
+        "cpuPercent": 134.2,
+        "rssBytes": 2916548608
+      },
+      "shell": {
+        "count": 18,
+        "cpuPercent": 0,
+        "rssBytes": 29409280
+      },
+      "electron-utility": {
+        "count": 12,
+        "cpuPercent": 33.9,
+        "rssBytes": 859291648
+      },
+      "codex-app-server": {
+        "count": 7,
+        "cpuPercent": 1.2,
+        "rssBytes": 1277558784
+      },
+      "other": {
+        "count": 67,
+        "cpuPercent": 197.9,
+        "rssBytes": 2130460672
+      },
+      "node": {
+        "count": 55,
+        "cpuPercent": 398,
+        "rssBytes": 16235216896
+      },
+      "claude-cli": {
+        "count": 10,
+        "cpuPercent": 3.3,
+        "rssBytes": 3189997568
+      },
+      "electron-renderer": {
+        "count": 4,
+        "cpuPercent": 196.9,
+        "rssBytes": 4594188288
+      },
+      "electron-gpu": {
+        "count": 3,
+        "cpuPercent": 74.7,
+        "rssBytes": 322502656
+      },
+      "git": {
+        "count": 2,
+        "cpuPercent": 39.5,
+        "rssBytes": 22462464
+      }
+    }
+  },
+  "scopes": [
+    {
+      "label": "scope-01",
+      "liveIndexBytes": 395193,
+      "recoveryIndexBytes": 263956,
+      "archiveIndexBytes": 7252,
+      "revision": 3596,
+      "pendingQuestions": 1,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "claude",
+          "harness": "claude",
+          "hook": false,
+          "runtimeStatus": "streaming",
+          "activeTurn": true,
+          "queuedMessages": 0,
+          "committedMessages": 1171,
+          "committedBytes": 1466213,
+          "transcriptRevision": 3272,
+          "userMessages": 9,
+          "tabIndexBytes": 8954,
+          "largeTabFields": {},
+          "committedRewrites": {
+            "count": 3,
+            "bytes": 3771396,
+            "perMinute": {
+              "p50": 1,
+              "p95": 1,
+              "max": 1
+            },
+            "reasons": {
+              "mixed_active": 3
+            },
+            "patchedBlockTypes": {}
+          },
+          "transcript": {
+            "rows": 1171,
+            "bytes": 1466213,
+            "rowBytes": {
+              "p50": 548,
+              "p95": 3501,
+              "max": 66105
+            },
+            "blockTypes": {
+              "text": 115,
+              "turn_timer": 16,
+              "thinking": 271,
+              "tool_use": 384,
+              "tool_result": 384,
+              "automation_info": 1
+            },
+            "roles": {
+              "user": 9,
+              "system": 401,
+              "assistant": 761
+            },
+            "delegationCards": {
+              "count": 0,
+              "byStatus": {},
+              "bytes": {
+                "p50": 0,
+                "p95": 0,
+                "max": 0
+              },
+              "liveByteFractions": [],
+              "lastByteFractions": []
+            }
+          }
+        },
+        {
+          "provider": "codex",
+          "harness": "codex",
+          "hook": true,
+          "runtimeStatus": "streaming",
+          "activeTurn": true,
+          "queuedMessages": 0,
+          "committedMessages": 173,
+          "committedBytes": 806486,
+          "transcriptRevision": 3550,
+          "userMessages": 2,
+          "tabIndexBytes": 384232,
+          "largeTabFields": {
+            "turnDiffs": 382399
+          },
+          "committedRewrites": {
+            "count": 2,
+            "bytes": 806827,
+            "perMinute": {
+              "p50": 1,
+              "p95": 1,
+              "max": 1
+            },
+            "reasons": {
+              "patch": 1,
+              "mixed_active": 1
+            },
+            "patchedBlockTypes": {
+              "turn_timer": 1
+            }
+          }
+        },
+        {
+          "provider": "codex",
+          "harness": null,
+          "hook": true,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 585,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 89
+    },
+    {
+      "label": "scope-02",
+      "liveIndexBytes": 869699,
+      "recoveryIndexBytes": 371484,
+      "archiveIndexBytes": 13251,
+      "revision": 19925,
+      "pendingQuestions": 4,
+      "answeredPendingQuestions": 3,
+      "delegationRuns": {
+        "count": 27,
+        "bytes": 24102067,
+        "byStatus": {
+          "completed": 26,
+          "failed": 1
+        }
+      },
+      "chats": [
+        {
+          "provider": "codex",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "streaming",
+          "activeTurn": true,
+          "queuedMessages": 0,
+          "committedMessages": 9194,
+          "committedBytes": 36774104,
+          "transcriptRevision": 19830,
+          "userMessages": 134,
+          "tabIndexBytes": 862923,
+          "largeTabFields": {
+            "turnDiffs": 127346,
+            "agentArtifactCarryByTurn": 193649,
+            "inputDelivery": 539291
+          },
+          "committedRewrites": {
+            "count": 281,
+            "bytes": 9580116459,
+            "perMinute": {
+              "p50": 9,
+              "p95": 25,
+              "max": 29
+            },
+            "reasons": {
+              "mixed_active": 6,
+              "patch": 275
+            },
+            "patchedBlockTypes": {
+              "delegated_agent_call": 274,
+              "tool_result": 22,
+              "tool_use": 22
+            }
+          },
+          "transcript": {
+            "rows": 9194,
+            "bytes": 36774104,
+            "rowBytes": {
+              "p50": 993,
+              "p95": 17484,
+              "max": 74854
+            },
+            "blockTypes": {
+              "text": 600,
+              "turn_timer": 63,
+              "tool_use": 5409,
+              "tool_result": 5406,
+              "compaction_info": 27,
+              "delegated_agent_call": 101,
+              "thinking": 2968,
+              "automation_info": 24
+            },
+            "roles": {
+              "user": 134,
+              "system": 3336,
+              "assistant": 5724
+            },
+            "delegationCards": {
+              "count": 101,
+              "byStatus": {
+                "completed": 100,
+                "failed": 1
+              },
+              "bytes": {
+                "p50": 6309,
+                "p95": 11820,
+                "max": 22128
+              },
+              "liveByteFractions": [],
+              "lastByteFractions": [
+                0.7137, 0.7148, 0.7155, 0.7161, 0.7203, 0.7315, 0.7327, 0.7349,
+                0.7362, 0.7437, 0.7496, 0.7741, 0.783, 0.7851, 0.7854, 0.8024,
+                0.8071, 0.8092, 0.8162, 0.8286, 0.8392, 0.8566, 0.8719, 0.8943,
+                0.9107, 0.911, 0.9433, 0.9493, 0.9678, 0.9745, 0.9864, 0.9917
+              ]
+            }
+          }
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 583,
+          "largeTabFields": {}
+        },
+        {
+          "provider": "codex",
+          "harness": "codex",
+          "hook": true,
+          "runtimeStatus": "cancelled",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 22,
+          "committedBytes": 120766,
+          "transcriptRevision": 19666,
+          "userMessages": 1,
+          "tabIndexBytes": 2169,
+          "largeTabFields": {},
+          "committedRewrites": {
+            "count": 1,
+            "bytes": 582,
+            "perMinute": {
+              "p50": 1,
+              "p95": 1,
+              "max": 1
+            },
+            "reasons": {
+              "patch": 1
+            },
+            "patchedBlockTypes": {
+              "turn_timer": 1
+            }
+          }
+        }
+      ],
+      "commitsPerMinute": 76
+    },
+    {
+      "label": "scope-03",
+      "liveIndexBytes": 4743,
+      "recoveryIndexBytes": 83645,
+      "archiveIndexBytes": 43,
+      "revision": 1266,
+      "pendingQuestions": 1,
+      "answeredPendingQuestions": 1,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "codex",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "streaming",
+          "activeTurn": true,
+          "queuedMessages": 0,
+          "committedMessages": 90,
+          "committedBytes": 550758,
+          "transcriptRevision": 1230,
+          "userMessages": 3,
+          "tabIndexBytes": 3511,
+          "largeTabFields": {},
+          "committedRewrites": {
+            "count": 1,
+            "bytes": 550468,
+            "perMinute": {
+              "p50": 1,
+              "p95": 1,
+              "max": 1
+            },
+            "reasons": {
+              "mixed_active": 1
+            },
+            "patchedBlockTypes": {}
+          }
+        }
+      ],
+      "commitsPerMinute": 29
+    },
+    {
+      "label": "scope-04",
+      "liveIndexBytes": 461503,
+      "recoveryIndexBytes": 361515,
+      "archiveIndexBytes": 644256,
+      "revision": 10392,
+      "pendingQuestions": 2,
+      "answeredPendingQuestions": 2,
+      "delegationRuns": {
+        "count": 29,
+        "bytes": 13142083,
+        "byStatus": {
+          "failed": 11,
+          "completed": 18
+        }
+      },
+      "chats": [
+        {
+          "provider": "codex",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "streaming",
+          "activeTurn": true,
+          "queuedMessages": 0,
+          "committedMessages": 4093,
+          "committedBytes": 23488359,
+          "transcriptRevision": 10374,
+          "userMessages": 44,
+          "tabIndexBytes": 457640,
+          "largeTabFields": {
+            "inputDelivery": 125243,
+            "turnDiffs": 258899,
+            "agentArtifactCarryByTurn": 71372
+          },
+          "committedRewrites": {
+            "count": 354,
+            "bytes": 6763237093,
+            "perMinute": {
+              "p50": 6,
+              "p95": 34,
+              "max": 36
+            },
+            "reasons": {
+              "mixed_active": 19,
+              "patch": 335
+            },
+            "patchedBlockTypes": {
+              "delegated_agent_call": 334,
+              "tool_result": 18,
+              "tool_use": 18,
+              "text": 1
+            }
+          },
+          "transcript": {
+            "rows": 4093,
+            "bytes": 23488359,
+            "rowBytes": {
+              "p50": 1860,
+              "p95": 23177,
+              "max": 289133
+            },
+            "blockTypes": {
+              "text": 306,
+              "turn_timer": 30,
+              "tool_use": 2736,
+              "tool_result": 2734,
+              "delegated_agent_call": 34,
+              "compaction_info": 12,
+              "thinking": 970,
+              "automation_info": 1
+            },
+            "roles": {
+              "user": 44,
+              "system": 1268,
+              "assistant": 2781
+            },
+            "delegationCards": {
+              "count": 34,
+              "byStatus": {
+                "failed": 11,
+                "completed": 23
+              },
+              "bytes": {
+                "p50": 12385,
+                "p95": 112727,
+                "max": 289133
+              },
+              "liveByteFractions": [],
+              "lastByteFractions": [
+                0.0563, 0.0937, 0.0941, 0.0945, 0.0959, 0.1385, 0.1763, 0.2179,
+                0.2224, 0.2361, 0.2988, 0.3045, 0.3251, 0.3491, 0.3968, 0.4023,
+                0.4052, 0.4131, 0.4943, 0.5257, 0.5554, 0.5742, 0.7059, 0.7068,
+                0.7818, 0.8214, 0.8221, 0.874, 0.8825, 0.935, 0.9494, 0.9803
+              ]
+            }
+          }
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 563,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 570,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 568,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 20
+    },
+    {
+      "label": "scope-05",
+      "liveIndexBytes": 358843,
+      "recoveryIndexBytes": 370548,
+      "archiveIndexBytes": 43,
+      "revision": 5419,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 23,
+        "bytes": 12320894,
+        "byStatus": {
+          "failed": 1,
+          "completed": 21,
+          "running": 1
+        }
+      },
+      "chats": [
+        {
+          "provider": "claude",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 4914,
+          "committedBytes": 15881204,
+          "transcriptRevision": 5419,
+          "userMessages": 39,
+          "tabIndexBytes": 356065,
+          "largeTabFields": {
+            "turnDiffs": 329366,
+            "agentArtifactCarryByTurn": 17567
+          },
+          "committedRewrites": {
+            "count": 451,
+            "bytes": 6624744321,
+            "perMinute": {
+              "p50": 9,
+              "p95": 21,
+              "max": 27
+            },
+            "reasons": {
+              "mixed_active": 19,
+              "patch": 432
+            },
+            "patchedBlockTypes": {
+              "delegated_agent_call": 432,
+              "tool_use": 66,
+              "tool_result": 63
+            }
+          },
+          "transcript": {
+            "rows": 4915,
+            "bytes": 15881796,
+            "rowBytes": {
+              "p50": 733,
+              "p95": 15925,
+              "max": 109091
+            },
+            "blockTypes": {
+              "text": 330,
+              "turn_timer": 41,
+              "thinking": 1913,
+              "tool_use": 2015,
+              "tool_result": 2014,
+              "delegated_agent_call": 40,
+              "automation_info": 3,
+              "compaction_info": 1
+            },
+            "roles": {
+              "user": 39,
+              "system": 617,
+              "assistant": 4259
+            },
+            "delegationCards": {
+              "count": 40,
+              "byStatus": {
+                "completed": 37,
+                "failed": 2,
+                "running": 1
+              },
+              "bytes": {
+                "p50": 9940,
+                "p95": 31617,
+                "max": 42365
+              },
+              "liveByteFractions": [0.9822],
+              "lastByteFractions": [
+                0.3475, 0.3742, 0.3765, 0.3815, 0.382, 0.4432, 0.4936, 0.5092,
+                0.5731, 0.574, 0.5749, 0.5754, 0.5779, 0.5795, 0.5804, 0.5903,
+                0.6048, 0.69, 0.7058, 0.7171, 0.7176, 0.7196, 0.7205, 0.79,
+                0.8267, 0.8324, 0.8388, 0.8793, 0.9137, 0.9173, 0.9315, 0.9822
+              ]
+            }
+          }
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 570,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 602,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 580,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 576,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 10
+    },
+    {
+      "label": "scope-06",
+      "liveIndexBytes": 152330,
+      "recoveryIndexBytes": 302285,
+      "archiveIndexBytes": 43,
+      "revision": 3517,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 24,
+        "bytes": 16121336,
+        "byStatus": {
+          "completed": 23,
+          "running": 1
+        }
+      },
+      "chats": [
+        {
+          "provider": "codex",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "streaming",
+          "activeTurn": true,
+          "queuedMessages": 4,
+          "committedMessages": 3187,
+          "committedBytes": 11866540,
+          "transcriptRevision": 3480,
+          "userMessages": 19,
+          "tabIndexBytes": 134409,
+          "largeTabFields": {
+            "inputDelivery": 132333
+          },
+          "committedRewrites": {
+            "count": 111,
+            "bytes": 293883974,
+            "perMinute": {
+              "p50": 10,
+              "p95": 22,
+              "max": 22
+            },
+            "reasons": {
+              "patch": 111
+            },
+            "patchedBlockTypes": {
+              "delegated_agent_call": 111,
+              "thinking": 24,
+              "tool_use": 6
+            }
+          },
+          "transcript": {
+            "rows": 3187,
+            "bytes": 11866540,
+            "rowBytes": {
+              "p50": 704,
+              "p95": 18316,
+              "max": 74113
+            },
+            "blockTypes": {
+              "text": 108,
+              "turn_timer": 2,
+              "tool_use": 1503,
+              "tool_result": 1490,
+              "delegated_agent_call": 57,
+              "thinking": 1514,
+              "compaction_info": 2,
+              "automation_info": 1
+            },
+            "roles": {
+              "user": 12,
+              "system": 319,
+              "assistant": 2856
+            },
+            "delegationCards": {
+              "count": 57,
+              "byStatus": {
+                "completed": 57
+              },
+              "bytes": {
+                "p50": 5061,
+                "p95": 11624,
+                "max": 21611
+              },
+              "liveByteFractions": [],
+              "lastByteFractions": [
+                0.4412, 0.4553, 0.4652, 0.4756, 0.479, 0.4903, 0.4939, 0.4996,
+                0.519, 0.5531, 0.5586, 0.5907, 0.5921, 0.618, 0.6721, 0.6816,
+                0.683, 0.7095, 0.7152, 0.7158, 0.7896, 0.821, 0.8703, 0.9272,
+                0.9322, 0.9373, 0.9428, 0.9634, 0.9752, 0.986, 0.9915, 0.9953
+              ]
+            }
+          }
+        }
+      ],
+      "commitsPerMinute": 9
+    },
+    {
+      "label": "scope-07",
+      "liveIndexBytes": 761829,
+      "recoveryIndexBytes": 318830,
+      "archiveIndexBytes": 2255,
+      "revision": 340282,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 25,
+        "bytes": 7357038,
+        "byStatus": {
+          "running": 1,
+          "completed": 22,
+          "cancelled": 1,
+          "failed": 1
+        }
+      },
+      "chats": [
+        {
+          "provider": "claude",
+          "harness": "claude",
+          "hook": false,
+          "runtimeStatus": "streaming",
+          "activeTurn": true,
+          "queuedMessages": 0,
+          "committedMessages": 38850,
+          "committedBytes": 78218561,
+          "transcriptRevision": 340283,
+          "userMessages": 145,
+          "tabIndexBytes": 703183,
+          "largeTabFields": {
+            "turnDiffs": 531644,
+            "inputDelivery": 97522,
+            "agentArtifactCarryByTurn": 66434
+          },
+          "committedRewrites": {
+            "count": 277,
+            "bytes": 20878081593,
+            "perMinute": {
+              "p50": 7,
+              "p95": 10,
+              "max": 11
+            },
+            "reasons": {
+              "mixed_active": 4,
+              "patch": 273
+            },
+            "patchedBlockTypes": {
+              "delegated_agent_call": 273,
+              "thinking": 28,
+              "tool_result": 24,
+              "tool_use": 24
+            }
+          },
+          "transcript": {
+            "rows": 38850,
+            "bytes": 78218561,
+            "rowBytes": {
+              "p50": 560,
+              "p95": 7427,
+              "max": 122352
+            },
+            "blockTypes": {
+              "text": 3215,
+              "turn_timer": 158,
+              "thinking": 9833,
+              "tool_use": 13181,
+              "tool_result": 13189,
+              "delegated_agent_call": 26,
+              "compaction_info": 19,
+              "automation_info": 16
+            },
+            "roles": {
+              "user": 145,
+              "system": 12596,
+              "assistant": 26109
+            },
+            "delegationCards": {
+              "count": 26,
+              "byStatus": {
+                "completed": 22,
+                "running": 4
+              },
+              "bytes": {
+                "p50": 16479,
+                "p95": 118426,
+                "max": 122352
+              },
+              "liveByteFractions": [0.9464, 0.9663, 0.9713, 0.9949],
+              "lastByteFractions": [
+                0.0247, 0.028, 0.0291, 0.0335, 0.0477, 0.0501, 0.0538, 0.0572,
+                0.9191, 0.9347, 0.9375, 0.9403, 0.9464, 0.9473, 0.9489, 0.9622,
+                0.9663, 0.9713, 0.976, 0.9776, 0.9804, 0.9823, 0.9912, 0.9917,
+                0.9942, 0.9949
+              ]
+            }
+          }
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 573,
+          "largeTabFields": {}
+        },
+        {
+          "provider": "claude",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 2241,
+          "committedBytes": 4739488,
+          "transcriptRevision": 1,
+          "userMessages": 35,
+          "tabIndexBytes": 53797,
+          "largeTabFields": {
+            "turnDiffs": 26177,
+            "agentArtifactCarryByTurn": 22145
+          }
+        },
+        {
+          "provider": "claude",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 120,
+          "committedBytes": 217891,
+          "transcriptRevision": 172448,
+          "userMessages": 4,
+          "tabIndexBytes": 2782,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 603,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 7
+    },
+    {
+      "label": "scope-08",
+      "liveIndexBytes": 39880,
+      "recoveryIndexBytes": 307590,
+      "archiveIndexBytes": 43,
+      "revision": 3775,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 24,
+        "bytes": 19416567,
+        "byStatus": {
+          "failed": 5,
+          "completed": 14,
+          "running": 5
+        }
+      },
+      "chats": [
+        {
+          "provider": "claude",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "queued",
+          "activeTurn": false,
+          "queuedMessages": 5,
+          "committedMessages": 3454,
+          "committedBytes": 17653422,
+          "transcriptRevision": 4157,
+          "userMessages": 25,
+          "tabIndexBytes": 28793,
+          "largeTabFields": {
+            "turnDiffs": 19719
+          },
+          "committedRewrites": {
+            "count": 1828,
+            "bytes": 23233121026,
+            "perMinute": {
+              "p50": 18,
+              "p95": 30,
+              "max": 35
+            },
+            "reasons": {
+              "mixed_active": 11,
+              "patch": 1817
+            },
+            "patchedBlockTypes": {
+              "delegated_agent_call": 1817,
+              "thinking": 58,
+              "tool_result": 289,
+              "tool_use": 302
+            }
+          },
+          "transcript": {
+            "rows": 3454,
+            "bytes": 17653422,
+            "rowBytes": {
+              "p50": 497,
+              "p95": 27945,
+              "max": 69713
+            },
+            "blockTypes": {
+              "text": 158,
+              "turn_timer": 25,
+              "thinking": 1483,
+              "tool_use": 1323,
+              "tool_result": 1323,
+              "compaction_info": 1,
+              "delegated_agent_call": 27,
+              "automation_info": 2
+            },
+            "roles": {
+              "user": 25,
+              "system": 463,
+              "assistant": 2966
+            },
+            "delegationCards": {
+              "count": 27,
+              "byStatus": {
+                "completed": 10,
+                "running": 15,
+                "failed": 2
+              },
+              "bytes": {
+                "p50": 11165,
+                "p95": 25122,
+                "max": 26384
+              },
+              "liveByteFractions": [
+                0.406, 0.4268, 0.4941, 0.568, 0.6004, 0.6296, 0.7224, 0.7411,
+                0.7666, 0.8514, 0.8742, 0.8939, 0.8945, 0.9026, 0.9029
+              ],
+              "lastByteFractions": [
+                0.3547, 0.406, 0.4174, 0.4268, 0.4488, 0.4941, 0.5002, 0.5017,
+                0.5253, 0.568, 0.598, 0.6004, 0.6296, 0.6652, 0.6732, 0.6889,
+                0.7224, 0.7411, 0.7666, 0.8406, 0.8514, 0.8742, 0.8939, 0.8942,
+                0.8945, 0.9026, 0.9029
+              ]
+            }
+          }
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 577,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 6
+    },
+    {
+      "label": "scope-09",
+      "liveIndexBytes": 7200,
+      "recoveryIndexBytes": 19160,
+      "archiveIndexBytes": 1514,
+      "revision": 259,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "claude",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "streaming",
+          "activeTurn": true,
+          "queuedMessages": 0,
+          "committedMessages": 1,
+          "committedBytes": 753,
+          "transcriptRevision": 189,
+          "userMessages": 3,
+          "tabIndexBytes": 6603,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 6
+    },
+    {
+      "label": "scope-10",
+      "liveIndexBytes": 1497473,
+      "recoveryIndexBytes": 320701,
+      "archiveIndexBytes": 8722,
+      "revision": 3944,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 21,
+        "bytes": 7664241,
+        "byStatus": {
+          "completed": 18,
+          "cancelled": 3
+        }
+      },
+      "chats": [
+        {
+          "provider": "claude",
+          "harness": "claude",
+          "hook": false,
+          "runtimeStatus": "streaming",
+          "activeTurn": true,
+          "queuedMessages": 11,
+          "committedMessages": 2755,
+          "committedBytes": 8182352,
+          "transcriptRevision": 3950,
+          "userMessages": 16,
+          "tabIndexBytes": 1472028,
+          "largeTabFields": {
+            "turnDiffs": 1462657
+          },
+          "committedRewrites": {
+            "count": 941,
+            "bytes": 4403302059,
+            "perMinute": {
+              "p50": 18,
+              "p95": 44,
+              "max": 63
+            },
+            "reasons": {
+              "mixed_active": 30,
+              "patch": 911
+            },
+            "patchedBlockTypes": {
+              "delegated_agent_call": 911,
+              "tool_result": 88,
+              "tool_use": 151,
+              "thinking": 69
+            }
+          },
+          "transcript": {
+            "rows": 2755,
+            "bytes": 8182352,
+            "rowBytes": {
+              "p50": 506,
+              "p95": 15135,
+              "max": 69458
+            },
+            "blockTypes": {
+              "text": 152,
+              "turn_timer": 14,
+              "thinking": 1212,
+              "tool_use": 914,
+              "tool_result": 914,
+              "automation_info": 4,
+              "delegated_agent_call": 19,
+              "compaction_info": 1
+            },
+            "roles": {
+              "user": 15,
+              "system": 458,
+              "assistant": 2282
+            },
+            "delegationCards": {
+              "count": 19,
+              "byStatus": {
+                "completed": 13,
+                "running": 6
+              },
+              "bytes": {
+                "p50": 11279,
+                "p95": 20688,
+                "max": 20688
+              },
+              "liveByteFractions": [
+                0.4133, 0.4144, 0.415, 0.5403, 0.565, 0.5857
+              ],
+              "lastByteFractions": [
+                0.2121, 0.256, 0.2609, 0.2872, 0.3457, 0.3715, 0.4133, 0.4144,
+                0.415, 0.5095, 0.5403, 0.565, 0.5857, 0.7082, 0.7558, 0.7788,
+                0.789, 0.8622, 0.8693
+              ]
+            }
+          }
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 620,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 532,
+          "largeTabFields": {}
+        },
+        {
+          "provider": "codex",
+          "harness": "codex",
+          "hook": true,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 20,
+          "committedBytes": 154210,
+          "transcriptRevision": 853,
+          "userMessages": 1,
+          "tabIndexBytes": 2091,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 2
+    },
+    {
+      "label": "scope-11",
+      "liveIndexBytes": 18394,
+      "recoveryIndexBytes": 162012,
+      "archiveIndexBytes": 43,
+      "revision": 2387,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "claude",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "streaming",
+          "activeTurn": true,
+          "queuedMessages": 1,
+          "committedMessages": 1343,
+          "committedBytes": 1737715,
+          "transcriptRevision": 2104,
+          "userMessages": 7,
+          "tabIndexBytes": 6021,
+          "largeTabFields": {},
+          "committedRewrites": {
+            "count": 2,
+            "bytes": 3206821,
+            "perMinute": {
+              "p50": 1,
+              "p95": 1,
+              "max": 1
+            },
+            "reasons": {
+              "mixed_active": 2
+            },
+            "patchedBlockTypes": {}
+          },
+          "transcript": {
+            "rows": 1343,
+            "bytes": 1737715,
+            "rowBytes": {
+              "p50": 569,
+              "p95": 4658,
+              "max": 24788
+            },
+            "blockTypes": {
+              "text": 109,
+              "turn_timer": 6,
+              "thinking": 336,
+              "tool_use": 446,
+              "tool_result": 446
+            },
+            "roles": {
+              "user": 7,
+              "system": 452,
+              "assistant": 884
+            },
+            "delegationCards": {
+              "count": 0,
+              "byStatus": {},
+              "bytes": {
+                "p50": 0,
+                "p95": 0,
+                "max": 0
+              },
+              "liveByteFractions": [],
+              "lastByteFractions": []
+            }
+          }
+        },
+        {
+          "provider": "claude",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 399,
+          "committedBytes": 660296,
+          "transcriptRevision": 477,
+          "userMessages": 4,
+          "tabIndexBytes": 4720,
+          "largeTabFields": {}
+        },
+        {
+          "provider": "claude",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 1044,
+          "committedBytes": 1512728,
+          "transcriptRevision": 1278,
+          "userMessages": 6,
+          "tabIndexBytes": 5363,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 2
+    },
+    {
+      "label": "scope-12",
+      "liveIndexBytes": 1579250,
+      "recoveryIndexBytes": 279867,
+      "archiveIndexBytes": 1317,
+      "revision": 198235,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "codex",
+          "harness": "codex",
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 23061,
+          "committedBytes": 85172507,
+          "transcriptRevision": 71911,
+          "userMessages": 26,
+          "tabIndexBytes": 56018,
+          "largeTabFields": {
+            "turnDiffs": 54412
+          }
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 652,
+          "largeTabFields": {}
+        },
+        {
+          "provider": "codex",
+          "harness": "codex",
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 50332,
+          "committedBytes": 196193369,
+          "transcriptRevision": 156542,
+          "userMessages": 38,
+          "tabIndexBytes": 64281,
+          "largeTabFields": {
+            "turnDiffs": 59816
+          }
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 633,
+          "largeTabFields": {}
+        },
+        {
+          "provider": "claude",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 14,
+          "committedBytes": 11502,
+          "transcriptRevision": 156733,
+          "userMessages": 1,
+          "tabIndexBytes": 1896,
+          "largeTabFields": {}
+        },
+        {
+          "provider": "codex",
+          "harness": "codex",
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 15076,
+          "committedBytes": 67315057,
+          "transcriptRevision": 198080,
+          "userMessages": 6,
+          "tabIndexBytes": 1454505,
+          "largeTabFields": {
+            "turnDiffs": 1452776
+          }
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-13",
+      "liveIndexBytes": 1148284,
+      "recoveryIndexBytes": 332335,
+      "archiveIndexBytes": 4653,
+      "revision": 39163,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "claude",
+          "harness": "claude",
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 6139,
+          "committedBytes": 11710798,
+          "transcriptRevision": 39149,
+          "userMessages": 18,
+          "tabIndexBytes": 1147292,
+          "largeTabFields": {
+            "turnDiffs": 1136654
+          },
+          "committedRewrites": {
+            "count": 2,
+            "bytes": 22172133,
+            "perMinute": {
+              "p50": 1,
+              "p95": 1,
+              "max": 1
+            },
+            "reasons": {
+              "mixed_active": 2
+            },
+            "patchedBlockTypes": {}
+          },
+          "transcript": {
+            "rows": 6139,
+            "bytes": 11710798,
+            "rowBytes": {
+              "p50": 710,
+              "p95": 7515,
+              "max": 68205
+            },
+            "blockTypes": {
+              "text": 227,
+              "turn_timer": 16,
+              "thinking": 1564,
+              "tool_use": 2164,
+              "tool_result": 2166,
+              "compaction_info": 1,
+              "automation_info": 1
+            },
+            "roles": {
+              "user": 18,
+              "system": 2184,
+              "assistant": 3937
+            },
+            "delegationCards": {
+              "count": 0,
+              "byStatus": {},
+              "bytes": {
+                "p50": 0,
+                "p95": 0,
+                "max": 0
+              },
+              "liveByteFractions": [],
+              "lastByteFractions": []
+            }
+          }
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 522,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-14",
+      "liveIndexBytes": 755759,
+      "recoveryIndexBytes": 282844,
+      "archiveIndexBytes": 1708,
+      "revision": 5088,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "codex",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "failed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 43,
+          "committedBytes": 117938,
+          "transcriptRevision": 147,
+          "userMessages": 6,
+          "tabIndexBytes": 3376,
+          "largeTabFields": {}
+        },
+        {
+          "provider": "claude",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 707,
+          "committedBytes": 1305100,
+          "transcriptRevision": 4973,
+          "userMessages": 4,
+          "tabIndexBytes": 749804,
+          "largeTabFields": {
+            "turnDiffs": 746920
+          },
+          "committedRewrites": {
+            "count": 1,
+            "bytes": 584876,
+            "perMinute": {
+              "p50": 1,
+              "p95": 1,
+              "max": 1
+            },
+            "reasons": {
+              "mixed_active": 1
+            },
+            "patchedBlockTypes": {}
+          },
+          "transcript": {
+            "rows": 707,
+            "bytes": 1305100,
+            "rowBytes": {
+              "p50": 589,
+              "p95": 9165,
+              "max": 20744
+            },
+            "blockTypes": {
+              "text": 53,
+              "turn_timer": 6,
+              "thinking": 174,
+              "tool_use": 237,
+              "tool_result": 237
+            },
+            "roles": {
+              "user": 4,
+              "system": 243,
+              "assistant": 460
+            },
+            "delegationCards": {
+              "count": 0,
+              "byStatus": {},
+              "bytes": {
+                "p50": 0,
+                "p95": 0,
+                "max": 0
+              },
+              "liveByteFractions": [],
+              "lastByteFractions": []
+            }
+          }
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 585,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 559,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 537,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-15",
+      "liveIndexBytes": 301137,
+      "recoveryIndexBytes": 321113,
+      "archiveIndexBytes": 1976911,
+      "revision": 7186,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "codex",
+          "harness": "codex",
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 326,
+          "committedBytes": 1419006,
+          "transcriptRevision": 3076,
+          "userMessages": 4,
+          "tabIndexBytes": 5698,
+          "largeTabFields": {}
+        },
+        {
+          "provider": "codex",
+          "harness": "codex",
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 185,
+          "committedBytes": 1339957,
+          "transcriptRevision": 3076,
+          "userMessages": 6,
+          "tabIndexBytes": 295035,
+          "largeTabFields": {
+            "turnDiffs": 292636
+          }
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-16",
+      "liveIndexBytes": 34169,
+      "recoveryIndexBytes": 16406,
+      "archiveIndexBytes": 234971,
+      "revision": 227,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "codex",
+          "harness": "codex",
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 1084,
+          "committedBytes": 4656621,
+          "transcriptRevision": 1808,
+          "userMessages": 12,
+          "tabIndexBytes": 33867,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-17",
+      "liveIndexBytes": 28402,
+      "recoveryIndexBytes": 265974,
+      "archiveIndexBytes": 43,
+      "revision": 4117,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "claude",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "cancelled",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 125,
+          "committedBytes": 335518,
+          "transcriptRevision": 1641,
+          "userMessages": 6,
+          "tabIndexBytes": 1736,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 544,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 570,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 568,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 510,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 508,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 498,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 554,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 548,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 512,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 506,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 554,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 514,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 512,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 502,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 506,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 500,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 516,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 510,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 504,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 552,
+          "largeTabFields": {}
+        },
+        {
+          "provider": "claude",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 240,
+          "committedBytes": 650958,
+          "transcriptRevision": 3806,
+          "userMessages": 10,
+          "tabIndexBytes": 2035,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 559,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 573,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 571,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 569,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 567,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 557,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 559,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 555,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 495,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 558,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 572,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 506,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 516,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 554,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 502,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 495,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 547,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 567,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 553,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 557,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 553,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 561,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 567,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 553,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 549,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-18",
+      "liveIndexBytes": 25577,
+      "recoveryIndexBytes": 83794,
+      "archiveIndexBytes": 2279,
+      "revision": 1119,
+      "pendingQuestions": 1,
+      "answeredPendingQuestions": 1,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "codex",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 450,
+          "committedBytes": 1634965,
+          "transcriptRevision": 1100,
+          "userMessages": 9,
+          "tabIndexBytes": 22946,
+          "largeTabFields": {
+            "turnDiffs": 18623
+          }
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 594,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 594,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 532,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-19",
+      "liveIndexBytes": 17691,
+      "recoveryIndexBytes": 255409,
+      "archiveIndexBytes": 43,
+      "revision": 3822,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "claude",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 270,
+          "committedBytes": 396015,
+          "transcriptRevision": 3803,
+          "userMessages": 8,
+          "tabIndexBytes": 17330,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-20",
+      "liveIndexBytes": 17109,
+      "recoveryIndexBytes": 338728,
+      "archiveIndexBytes": 2043,
+      "revision": 9201,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "claude",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 56,
+          "committedBytes": 96150,
+          "transcriptRevision": 121,
+          "userMessages": 2,
+          "tabIndexBytes": 1962,
+          "largeTabFields": {}
+        },
+        {
+          "provider": "claude",
+          "harness": "claude",
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 2374,
+          "committedBytes": 1660807,
+          "transcriptRevision": 8987,
+          "userMessages": 5,
+          "tabIndexBytes": 4299,
+          "largeTabFields": {}
+        },
+        {
+          "provider": "claude",
+          "harness": "claude",
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 284,
+          "committedBytes": 620267,
+          "transcriptRevision": 5427,
+          "userMessages": 9,
+          "tabIndexBytes": 5852,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 585,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 562,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 554,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 568,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 558,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 552,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 552,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-21",
+      "liveIndexBytes": 14098,
+      "recoveryIndexBytes": 250669,
+      "archiveIndexBytes": 43,
+      "revision": 4595,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "claude",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 138,
+          "committedBytes": 185742,
+          "transcriptRevision": 1674,
+          "userMessages": 6,
+          "tabIndexBytes": 4930,
+          "largeTabFields": {}
+        },
+        {
+          "provider": "claude",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 324,
+          "committedBytes": 522716,
+          "transcriptRevision": 4428,
+          "userMessages": 17,
+          "tabIndexBytes": 3960,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 570,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 556,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 508,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 553,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 562,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 578,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 562,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 578,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-22",
+      "liveIndexBytes": 12260,
+      "recoveryIndexBytes": 142132,
+      "archiveIndexBytes": 2179,
+      "revision": 2190,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "claude",
+          "harness": "claude",
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 158,
+          "committedBytes": 164392,
+          "transcriptRevision": 1404,
+          "userMessages": 11,
+          "tabIndexBytes": 1706,
+          "largeTabFields": {}
+        },
+        {
+          "provider": "claude",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 13,
+          "committedBytes": 25558,
+          "transcriptRevision": 374,
+          "userMessages": 1,
+          "tabIndexBytes": 1735,
+          "largeTabFields": {}
+        },
+        {
+          "provider": "claude",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 13,
+          "committedBytes": 20794,
+          "transcriptRevision": 812,
+          "userMessages": 1,
+          "tabIndexBytes": 1800,
+          "largeTabFields": {}
+        },
+        {
+          "provider": "claude",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 9,
+          "committedBytes": 3036,
+          "transcriptRevision": 900,
+          "userMessages": 1,
+          "tabIndexBytes": 1759,
+          "largeTabFields": {}
+        },
+        {
+          "provider": "claude",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 27,
+          "committedBytes": 17276,
+          "transcriptRevision": 1036,
+          "userMessages": 2,
+          "tabIndexBytes": 1759,
+          "largeTabFields": {}
+        },
+        {
+          "provider": "claude",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 130,
+          "committedBytes": 293192,
+          "transcriptRevision": 2037,
+          "userMessages": 4,
+          "tabIndexBytes": 1946,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-23",
+      "liveIndexBytes": 11238,
+      "recoveryIndexBytes": 101517,
+      "archiveIndexBytes": 43,
+      "revision": 1515,
+      "pendingQuestions": 1,
+      "answeredPendingQuestions": 1,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "claude",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 238,
+          "committedBytes": 420695,
+          "transcriptRevision": 1446,
+          "userMessages": 4,
+          "tabIndexBytes": 9548,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-24",
+      "liveIndexBytes": 10957,
+      "recoveryIndexBytes": 80294,
+      "archiveIndexBytes": 43,
+      "revision": 1219,
+      "pendingQuestions": 2,
+      "answeredPendingQuestions": 2,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "codex",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 62,
+          "committedBytes": 313932,
+          "transcriptRevision": 1199,
+          "userMessages": 2,
+          "tabIndexBytes": 2851,
+          "largeTabFields": {},
+          "committedRewrites": {
+            "count": 1,
+            "bytes": 165037,
+            "perMinute": {
+              "p50": 1,
+              "p95": 1,
+              "max": 1
+            },
+            "reasons": {
+              "mixed_active": 1
+            },
+            "patchedBlockTypes": {}
+          }
+        },
+        {
+          "provider": "codex",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 138,
+          "committedBytes": 504268,
+          "transcriptRevision": 963,
+          "userMessages": 7,
+          "tabIndexBytes": 5204,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 488,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-25",
+      "liveIndexBytes": 9363,
+      "recoveryIndexBytes": 317602,
+      "archiveIndexBytes": 6283,
+      "revision": 16613,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "codex",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 159,
+          "committedBytes": 823874,
+          "transcriptRevision": 363,
+          "userMessages": 3,
+          "tabIndexBytes": 3377,
+          "largeTabFields": {},
+          "committedRewrites": {
+            "count": 2,
+            "bytes": 296969,
+            "perMinute": {
+              "p50": 1,
+              "p95": 1,
+              "max": 1
+            },
+            "reasons": {
+              "mixed_active": 2
+            },
+            "patchedBlockTypes": {}
+          }
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 515,
+          "largeTabFields": {}
+        },
+        {
+          "provider": "codex",
+          "harness": "codex",
+          "hook": true,
+          "runtimeStatus": "failed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 13,
+          "committedBytes": 13612,
+          "transcriptRevision": 7882,
+          "userMessages": 1,
+          "tabIndexBytes": 2100,
+          "largeTabFields": {},
+          "committedRewrites": {
+            "count": 1,
+            "bytes": 474,
+            "perMinute": {
+              "p50": 1,
+              "p95": 1,
+              "max": 1
+            },
+            "reasons": {
+              "patch": 1
+            },
+            "patchedBlockTypes": {
+              "turn_timer": 1
+            }
+          }
+        },
+        {
+          "provider": "codex",
+          "harness": "codex",
+          "hook": true,
+          "runtimeStatus": "failed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 15,
+          "committedBytes": 11181,
+          "transcriptRevision": 16611,
+          "userMessages": 1,
+          "tabIndexBytes": 2062,
+          "largeTabFields": {},
+          "committedRewrites": {
+            "count": 1,
+            "bytes": 474,
+            "perMinute": {
+              "p50": 1,
+              "p95": 1,
+              "max": 1
+            },
+            "reasons": {
+              "patch": 1
+            },
+            "patchedBlockTypes": {
+              "turn_timer": 1
+            }
+          }
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-26",
+      "liveIndexBytes": 8908,
+      "recoveryIndexBytes": 144771,
+      "archiveIndexBytes": 2183,
+      "revision": 2031,
+      "pendingQuestions": 1,
+      "answeredPendingQuestions": 1,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "codex",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 330,
+          "committedBytes": 2209700,
+          "transcriptRevision": 810,
+          "userMessages": 5,
+          "tabIndexBytes": 2769,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 513,
+          "largeTabFields": {}
+        },
+        {
+          "provider": "codex",
+          "harness": "codex",
+          "hook": true,
+          "runtimeStatus": "failed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 197,
+          "committedBytes": 484917,
+          "transcriptRevision": 1914,
+          "userMessages": 4,
+          "tabIndexBytes": 3843,
+          "largeTabFields": {},
+          "committedRewrites": {
+            "count": 3,
+            "bytes": 738258,
+            "perMinute": {
+              "p50": 1,
+              "p95": 1,
+              "max": 1
+            },
+            "reasons": {
+              "patch": 1,
+              "mixed_active": 2
+            },
+            "patchedBlockTypes": {
+              "turn_timer": 1
+            }
+          }
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-27",
+      "liveIndexBytes": 7693,
+      "recoveryIndexBytes": 316182,
+      "archiveIndexBytes": 35409,
+      "revision": 5685,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "codex",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "failed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 3,
+          "committedBytes": 678,
+          "transcriptRevision": 11,
+          "userMessages": 1,
+          "tabIndexBytes": 1602,
+          "largeTabFields": {}
+        },
+        {
+          "provider": "codex",
+          "harness": "codex",
+          "hook": true,
+          "runtimeStatus": "failed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 19,
+          "committedBytes": 274791,
+          "transcriptRevision": 5053,
+          "userMessages": 1,
+          "tabIndexBytes": 5027,
+          "largeTabFields": {},
+          "committedRewrites": {
+            "count": 1,
+            "bytes": 474,
+            "perMinute": {
+              "p50": 1,
+              "p95": 1,
+              "max": 1
+            },
+            "reasons": {
+              "patch": 1
+            },
+            "patchedBlockTypes": {
+              "turn_timer": 1
+            }
+          }
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-28",
+      "liveIndexBytes": 6533,
+      "recoveryIndexBytes": 40195,
+      "archiveIndexBytes": 42,
+      "revision": 613,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "claude",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 67,
+          "committedBytes": 95825,
+          "transcriptRevision": 219,
+          "userMessages": 4,
+          "tabIndexBytes": 1816,
+          "largeTabFields": {}
+        },
+        {
+          "provider": "claude",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 20,
+          "committedBytes": 23441,
+          "transcriptRevision": 406,
+          "userMessages": 1,
+          "tabIndexBytes": 1859,
+          "largeTabFields": {}
+        },
+        {
+          "provider": "claude",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 18,
+          "committedBytes": 24171,
+          "transcriptRevision": 523,
+          "userMessages": 1,
+          "tabIndexBytes": 1838,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-29",
+      "liveIndexBytes": 5520,
+      "recoveryIndexBytes": 92092,
+      "archiveIndexBytes": 2012,
+      "revision": 1310,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "claude",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 118,
+          "committedBytes": 179291,
+          "transcriptRevision": 921,
+          "userMessages": 2,
+          "tabIndexBytes": 2810,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 578,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 584,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 530,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 546,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-30",
+      "liveIndexBytes": 4990,
+      "recoveryIndexBytes": 14001,
+      "archiveIndexBytes": 1654,
+      "revision": 214,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "codex",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 64,
+          "committedBytes": 172638,
+          "transcriptRevision": 195,
+          "userMessages": 6,
+          "tabIndexBytes": 4608,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-31",
+      "liveIndexBytes": 4977,
+      "recoveryIndexBytes": 13473,
+      "archiveIndexBytes": 42,
+      "revision": 222,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "claude",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 22,
+          "committedBytes": 47500,
+          "transcriptRevision": 190,
+          "userMessages": 2,
+          "tabIndexBytes": 4619,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-32",
+      "liveIndexBytes": 4517,
+      "recoveryIndexBytes": 35999,
+      "archiveIndexBytes": 42,
+      "revision": 536,
+      "pendingQuestions": 1,
+      "answeredPendingQuestions": 1,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "codex",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 186,
+          "committedBytes": 836664,
+          "transcriptRevision": 407,
+          "userMessages": 2,
+          "tabIndexBytes": 3194,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 507,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-33",
+      "liveIndexBytes": 3998,
+      "recoveryIndexBytes": 6354,
+      "archiveIndexBytes": 43,
+      "revision": 1316,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "claude",
+          "harness": "claude",
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 83,
+          "committedBytes": 127343,
+          "transcriptRevision": 1316,
+          "userMessages": 3,
+          "tabIndexBytes": 1763,
+          "largeTabFields": {}
+        },
+        {
+          "provider": "claude",
+          "harness": "claude",
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 38,
+          "committedBytes": 56271,
+          "transcriptRevision": 1316,
+          "userMessages": 3,
+          "tabIndexBytes": 1770,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-34",
+      "liveIndexBytes": 3833,
+      "recoveryIndexBytes": 15342,
+      "archiveIndexBytes": 42,
+      "revision": 215,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "claude",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 39,
+          "committedBytes": 42826,
+          "transcriptRevision": 97,
+          "userMessages": 2,
+          "tabIndexBytes": 2851,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 536,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-35",
+      "liveIndexBytes": 3460,
+      "recoveryIndexBytes": 19777,
+      "archiveIndexBytes": 42,
+      "revision": 292,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "codex",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 77,
+          "committedBytes": 388669,
+          "transcriptRevision": 240,
+          "userMessages": 1,
+          "tabIndexBytes": 3100,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-36",
+      "liveIndexBytes": 3163,
+      "recoveryIndexBytes": 1233,
+      "archiveIndexBytes": 42,
+      "revision": 576,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "codex",
+          "harness": "codex",
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 158,
+          "committedBytes": 605129,
+          "transcriptRevision": 576,
+          "userMessages": 2,
+          "tabIndexBytes": 2967,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-37",
+      "liveIndexBytes": 2768,
+      "recoveryIndexBytes": 41256,
+      "archiveIndexBytes": 42,
+      "revision": 677,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "claude",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 129,
+          "committedBytes": 249896,
+          "transcriptRevision": 625,
+          "userMessages": 2,
+          "tabIndexBytes": 1749,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 573,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-38",
+      "liveIndexBytes": 2633,
+      "recoveryIndexBytes": 26261,
+      "archiveIndexBytes": 3035,
+      "revision": 376,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "codex",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 78,
+          "committedBytes": 601773,
+          "transcriptRevision": 365,
+          "userMessages": 2,
+          "tabIndexBytes": 2167,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-39",
+      "liveIndexBytes": 2614,
+      "recoveryIndexBytes": 12816,
+      "archiveIndexBytes": 42,
+      "revision": 190,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "codex",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 66,
+          "committedBytes": 595976,
+          "transcriptRevision": 180,
+          "userMessages": 2,
+          "tabIndexBytes": 2254,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-40",
+      "liveIndexBytes": 2550,
+      "recoveryIndexBytes": 26380,
+      "archiveIndexBytes": 42,
+      "revision": 327,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "codex",
+          "harness": "codex",
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 93,
+          "committedBytes": 763840,
+          "transcriptRevision": 215,
+          "userMessages": 3,
+          "tabIndexBytes": 2190,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-41",
+      "liveIndexBytes": 2546,
+      "recoveryIndexBytes": 3396,
+      "archiveIndexBytes": 43,
+      "revision": 2850,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "claude",
+          "harness": "claude",
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 345,
+          "committedBytes": 482392,
+          "transcriptRevision": 2850,
+          "userMessages": 1,
+          "tabIndexBytes": 1672,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 2850,
+          "userMessages": 0,
+          "tabIndexBytes": 594,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-42",
+      "liveIndexBytes": 2522,
+      "recoveryIndexBytes": 75515,
+      "archiveIndexBytes": 30013,
+      "revision": 997,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "codex",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 52,
+          "committedBytes": 197046,
+          "transcriptRevision": 224,
+          "userMessages": 1,
+          "tabIndexBytes": 2142,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-43",
+      "liveIndexBytes": 2416,
+      "recoveryIndexBytes": 53779,
+      "archiveIndexBytes": 42,
+      "revision": 689,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "claude",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 52,
+          "committedBytes": 170261,
+          "transcriptRevision": 58,
+          "userMessages": 1,
+          "tabIndexBytes": 2056,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-44",
+      "liveIndexBytes": 2393,
+      "recoveryIndexBytes": 8699,
+      "archiveIndexBytes": 42,
+      "revision": 102,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "cursor",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 14,
+          "committedBytes": 13131,
+          "transcriptRevision": 99,
+          "userMessages": 3,
+          "tabIndexBytes": 1524,
+          "largeTabFields": {}
+        },
+        {
+          "provider": null,
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 567,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-45",
+      "liveIndexBytes": 2346,
+      "recoveryIndexBytes": 57404,
+      "archiveIndexBytes": 42,
+      "revision": 848,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "claude",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 99,
+          "committedBytes": 132219,
+          "transcriptRevision": 105,
+          "userMessages": 1,
+          "tabIndexBytes": 1986,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-46",
+      "liveIndexBytes": 2226,
+      "recoveryIndexBytes": 1017,
+      "archiveIndexBytes": 42,
+      "revision": 163,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "codex",
+          "harness": "codex",
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 57,
+          "committedBytes": 327561,
+          "transcriptRevision": 163,
+          "userMessages": 1,
+          "tabIndexBytes": 2032,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-47",
+      "liveIndexBytes": 2137,
+      "recoveryIndexBytes": 35637,
+      "archiveIndexBytes": 42,
+      "revision": 539,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "codex",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 105,
+          "committedBytes": 1028374,
+          "transcriptRevision": 417,
+          "userMessages": 1,
+          "tabIndexBytes": 1779,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-48",
+      "liveIndexBytes": 1990,
+      "recoveryIndexBytes": 8193,
+      "archiveIndexBytes": 1640,
+      "revision": 111,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "claude",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "completed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 29,
+          "committedBytes": 20827,
+          "transcriptRevision": 105,
+          "userMessages": 2,
+          "tabIndexBytes": 1523,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-49",
+      "liveIndexBytes": 1149,
+      "recoveryIndexBytes": 1184,
+      "archiveIndexBytes": 41,
+      "revision": 26,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "claude",
+          "harness": "claude",
+          "hook": false,
+          "runtimeStatus": "failed",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 6,
+          "committedBytes": 1149,
+          "transcriptRevision": 7,
+          "userMessages": 2,
+          "tabIndexBytes": 748,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-50",
+      "liveIndexBytes": 967,
+      "recoveryIndexBytes": 372,
+      "archiveIndexBytes": 40,
+      "revision": 2,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "codex",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 1,
+          "userMessages": 0,
+          "tabIndexBytes": 830,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-51",
+      "liveIndexBytes": 910,
+      "recoveryIndexBytes": 1154,
+      "archiveIndexBytes": 40,
+      "revision": 6,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "codex",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 815,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-52",
+      "liveIndexBytes": 792,
+      "recoveryIndexBytes": 458,
+      "archiveIndexBytes": 40,
+      "revision": 2,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "codex",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 0,
+          "userMessages": 0,
+          "tabIndexBytes": 697,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-53",
+      "liveIndexBytes": 769,
+      "recoveryIndexBytes": 191,
+      "archiveIndexBytes": 40,
+      "revision": 2,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": "claude",
+          "harness": null,
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 0,
+          "committedBytes": 0,
+          "transcriptRevision": 2,
+          "userMessages": 0,
+          "tabIndexBytes": 679,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 0
+    },
+    {
+      "label": "scope-54",
+      "liveIndexBytes": 563,
+      "recoveryIndexBytes": 114,
+      "archiveIndexBytes": 40,
+      "revision": 0,
+      "pendingQuestions": 0,
+      "answeredPendingQuestions": 0,
+      "delegationRuns": {
+        "count": 0,
+        "bytes": 0,
+        "byStatus": {}
+      },
+      "chats": [
+        {
+          "provider": null,
+          "harness": "claude",
+          "hook": false,
+          "runtimeStatus": "idle",
+          "activeTurn": false,
+          "queuedMessages": 0,
+          "committedMessages": 1,
+          "committedBytes": 285,
+          "transcriptRevision": 0,
+          "userMessages": 1,
+          "tabIndexBytes": 416,
+          "largeTabFields": {}
+        }
+      ],
+      "commitsPerMinute": 0
+    }
+  ]
+}

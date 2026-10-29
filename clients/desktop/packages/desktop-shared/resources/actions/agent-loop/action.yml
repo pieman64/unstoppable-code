@@ -1,0 +1,52 @@
+name: Agent Loop
+description: Run iterative Claude prompts until a shell check passes or the iteration budget is exhausted.
+log_format_hint: agent
+inputs:
+  prompt:
+    description: Prompt text to send to Claude.
+    required: false
+    default: ''
+  prompt_file:
+    description: Path to a file containing the prompt text. Takes precedence over prompt.
+    required: false
+  system_prompt:
+    description: Optional Claude Code system prompt appendix.
+    required: false
+  check_command:
+    description: Shell command evaluated after each iteration.
+    required: true
+  max_iterations:
+    description: Maximum loop iterations before the action fails.
+    required: false
+    default: 3
+  context_strategy:
+    description: How prior iterations are fed back into the next prompt.
+    required: false
+    default: summary
+  model:
+    description: Optional Claude model override.
+    required: false
+  permission_preset:
+    description: Optional permission preset applied to each iteration.
+    required: false
+    default: none
+  structured_output_schema:
+    description: Optional JSON schema for structured Claude responses.
+    required: false
+  max_turns:
+    description: Maximum Claude turns per iteration.
+    required: false
+outputs:
+  iterations_run:
+    description: Number of Claude/check iterations executed.
+  exit_reason:
+    description: check_passed, max_iterations, or failure.
+  text_response:
+    description: Final Claude text response with collapsed whitespace.
+  text_response_file:
+    description: File containing the final Claude text response.
+  transcript_file:
+    description: JSONL file containing per-iteration Claude events and check results.
+runs:
+  using: node
+  main: index.js

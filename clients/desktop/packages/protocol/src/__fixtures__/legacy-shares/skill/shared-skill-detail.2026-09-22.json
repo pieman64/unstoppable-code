@@ -1,0 +1,22 @@
+{
+  "id": "5b2f6c1e-8d4a-4e3b-9f7a-2c1d0e9b8a76",
+  "name": "release-notes",
+  "description": "Draft release notes from merged pull requests.",
+  "rawSkill": "---\nname: release-notes\ndescription: Draft release notes from merged pull requests.\n---\n\n# Release notes\n\nCollect the merged pull requests since the last tag, then post a summary with\n`mcp__Slack__slack_send_message`. Use `superpowers:brainstorming` when the\nchanges need a theme.\n",
+  "contentHash": "da0ecd0407f8a70db72344af88067d2aa0ba944873d09fdbffee72bf49adda28",
+  "shareScope": "team",
+  "owner": {
+    "type": "team",
+    "id": "team-1",
+    "name": "Release team"
+  },
+  "createdBy": {
+    "id": "user-1",
+    "name": "Publisher",
+    "email": null
+  },
+  "createdAt": "2026-09-01T12:00:00.000Z",
+  "updatedAt": "2026-09-01T12:00:00.000Z",
+  "canUpdate": false,
+  "canDelete": false
+}

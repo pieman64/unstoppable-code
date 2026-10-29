@@ -1,0 +1,85 @@
+/**
+ * @jest-environment jsdom
+ *
+ * Phase F4 Step 2: the settings model preference rows are helper-only surfaces
+ * whose execution paths do NOT resolve custom Agent models, so Agent models
+ * (`agent_model_*`) are intentionally EXCLUDED from their <select> option list.
+ * This test pins that exclusion.
+ */
+Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
+  configurable: true,
+  value: true,
+});
+
+import { act, createElement } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import {
+  AGENT_MODELS,
+  initAgentModels,
+  initClaudeModels,
+} from '@canopy/desktop-shared/types';
+import type { AgentModelRegistryEntry } from '@canopy/desktop-shared/types/agent-models';
+import { ModelThinkingPreferenceRow } from '../ModelThinkingPreferenceRow';
+
+const BASE_MODEL = 'claude-settings-test';
+const AGENT_ID = 'agent_model_settings_reviewer';
+
+beforeAll(() => {
+  initClaudeModels([{ id: BASE_MODEL, label: 'Claude Settings Test' }]);
+});
+
+let root: Root | null = null;
+
+afterEach(() => {
+  act(() => {
+    root?.unmount();
+  });
+  root = null;
+  document.body.innerHTML = '';
+  initAgentModels([]);
+});
+
+function agentEntry(): AgentModelRegistryEntry {
+  return {
+    id: AGENT_ID,
+    name: 'Settings Reviewer',
+    baseModel: BASE_MODEL,
+    instructions: '',
+    pluginSelections: { collectionIds: [], skillRefs: [], pluginRefs: [] },
+    createdAt: '2026-01-01T00:00:00Z',
+    updatedAt: '2026-01-01T00:00:00Z',
+    available: true,
+  };
+}
+
+it('excludes custom Agent models from the settings model select', () => {
+  initAgentModels([agentEntry()]);
+  expect(AGENT_MODELS).toContain(AGENT_ID);
+
+  root = createRoot(document.body);
+  act(() => {
+    root?.render(
+      createElement(ModelThinkingPreferenceRow, {
+        title: 'Test model',
+        description: 'desc',
+        model: BASE_MODEL,
+        thinkingLevel: 'medium',
+        defaultThinkingLevel: 'medium',
+        onModelChange: () => {},
+        onThinkingChange: () => {},
+        testIdPrefix: 'agents-exclusion',
+      }),
+    );
+  });
+
+  // The real base model is offered…
+  expect(
+    document.querySelector(`option[value="${BASE_MODEL}"]`),
+  ).not.toBeNull();
+  // …but no Agent model appears as an option.
+  expect(document.querySelector(`option[value="${AGENT_ID}"]`)).toBeNull();
+  const options = Array.from(document.querySelectorAll('option')).map(
+    (o) => o.value,
+  );
+  expect(options.some((value) => value.startsWith('agent_model_'))).toBe(false);
+});

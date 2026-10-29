@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      /*
+       * A schedule on a CSS grid: one column per week, one row per
+       * workstream. No library. Bars carry their own label and dates.
+       */
+      .plan {
+        display: grid;
+        grid-template-columns: max-content repeat(var(--weeks), minmax(0, 1fr));
+        gap: 6px 0;
+        align-items: center;
+        font-size: 12px;
+      }
+      .head {
+        grid-row: 1;
+        color: var(--fg-secondary);
+        padding: 0 0 4px 4px;
+        border-left: 1px solid var(--line-primary);
+        white-space: nowrap;
+      }
+      /* Narrow columns: keep every tick, label every other week. */
+      @media (max-width: 480px) {
+        .head:nth-child(odd) {
+          color: transparent;
+        }
+      }
+      .lane {
+        padding-right: 12px;
+        font-size: 13px;
+        white-space: nowrap;
+      }
+      .bar {
+        grid-row: var(--row);
+        height: 22px;
+        padding: 0 8px;
+        display: flex;
+        align-items: center;
+        border-radius: var(--radius-sm);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        background: var(--bg-accent-muted);
+        color: var(--fg-primary);
+      }
+      /* State is in the label text too, so the fill is a second cue. */
+      .bar.done {
+        background: var(--bg-muted);
+        color: var(--fg-secondary);
+      }
+      .bar.risk {
+        background: var(--bg-attention-muted);
+      }
+      .today {
+        align-self: stretch;
+        width: 0;
+        border-left: 2px solid var(--fg-primary);
+        justify-self: start;
+      }
+      .bar {
+        position: relative; /* labels stay above the today line */
+      }
+      .note {
+        margin: 10px 0 0;
+        color: var(--fg-secondary);
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      class="plan"
+      id="plan"
+      role="img"
+      aria-label="Release plan, weeks of 6 January to 24 February"
+    ></div>
+    <p class="note">The vertical line is today. Each column is one week.</p>
+    <script>
+      const weeks = [
+        'Jan 6',
+        'Jan 13',
+        'Jan 20',
+        'Jan 27',
+        'Feb 3',
+        'Feb 10',
+        'Feb 17',
+        'Feb 24',
+      ];
+      // start and end are week indexes; end is exclusive.
+      const lanes = [
+        {
+          name: 'Design',
+          bars: [{ label: 'Spec, done', start: 0, end: 2, state: 'done' }],
+        },
+        {
+          name: 'API',
+          bars: [{ label: 'Endpoints, in progress', start: 1, end: 5 }],
+        },
+        {
+          name: 'Web',
+          bars: [{ label: 'UI, at risk', start: 3, end: 6, state: 'risk' }],
+        },
+        { name: 'Launch', bars: [{ label: 'Rollout', start: 6, end: 8 }] },
+      ];
+      const todayWeek = 3;
+
+      const plan = document.getElementById('plan');
+      plan.style.setProperty('--weeks', weeks.length);
+      plan.innerHTML =
+        '<div style="grid-row:1;grid-column:1"></div>' +
+        weeks
+          .map(
+            (week, index) =>
+              `<div class="head" style="grid-column:${index + 2}">${week}</div>`,
+          )
+          .join('') +
+        lanes
+          .map(
+            (lane, index) =>
+              `<div class="lane" style="grid-row:${index + 2}">${lane.name}</div>` +
+              lane.bars
+                .map(
+                  (bar) =>
+                    `<div class="bar ${bar.state ?? ''}" title="${bar.label}" style="--row:${index + 2};grid-column:${bar.start + 2} / ${bar.end + 2}">${bar.label}</div>`,
+                )
+                .join(''),
+          )
+          .join('') +
+        `<div class="today" style="grid-column:${todayWeek + 2};grid-row:2 / span ${lanes.length}"></div>`;
+    </script>
+  </body>
+</html>

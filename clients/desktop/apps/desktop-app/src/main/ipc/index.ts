@@ -1,0 +1,437 @@
+import { registerScriptActionsHandlers } from './script-actions';
+import { registerLabsExperimentsHandlers } from './labs-experiments';
+import { registerSidebarItemGroupHandlers } from './sidebar-item-groups';
+import { registerRepoRulesHandlers } from './repo-rules';
+import { registerCanopyCoreRelayHandlers } from './canopy-core-relay';
+import type {
+  RendererRelayEvent,
+  RendererRelaySurfaceResolution,
+} from '../canopy-runtime/renderer-relay/relay';
+import { registerSkillShareNudgeHandlers } from './skill-share-nudge';
+import { registerSkillSuggestionHandlers } from './skill-suggestions';
+import { registerForeignActivityHandlers } from './foreign-activity';
+import { registerSpaceNotificationHandlers } from './space-notifications';
+import { registerManagedDelegationHandlers } from './managed-delegation';
+import { registerNativeSubagentHandlers } from './native-subagents';
+import { registerLocalMemoryHandlers } from './local-memory';
+import type { BrowserWindow, IpcMainInvokeEvent, WebContents } from 'electron';
+import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
+import type {
+  AppAdvisorWindowCommand,
+  AppAdvisorWindowOpenRequest,
+  AppAdvisorWindowState,
+  ChatWindowCommand,
+  ChatStateCommandPort,
+} from '@canopy/desktop-shared/types';
+import { APP_ADVISOR_PROJECT_ID } from '@canopy/desktop-shared/types';
+import { isOllamaSupportedOnPlatform } from '@canopy/desktop-shared/platform-capabilities';
+import { registerPreferenceHandlers } from './preferences';
+import { registerInstalledItemHandlers } from './installed-items';
+import { registerProjectHandlers } from './projects';
+import { registerRepoHandlers } from './repos';
+import { registerCloneJobHandlers } from './clone-jobs';
+import { registerWorktreeHandlers } from './worktrees';
+import { registerWorktreeDiscoveryHandlers } from './worktree-discovery';
+import { registerHomeSurfaceHandlers } from './home-surface';
+import { registerFileTreeHandlers } from './file-tree';
+import { registerLedgerHandlers } from './ledger';
+import { registerCostHandlers } from './cost';
+import { registerWorkspaceHandlers } from './workspaces';
+import { registerBundleHandlers } from './bundles';
+import { registerCollectionHandlers } from '../collections/collection-handlers';
+import { registerChatHandlers } from './chat';
+import { registerChatProjectHandlers } from './chat-projects';
+import { registerChatSearchHandlers } from './chat-search';
+import { registerChatPersistenceHandlers } from './chat-persistence';
+import { registerChatStateHandlers } from './chat-state';
+import { remoteBridgeWindows } from '../remote-control/host/bridge-window';
+import { registerChatEventOutputHandlers } from './chat-event-output';
+import { registerPortalComposerCommandHandlers } from './portal-composer-command';
+import { registerSessionTransferHandlers } from './session-transfer';
+import { registerSettingsHandlers } from './settings';
+import { registerDailyCreditDripHandlers } from './daily-credit-drip';
+import { registerStandaloneChatHandlers } from './standalone-chat';
+import { registerWorkEntryHandlers } from './work-entries';
+import { registerActivityPanelHandlers } from './activity-panel';
+import { registerPlansHandlers } from './plans';
+import { registerRunsHandlers } from './runs';
+import { registerSharedContainerHandlers } from './shared-containers';
+import { registerDetectedPlansHandlers } from './detected-plans';
+import { registerCodeReviewHandlers } from './code-review';
+import { registerPlanFileVisibilityHandlers } from './plan-file-visibility';
+import { registerApprovalHandlers } from './approvals';
+import { registerCopilotConnectionHandlers } from './copilot-connection';
+import { registerOpenCodeConnectionHandlers } from './opencode-connection';
+import { registerAccountProxyHandlers } from './account-proxy';
+import { registerCursorConnectionHandlers } from './cursor-connection';
+import { registerCursorApprovalCheckHandlers } from './cursor-approval-check';
+import { registerFileAnnotationsHandlers } from './file-annotations';
+import {
+  addPlanContentChangeListener,
+  addPlanDiagramArtifactChangeListener,
+  addPlanShareChangeListener,
+} from '../lib/plan-persistence';
+import { schedulePlanDiagramGeneration } from '../lib/plan-diagram-scheduler';
+import {
+  initializeSharedPlanSync,
+  queueSharedPlanSync,
+  syncPlanRealtimeSubscription,
+} from '../lib/shared-plan-sync';
+import { getPlanFileSyncService } from '../lib/plan-file-sync';
+import { registerWorktreeSummaryHandlers } from './worktree-summary';
+import { registerGitHubHandlers } from './github';
+import { registerHookHandlers } from './hooks';
+import { registerMcpServerHandlers } from './mcp-servers';
+import { registerScriptHandlers } from './scripts';
+import { registerOpenInHandlers } from './open-in';
+import { registerUpdateHandlers } from './update';
+import { registerCliHandlers } from './cli';
+import { registerObservabilityHandlers } from './observability';
+import { registerTelemetrySyncHandlers } from './telemetry-sync';
+import { registerWorktreeAttachmentHandlers } from './worktree-attachments';
+import { registerWorkspaceItemHandlers } from './workspace-items';
+import {
+  registerModelRegistryHandlers,
+  registerOllamaHandlers,
+} from './ollama';
+import { registerModelHarnessAssignmentHandlers } from './model-harness-assignments';
+import { registerGitExecutableHandlers } from './git-executable';
+import { registerDeepLinkHandlers } from './deep-link';
+import { registerFilePreviewHandlers } from './file-preview';
+import { registerOsNotificationHandlers } from './os-notifications';
+import { registerVoiceHandlers } from '../voice/preload-bridge';
+import { registerTerminalHandlers } from './terminal';
+import { registerPanelLayoutHandlers } from './panel-layout';
+import { panelLayoutModePersistenceStore } from '../panels/layout-mode-persistence';
+import { registerCodexLoginHandlers } from './codex-login';
+import { registerCodexSpeedHandlers } from './codex-speed';
+import {
+  registerOverlayLayerHandlers,
+  type OverlayLayerHandlerAccessors,
+} from './overlay-layer';
+import { registerAuthTerminalHandlers } from './auth-terminal';
+import { registerFeedbackHandlers } from './feedback';
+import { registerTurnFeedbackHandlers } from './turn-feedback';
+import { registerOrgMemoryHandlers } from './org-memory';
+import { registerResourceMonitorHandlers } from './resource-monitor';
+import { registerMemoryDiagnosticsHandlers } from './memory-diagnostics';
+import { registerRecommendedPluginHandlers } from './recommended-plugins';
+import { registerInvocableInventoryHandlers } from './invocable-inventory';
+import { registerCanopyPortalHandlers } from './canopy-portal';
+import { registerFeatureFlagHandlers } from './feature-flags';
+import { registerCodeGraphBuildStatusBroadcast } from './code-graph-build-status';
+import { registerCodeGraphHandlers } from './code-graph';
+import { registerUserEnvironmentHandlers } from './user-environment';
+import { registerWakeLockHandlers } from './wake-lock';
+import {
+  registerAppAdvisorHandlers,
+  type AppAdvisorWorkspaceOperations,
+} from './app-advisor';
+import { registerAppAdvisorWatcherHandlers } from './app-advisor-watchers';
+import { registerPipelineEditorHandlers } from './pipeline-editor';
+import { registerAutomationsHandlers } from './automations';
+import { registerSlowActionHandlers } from './slow-actions';
+import { registerAppWindowHandlers } from './app-window';
+import type { UnsavedCloseGuard } from '../lifecycle/unsaved-close-guard';
+import { registerBrowserHandlers } from './browser';
+import { registerWorkerHandlers } from './workers';
+import { registerAgentModelHandlers } from './agent-models';
+import { registerUsageLimitedChatsHandlers } from './usage-limited-chats';
+import { registerWorkspaceContextHandlers } from './workspace-context';
+import { registerOrgProjectsHandlers } from './org-projects';
+import { registerAccountOrganizationSettingsHandlers } from './account-organization-settings';
+import { registerOnboardingChecklistHandlers } from './onboarding-checklist';
+import { registerGlobalFocusShortcutHandlers } from './global-focus-shortcut';
+import { registerLaunchAtLoginHandlers } from './launch-at-login';
+import { registerExternalProjectHandlers } from './external-projects';
+import {
+  disposeDesktopSessionSnapshotHandlers,
+  registerDesktopSessionSnapshotHandlers,
+} from './desktop-session-snapshot';
+import { registerArchivedContainerHandlers } from './archived-containers';
+import { initTransientErrorRetryService } from '../lib/transient-error-retry-service';
+import { broadcastPipelineExecutionEvent } from '../pipelines/pipeline-execution-event-broadcaster';
+import { initTransientErrorRetryScheduler } from '../pipelines/transient-error-retry-scheduler';
+import { resumePipelineExecutionFromMain } from '../pipelines/pipeline-resume-service';
+import { readPreferencesFile } from '../lib/preferences-store';
+import { registerReferencePreviewHandlers } from './reference-previews';
+import {
+  getBrowserService,
+  setBrowserService,
+} from '../browser/browser-service';
+import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
+
+export interface WindowAccessors {
+  getMainWindow: () => BrowserWindow | null;
+  /** Native presentation layers owned by the main renderer. */
+  overlayLayerHost?: OverlayLayerHandlerAccessors['overlayLayerHost'];
+  getAppAdvisorWindow: () => BrowserWindow | null;
+  openAppAdvisorWindow: (
+    request?: AppAdvisorWindowOpenRequest,
+  ) => Promise<AppAdvisorWindowState>;
+  ensureAppAdvisorWindow: (
+    request?: AppAdvisorWindowOpenRequest,
+  ) => Promise<AppAdvisorWindowState>;
+  /** `options` is untrusted renderer input (`AppAdvisorWindowCloseOptions`). */
+  closeAppAdvisorWindow: (options?: unknown) => Promise<AppAdvisorWindowState>;
+  toggleAppAdvisorWindow: (
+    request?: AppAdvisorWindowOpenRequest,
+  ) => Promise<AppAdvisorWindowState>;
+  getAppAdvisorWindowState: () => AppAdvisorWindowState;
+  markAppAdvisorWindowRendererReady: (
+    sender?: WebContents,
+  ) => AppAdvisorWindowState;
+  /** Resizes the floating panel; the size is untrusted renderer input. */
+  setAppAdvisorFloatingSize: (size: unknown) => AppAdvisorWindowState;
+  sendAppAdvisorWindowCommand: (command: AppAdvisorWindowCommand) => void;
+  sendChatWindowCommand: (command: ChatWindowCommand) => boolean;
+  /** Backend adapter for app-managed App Advisor settings/instructions. */
+  appAdvisorWorkspaceOperations?: AppAdvisorWorkspaceOperations;
+  /** Main-owned revisioned chat service, injected by the backend slice. */
+  chatStatePort?: ChatStateCommandPort;
+  /** True only after the current main-window renderer has unlocked startup. */
+  isMainWindowRendererReady?: () => boolean;
+  notifyStartupUnlocked: () => void;
+  /** Main-window unsaved-edit close and quit guard (CAN-4072). */
+  unsavedCloseGuard?: UnsavedCloseGuard;
+  /** Runs after a browser view joins a window (see `BrowserServiceOptions`). */
+  onBrowserViewAttached?: (window: BrowserWindow) => void;
+}
+
+export interface DesktopCanopyRuntimeAccessors {
+  dispatcher: DesktopCanopyDispatcher;
+  resolveCaller: (event: IpcMainInvokeEvent) => CanopyCallerDescriptor;
+  resolveRelaySurface: (
+    event: RendererRelayEvent,
+  ) => RendererRelaySurfaceResolution;
+}
+
+export function registerAllIpcHandlers(
+  accessors: WindowAccessors,
+  canopyRuntime: DesktopCanopyRuntimeAccessors,
+): () => void {
+  const getMainWindow = accessors.getMainWindow;
+  registerRepoRulesHandlers(
+    canopyRuntime.dispatcher,
+    canopyRuntime.resolveCaller,
+  );
+  const closeRendererRelay = registerCanopyCoreRelayHandlers(
+    canopyRuntime.dispatcher,
+    canopyRuntime.resolveRelaySurface,
+  );
+  const closeSkillShareNudge = registerSkillShareNudgeHandlers(
+    canopyRuntime.resolveCaller,
+  );
+  const closeSkillSuggestions = registerSkillSuggestionHandlers(
+    canopyRuntime.resolveCaller,
+  );
+  let closeChatStatePush: () => void = () => undefined;
+
+  initTransientErrorRetryService(getMainWindow);
+  initTransientErrorRetryScheduler({
+    emitEvent: broadcastPipelineExecutionEvent,
+    resume: resumePipelineExecutionFromMain,
+    readPreferences: readPreferencesFile,
+  });
+
+  registerProjectHandlers(
+    getMainWindow,
+    canopyRuntime.dispatcher,
+    canopyRuntime.resolveCaller,
+  );
+  registerDesktopSessionSnapshotHandlers(getMainWindow);
+  const unsavedCloseGuard = accessors.unsavedCloseGuard;
+  registerAppWindowHandlers(
+    accessors.notifyStartupUnlocked,
+    unsavedCloseGuard
+      ? {
+          guard: unsavedCloseGuard,
+          isMainWindowSender: (sender): boolean => {
+            const mainWindow = getMainWindow();
+            return (
+              mainWindow !== null &&
+              !mainWindow.isDestroyed() &&
+              mainWindow.webContents === sender
+            );
+          },
+        }
+      : undefined,
+  );
+  registerPreferenceHandlers();
+  registerUserEnvironmentHandlers();
+  registerActivityPanelHandlers(getMainWindow);
+  registerPlansHandlers(getMainWindow);
+  registerRunsHandlers();
+  registerSharedContainerHandlers();
+  registerDetectedPlansHandlers(getMainWindow);
+  registerCodeReviewHandlers(getMainWindow);
+  registerPlanFileVisibilityHandlers();
+  registerApprovalHandlers();
+  registerCursorApprovalCheckHandlers();
+  registerCursorConnectionHandlers();
+  registerCopilotConnectionHandlers();
+  registerOpenCodeConnectionHandlers();
+  registerAccountProxyHandlers();
+  registerFileAnnotationsHandlers(() => [
+    accessors.getMainWindow(),
+    accessors.getAppAdvisorWindow(),
+  ]);
+  initializeSharedPlanSync({ getWindow: getMainWindow });
+  getPlanFileSyncService().configure({ getWindow: getMainWindow });
+  addPlanContentChangeListener((plan) =>
+    schedulePlanDiagramGeneration(plan, getMainWindow),
+  );
+  addPlanShareChangeListener((plan) => {
+    queueSharedPlanSync(plan, 'plan');
+    syncPlanRealtimeSubscription(plan);
+  });
+  addPlanDiagramArtifactChangeListener((plan) =>
+    queueSharedPlanSync(plan, 'diagram'),
+  );
+  registerWorktreeSummaryHandlers(getMainWindow);
+  registerBundleHandlers();
+  registerCollectionHandlers();
+  registerRepoHandlers();
+  registerCloneJobHandlers();
+  registerWorktreeHandlers(getMainWindow);
+  registerWorktreeDiscoveryHandlers(getMainWindow);
+  registerHomeSurfaceHandlers();
+  registerFileTreeHandlers(
+    canopyRuntime.dispatcher,
+    canopyRuntime.resolveCaller,
+  );
+  registerLedgerHandlers(canopyRuntime.dispatcher, canopyRuntime.resolveCaller);
+  const closeScriptActions = registerScriptActionsHandlers(
+    canopyRuntime.dispatcher,
+    canopyRuntime.resolveCaller,
+  );
+  const closeCostHandlers = registerCostHandlers(
+    canopyRuntime.dispatcher,
+    canopyRuntime.resolveCaller,
+  );
+  registerWorktreeAttachmentHandlers();
+  registerWorkspaceItemHandlers();
+  registerWorkspaceHandlers(getMainWindow, canopyRuntime);
+  registerChatEventOutputHandlers();
+  registerChatHandlers(accessors, canopyRuntime);
+  registerChatProjectHandlers();
+  registerChatSearchHandlers();
+  registerAgentModelHandlers(getMainWindow);
+  registerChatPersistenceHandlers(getMainWindow, canopyRuntime);
+  if (accessors.chatStatePort) {
+    closeChatStatePush = registerChatStateHandlers(
+      accessors.chatStatePort,
+      () => [
+        accessors.getMainWindow(),
+        accessors.getAppAdvisorWindow(),
+        // Each remote session's bridge declares its controller's scopes.
+        ...remoteBridgeWindows(),
+      ],
+      {
+        dispatcher: canopyRuntime.dispatcher,
+        resolveCaller: canopyRuntime.resolveCaller,
+      },
+    );
+  }
+  registerPortalComposerCommandHandlers();
+  registerSessionTransferHandlers(getMainWindow);
+  registerSettingsHandlers();
+  registerDailyCreditDripHandlers();
+  registerReferencePreviewHandlers();
+  registerGitExecutableHandlers(getMainWindow);
+  registerDeepLinkHandlers();
+  registerStandaloneChatHandlers();
+  registerWorkEntryHandlers();
+  registerSidebarItemGroupHandlers();
+  registerGitHubHandlers(getMainWindow);
+  registerCliHandlers();
+  registerObservabilityHandlers(getMainWindow);
+  registerTelemetrySyncHandlers(getMainWindow);
+  registerMcpServerHandlers(getMainWindow);
+  registerScriptHandlers();
+  registerHookHandlers(getMainWindow);
+  registerOpenInHandlers();
+  registerFilePreviewHandlers();
+  registerUpdateHandlers();
+  registerModelRegistryHandlers(getMainWindow);
+  registerModelHarnessAssignmentHandlers();
+  if (isOllamaSupportedOnPlatform()) {
+    registerOllamaHandlers(getMainWindow);
+  }
+  registerOsNotificationHandlers(getMainWindow);
+  registerVoiceHandlers(getMainWindow);
+  registerTerminalHandlers(accessors);
+  registerPanelLayoutHandlers(panelLayoutModePersistenceStore);
+  setBrowserService(
+    registerBrowserHandlers(
+      getMainWindow,
+      getBrowserService() ?? undefined,
+      (projectId) =>
+        projectId === APP_ADVISOR_PROJECT_ID
+          ? accessors.getAppAdvisorWindow()
+          : getMainWindow(),
+      accessors.onBrowserViewAttached,
+    ),
+  );
+  registerFeatureFlagHandlers(getMainWindow);
+  registerLabsExperimentsHandlers();
+  registerCodeGraphBuildStatusBroadcast();
+  registerCodeGraphHandlers();
+  registerAuthTerminalHandlers(getMainWindow);
+  registerCodexLoginHandlers(getMainWindow);
+  registerCodexSpeedHandlers();
+  if (accessors.overlayLayerHost) {
+    registerOverlayLayerHandlers({
+      getMainWindow,
+      overlayLayerHost: accessors.overlayLayerHost,
+    });
+  }
+  registerCanopyPortalHandlers(accessors, canopyRuntime.dispatcher);
+  registerAppAdvisorHandlers(
+    accessors,
+    accessors.appAdvisorWorkspaceOperations,
+  );
+  registerAppAdvisorWatcherHandlers(accessors);
+  registerPipelineEditorHandlers();
+  registerAutomationsHandlers(accessors);
+  registerFeedbackHandlers();
+  registerTurnFeedbackHandlers();
+  registerOrgMemoryHandlers();
+  registerResourceMonitorHandlers();
+  registerMemoryDiagnosticsHandlers();
+  registerSlowActionHandlers(getMainWindow);
+  registerWorkerHandlers(accessors);
+  registerWakeLockHandlers(getMainWindow);
+  registerRecommendedPluginHandlers();
+  registerInvocableInventoryHandlers();
+  registerInstalledItemHandlers();
+  registerUsageLimitedChatsHandlers(
+    getMainWindow,
+    accessors.isMainWindowRendererReady,
+  );
+  registerWorkspaceContextHandlers();
+  registerForeignActivityHandlers();
+  registerManagedDelegationHandlers();
+  registerNativeSubagentHandlers();
+  registerOrgProjectsHandlers();
+  const closeAccountOrganizationSettings =
+    registerAccountOrganizationSettingsHandlers();
+  registerOnboardingChecklistHandlers();
+  registerSpaceNotificationHandlers();
+  registerGlobalFocusShortcutHandlers();
+  registerLaunchAtLoginHandlers();
+  registerExternalProjectHandlers();
+  registerArchivedContainerHandlers();
+  registerLocalMemoryHandlers();
+  return () => {
+    closeRendererRelay();
+    closeSkillShareNudge();
+    closeSkillSuggestions();
+    closeChatStatePush();
+    closeCostHandlers();
+    void closeScriptActions();
+    closeAccountOrganizationSettings();
+  };
+}
+
+export { disposeDesktopSessionSnapshotHandlers };

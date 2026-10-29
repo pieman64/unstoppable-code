@@ -1,0 +1,211 @@
+'use client';
+
+import { memo, useMemo, type JSX } from 'react';
+import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
+import type { FileContentScrollBinding } from './FileViewer';
+
+export interface CsvTableModel {
+  readonly header: readonly string[] | null;
+  readonly rows: readonly (readonly string[])[];
+}
+
+export interface FileCsvPreviewProps {
+  readonly content: string;
+  readonly scrollBinding?: FileContentScrollBinding;
+}
+
+const MAX_CSV_TABLE_ROWS = 10_000;
+const MAX_CSV_TABLE_CELLS = 100_000;
+const CSV_TABLE_LIMIT_ERROR =
+  'CSV table limit exceeded (maximum 10,000 rows or 100,000 cells)';
+
+function parseCsvRows(content: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cellCount = 0;
+  let field = '';
+  let inQuotes = false;
+  let fieldStarted = false;
+  let quoteClosed = false;
+  let rowHasContent = false;
+  function appendField(): void {
+    row.push(field);
+    if (rowHasContent && cellCount + row.length > MAX_CSV_TABLE_CELLS) {
+      throw new Error(CSV_TABLE_LIMIT_ERROR);
+    }
+    field = '';
+    fieldStarted = false;
+    quoteClosed = false;
+  }
+  function appendRow(): void {
+    appendField();
+    if (rowHasContent) {
+      if (rows.length >= MAX_CSV_TABLE_ROWS) {
+        throw new Error(CSV_TABLE_LIMIT_ERROR);
+      }
+      cellCount += row.length;
+      rows.push(row);
+    }
+    row = [];
+    rowHasContent = false;
+  }
+  for (let index = 0; index < content.length; index += 1) {
+    const character = content.charAt(index);
+    if (inQuotes) {
+      if (character === '"') {
+        if (content.charAt(index + 1) === '"') {
+          field += '"';
+          index += 1;
+        } else {
+          inQuotes = false;
+          quoteClosed = true;
+        }
+      } else field += character;
+      continue;
+    }
+    if (quoteClosed) {
+      if (character === ',') appendField();
+      else if (character === '\n') appendRow();
+      else if (character === '\r') {
+        if (content.charAt(index + 1) === '\n') index += 1;
+        appendRow();
+      } else if (character !== ' ' && character !== '\t') {
+        throw new Error('Invalid closing quote');
+      }
+      continue;
+    }
+    if (character === '"') {
+      if (fieldStarted || field.length > 0)
+        throw new Error('Invalid opening quote');
+      inQuotes = true;
+      fieldStarted = true;
+      rowHasContent = true;
+    } else if (character === ',') {
+      rowHasContent = true;
+      appendField();
+    } else if (character === '\n' || character === '\r') {
+      if (character === '\r' && content.charAt(index + 1) === '\n') index += 1;
+      appendRow();
+    } else {
+      field += character;
+      fieldStarted = true;
+      rowHasContent = true;
+    }
+  }
+  if (inQuotes) throw new Error('Quote not closed');
+  if (row.length > 0 || field.length > 0 || fieldStarted || quoteClosed)
+    appendRow();
+  const expectedLength = rows[0]?.length;
+  rows.forEach((item, index) => {
+    if (expectedLength !== undefined && item.length !== expectedLength) {
+      throw new Error(
+        `Invalid Record Length: expect ${expectedLength}, got ${item.length} on line ${index + 1}`,
+      );
+    }
+  });
+  return rows;
+}
+
+export function parseCsvTableContent(content: string): {
+  readonly rows: string[][] | null;
+  readonly error: string | null;
+} {
+  try {
+    return { rows: parseCsvRows(content), error: null };
+  } catch (error) {
+    return {
+      rows: null,
+      error: error instanceof Error ? error.message : 'Unknown parse error',
+    };
+  }
+}
+
+function looksLikeDataValue(value: string): boolean {
+  const normalized = value.trim();
+  return (
+    /^-?\d+(\.\d+)?$/.test(normalized) ||
+    /^(true|false)$/i.test(normalized) ||
+    /^\d{4}-\d{2}-\d{2}(?:[t T].*)?$/.test(normalized) ||
+    normalized.length === 0
+  );
+}
+
+export function buildCsvTableModel(rows: readonly string[][]): CsvTableModel {
+  const first = rows[0];
+  const hasHeader =
+    rows.length >= 2 &&
+    first !== undefined &&
+    first.some((cell) => /[A-Za-z]/.test(cell)) &&
+    rows.slice(1).some((item) => item.some(looksLikeDataValue));
+  return hasHeader
+    ? { header: first, rows: rows.slice(1) }
+    : { header: null, rows };
+}
+
+function FileCsvPreviewImpl({
+  content,
+  scrollBinding,
+}: FileCsvPreviewProps): JSX.Element {
+  const parsed = useMemo(() => parseCsvTableContent(content), [content]);
+  if (parsed.error || !parsed.rows || parsed.rows.length === 0) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="border-b bg-warning-subtle px-4 py-2 text-xs fg-warning">
+          {parsed.error
+            ? `Could not parse as CSV: ${parsed.error}. Showing raw text.`
+            : 'No CSV rows detected. Showing raw text.'}
+        </div>
+        <pre
+          ref={scrollBinding?.ref}
+          onScroll={scrollBinding?.onScroll}
+          data-testid="file-viewer-csv-raw-scroll"
+          className={`${REPLAY_BLOCK_CLASS} min-h-0 flex-1 overflow-auto whitespace-pre px-4 py-4 font-mono text-xs fg-primary`}
+        >
+          {content}
+        </pre>
+      </div>
+    );
+  }
+  const table = buildCsvTableModel(parsed.rows);
+  return (
+    <div
+      ref={scrollBinding?.ref}
+      onScroll={scrollBinding?.onScroll}
+      data-testid="file-viewer-csv-table-scroll"
+      className={`${REPLAY_BLOCK_CLASS} min-h-0 flex-1 overflow-auto`}
+    >
+      <table className="w-full border-collapse text-xs">
+        {table.header && (
+          <thead className="sticky top-0 bg-base">
+            <tr>
+              {table.header.map((cell, index) => (
+                <th
+                  key={`h-${index}`}
+                  className="border-b px-3 py-2 text-left font-semibold fg-primary"
+                >
+                  {cell}
+                </th>
+              ))}
+            </tr>
+          </thead>
+        )}
+        <tbody>
+          {table.rows.map((item, rowIndex) => (
+            <tr key={`r-${rowIndex}`} className="hover:bg-fg-primary/[0.04]">
+              {item.map((cell, cellIndex) => (
+                <td
+                  key={`r-${rowIndex}-c-${cellIndex}`}
+                  className="border-b px-3 py-1.5 align-top fg-primary/90"
+                >
+                  {cell}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+export const FileCsvPreview = memo(FileCsvPreviewImpl);

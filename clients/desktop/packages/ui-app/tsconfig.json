@@ -1,0 +1,30 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // The base config sets `lib` to ES2020 but no `target`, which leaves tsc on
+    // its ES5 default — so iterating a Map or a Set is an error (TS2802) even
+    // though the declared lib says those are iterable. Every host that renders
+    // this package transpiles from source with its own modern target, and this
+    // project only emits declarations, so stating the target here just makes
+    // the type-check agree with the lib it was already given.
+    "target": "ES2020",
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "emitDeclarationOnly": true,
+    "noEmit": false,
+    "outDir": "out",
+    "rootDir": "src",
+    "jsx": "react-jsx",
+    "types": []
+  },
+  "references": [
+    { "path": "../app-core" },
+    { "path": "../app-state" },
+    { "path": "../protocol" },
+    { "path": "../ui-shared" },
+    { "path": "../ui-rich" }
+  ],
+  "include": ["src/**/*.ts", "src/**/*.tsx"],
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/**/__tests__/**"]
+}

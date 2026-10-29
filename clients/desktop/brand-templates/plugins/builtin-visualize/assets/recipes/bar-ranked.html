@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      /*
+       * Ranked bars with one row emphasized. No library: each bar is a div
+       * whose width is a percentage, so it follows the column width and the
+       * theme with no script at all.
+       */
+      .bars {
+        display: grid;
+        grid-template-columns: max-content 1fr max-content;
+        gap: 8px 12px;
+        align-items: center;
+        font-size: 13px;
+      }
+      .name {
+        color: var(--fg-secondary);
+      }
+      .track {
+        height: 14px;
+      }
+      .bar {
+        height: 100%;
+        min-width: 2px;
+        border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+        /* Context rows: a gray made from the theme, not a series color. */
+        background: color-mix(in oklab, var(--fg-primary) 26%, var(--bg-base));
+      }
+      .value {
+        font-variant-numeric: tabular-nums;
+        text-align: right;
+      }
+      /* The one row the reply is about. */
+      .focus .bar {
+        background: var(--categorical-1);
+      }
+      .focus.name,
+      .focus.value {
+        color: var(--fg-primary);
+        font-weight: 600;
+      }
+      .note {
+        margin: 12px 0 0;
+        color: var(--fg-secondary);
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      class="bars"
+      id="bars"
+      role="group"
+      aria-label="Build time by service"
+    ></div>
+    <p class="note">Median build time in seconds, last 30 days.</p>
+    <script>
+      const rows = [
+        { name: 'checkout', value: 214, focus: true },
+        { name: 'search', value: 148 },
+        { name: 'billing', value: 96 },
+        { name: 'accounts', value: 71 },
+        { name: 'notifications', value: 22 },
+      ];
+      const max = Math.max(...rows.map((r) => r.value));
+      document.getElementById('bars').innerHTML = rows
+        .map((r) => {
+          const focus = r.focus ? ' focus' : '';
+          return `<div class="name${focus}">${r.name}</div>
+            <div class="track${focus}"><div class="bar" style="width:${(r.value / max) * 100}%"></div></div>
+            <div class="value${focus}">${r.value}s</div>`;
+        })
+        .join('');
+    </script>
+  </body>
+</html>

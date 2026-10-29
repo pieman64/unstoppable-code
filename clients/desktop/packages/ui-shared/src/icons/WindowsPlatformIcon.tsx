@@ -1,0 +1,1 @@
+export { WindowsPlatformIcon } from './AppIcons';

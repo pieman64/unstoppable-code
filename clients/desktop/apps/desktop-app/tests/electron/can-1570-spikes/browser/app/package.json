@@ -1,0 +1,6 @@
+{
+  "name": "can-1570-spike-app",
+  "private": true,
+  "type": "module",
+  "main": "main.mjs"
+}

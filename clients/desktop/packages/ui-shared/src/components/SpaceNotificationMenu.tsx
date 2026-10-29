@@ -1,0 +1,295 @@
+import type { JSX, MouseEvent } from 'react';
+import { BellIcon, CheckIcon } from '../icons/AppIcons';
+import { LoadingSpinner } from './LoadingSpinner';
+import { LoadingIndicator } from './LoadingIndicatorStyle';
+import {
+  DropdownMenuDivider,
+  DropdownMenuItem,
+  DropdownMenuItemIcon,
+  DropdownMenuLabel,
+} from './DropdownMenu';
+import { NestedMenuFlyout } from './NestedMenuFlyout';
+
+/** Mirrors the wire levels without importing a contract package. */
+export type SpaceNotificationMenuLevel = 'all' | 'attention' | 'mute';
+
+/**
+ * `null` clears the space's override. A space without one gets every
+ * notification, so All activity saves `null` rather than storing `all`.
+ */
+export type SpaceNotificationMenuChoice = SpaceNotificationMenuLevel | null;
+
+/**
+ * What a host knows about one space's saved notification choice.
+ *
+ * `override` is always the last choice the server acknowledged. A save in
+ * flight is carried in `pendingChoice` and never shown as selected, so the menu
+ * cannot claim a setting that has not been stored; its row shows a spinner in
+ * the check slot instead.
+ */
+export interface SpaceNotificationMenuState {
+  readonly status: 'loading' | 'ready' | 'saving' | 'failed';
+  readonly override: SpaceNotificationMenuChoice;
+  /** False until a saved choice has been read, including a failed first read. */
+  readonly selectionKnown?: boolean;
+  readonly pendingChoice?: SpaceNotificationMenuChoice;
+  /** Set when the choices can be read but not changed; shown as the reason. */
+  readonly disabledReason?: string;
+  /** Set with `failed`: why the last read or save did not go through. */
+  readonly failure?: string;
+}
+
+export type SpaceNotificationMenuChoiceKey =
+  | 'notify-all'
+  | 'notify-attention'
+  | 'notify-mute';
+
+export interface SpaceNotificationMenuChoiceRow {
+  readonly key: SpaceNotificationMenuChoiceKey;
+  readonly choice: SpaceNotificationMenuChoice;
+  readonly label: string;
+  /** What the choice delivers, for the hover title and screen readers. */
+  readonly description: string;
+  readonly checked: boolean;
+  /** The choice a save in flight is storing; shows a spinner, not a check. */
+  readonly pending: boolean;
+  readonly disabled: boolean;
+  /** Choosing this row starts a save: not checked, disabled, or mid-save. */
+  readonly selectable: boolean;
+}
+
+export const SPACE_NOTIFICATION_MENU_HEADING = 'Notifications';
+
+/** Status and failure lines every host shows for the same situation. */
+export const SPACE_NOTIFICATION_MENU_COPY = {
+  signIn: 'Sign in to choose notifications for this space.',
+  writesClosed: 'Changing this isn’t available right now.',
+  loadFailed: 'Couldn’t load notifications.',
+  saveFailed: 'Couldn’t save. Try again.',
+  changedElsewhere: 'This changed somewhere else. Showing the latest.',
+  deliveryInProgress:
+    'A notification is being delivered. Try again in a moment.',
+  unconfirmed: 'Couldn’t confirm the change. Check your connection.',
+} as const;
+
+const LEVEL_LABELS: Record<SpaceNotificationMenuLevel, string> = {
+  all: 'All activity',
+  attention: 'Needs my attention',
+  mute: 'Mute',
+};
+
+const LEVEL_DESCRIPTIONS: Record<SpaceNotificationMenuLevel, string> = {
+  all: 'Notify me about everything in this space',
+  attention:
+    'Notify me only when work needs input, approval, or review, is blocked, or fails',
+  mute: 'Send no notifications from this space',
+};
+
+const CHOICES: readonly {
+  readonly key: SpaceNotificationMenuChoiceKey;
+  readonly level: SpaceNotificationMenuLevel;
+  readonly choice: SpaceNotificationMenuChoice;
+}[] = [
+  { key: 'notify-all', level: 'all', choice: null },
+  { key: 'notify-attention', level: 'attention', choice: 'attention' },
+  { key: 'notify-mute', level: 'mute', choice: 'mute' },
+];
+
+/**
+ * The three choices in menu order. All activity is checked for a space with
+ * no override, and for one that saved `all` explicitly. Every choice is
+ * disabled while the saved value is unknown or when the host cannot write.
+ *
+ * A save in flight leaves the rows enabled and adds no status line, so the
+ * menu keeps its ink and height on every change; it only stops new saves
+ * through `selectable` and marks the pending row.
+ */
+export function spaceNotificationMenuChoices(
+  state: SpaceNotificationMenuState,
+): readonly SpaceNotificationMenuChoiceRow[] {
+  const known = state.selectionKnown ?? state.status !== 'loading';
+  const disabled = !known || state.disabledReason !== undefined;
+  const saving = state.status === 'saving';
+  const level = state.override ?? 'all';
+  const pendingLevel = saving ? (state.pendingChoice ?? 'all') : undefined;
+  return CHOICES.map((row) => {
+    const checked = known && level === row.level;
+    return {
+      key: row.key,
+      choice: row.choice,
+      label: LEVEL_LABELS[row.level],
+      description: LEVEL_DESCRIPTIONS[row.level],
+      checked,
+      pending: !checked && pendingLevel === row.level,
+      disabled,
+      selectable: !checked && !disabled && !saving,
+    };
+  });
+}
+
+/** The check-slot icon: a check, a spinner for the pending save, or none. */
+export function SpaceNotificationMenuRowIcon({
+  row,
+}: {
+  readonly row: SpaceNotificationMenuChoiceRow;
+}): JSX.Element | null {
+  if (row.checked) return <CheckIcon />;
+  if (row.pending) return <LoadingSpinner tone="secondary" decorative />;
+  return null;
+}
+
+export interface SpaceNotificationMenuStatus {
+  readonly tone: 'default' | 'failure';
+  readonly text: string;
+  /**
+   * The first read is still running. The line shows `text` under the `text`
+   * loading style, or a spinner in its place under `spinner`.
+   */
+  readonly loading?: true;
+}
+
+/**
+ * The one line under the heading: a first read, a failure, or why it is
+ * read-only. A save in flight has none; its spinner sits in the row.
+ */
+export function spaceNotificationMenuStatus(
+  state: SpaceNotificationMenuState,
+): SpaceNotificationMenuStatus | undefined {
+  if (state.status === 'loading') {
+    return { tone: 'default', text: 'Loading…', loading: true };
+  }
+  if (state.status === 'saving') return undefined;
+  if (state.status === 'failed') {
+    return {
+      tone: 'failure',
+      text: state.failure ?? SPACE_NOTIFICATION_MENU_COPY.saveFailed,
+    };
+  }
+  return state.disabledReason === undefined
+    ? undefined
+    : { tone: 'default', text: state.disabledReason };
+}
+
+/**
+ * A space whose saved choice has never loaded and whose read failed (offline,
+ * or a cloud this app cannot reach) has nothing to show or change, so menus
+ * omit the group rather than list three dead rows over an error. A failed
+ * save on a known choice still shows the group and its error.
+ */
+export function spaceNotificationMenuUnavailable(
+  state: SpaceNotificationMenuState,
+): boolean {
+  return state.status === 'failed' && state.selectionKnown === false;
+}
+
+export interface SpaceNotificationMenuItemsProps {
+  readonly state: SpaceNotificationMenuState;
+  readonly onSelect: (choice: SpaceNotificationMenuChoice) => void;
+  /** Builds a test id from a suffix such as `-notify-mute`. */
+  readonly testIdFor?: (suffix: string) => string | undefined;
+  readonly separatorBefore?: boolean;
+  /**
+   * `submenu` (early access) puts the choices in a "Notifications ›" flyout,
+   * one row among the menu's others, in place of a headed group.
+   */
+  readonly presentation?: 'group' | 'submenu';
+}
+
+/**
+ * Notification choices for menus that render their own rows (the Work Entry
+ * menu). The menu stays open on selection so the saved, pending, or failed
+ * outcome is visible where the choice was made.
+ */
+export function SpaceNotificationMenuItems({
+  state,
+  onSelect,
+  testIdFor,
+  separatorBefore = true,
+  presentation = 'group',
+}: SpaceNotificationMenuItemsProps): JSX.Element | null {
+  if (spaceNotificationMenuUnavailable(state)) return null;
+  const status = spaceNotificationMenuStatus(state);
+  const submenu = presentation === 'submenu';
+  const group = (
+    <>
+      <div
+        role="group"
+        aria-label={SPACE_NOTIFICATION_MENU_HEADING}
+        aria-busy={state.status === 'loading' || state.status === 'saving'}
+        data-testid={testIdFor?.('-notify')}
+      >
+        {!submenu && (
+          <DropdownMenuLabel>
+            {SPACE_NOTIFICATION_MENU_HEADING}
+          </DropdownMenuLabel>
+        )}
+        {spaceNotificationMenuChoices(state).map((row) => (
+          <DropdownMenuItem
+            key={row.key}
+            role="menuitemradio"
+            aria-checked={row.checked}
+            aria-busy={row.pending ? true : undefined}
+            disabled={row.disabled}
+            title={row.description}
+            data-testid={testIdFor?.(`-${row.key}`)}
+            onClick={(event: MouseEvent<HTMLButtonElement>): void => {
+              event.stopPropagation();
+              if (row.selectable) onSelect(row.choice);
+            }}
+          >
+            <DropdownMenuItemIcon>
+              <SpaceNotificationMenuRowIcon row={row} />
+            </DropdownMenuItemIcon>
+            {row.label}
+          </DropdownMenuItem>
+        ))}
+        {status && (
+          <SpaceNotificationMenuStatusLine
+            status={status}
+            testId={testIdFor?.('-notify-status')}
+          />
+        )}
+      </div>
+    </>
+  );
+  if (submenu) {
+    return (
+      <NestedMenuFlyout
+        label={SPACE_NOTIFICATION_MENU_HEADING}
+        leading={<BellIcon />}
+        triggerTestId={testIdFor?.('-notify-submenu') ?? 'notify-submenu'}
+        menuTestId={
+          testIdFor?.('-notify-submenu-menu') ?? 'notify-submenu-menu'
+        }
+      >
+        {group}
+      </NestedMenuFlyout>
+    );
+  }
+  return (
+    <>
+      {separatorBefore && <DropdownMenuDivider />}
+      {group}
+    </>
+  );
+}
+
+export function SpaceNotificationMenuStatusLine({
+  status,
+  testId,
+}: {
+  readonly status: SpaceNotificationMenuStatus;
+  readonly testId?: string;
+}): JSX.Element {
+  // A plain row, not `DropdownMenuLabel`: the label truncates to one line and
+  // owns its ink, and this line must wrap and can carry the failure ink.
+  return (
+    <div
+      role={status.tone === 'failure' ? 'alert' : 'status'}
+      data-testid={testId}
+      className={`px-2 py-1 text-xs font-normal ${status.tone === 'failure' ? 'fg-destructive' : 'fg-secondary'}`}
+    >
+      {status.loading ? <LoadingIndicator text={status.text} /> : status.text}
+    </div>
+  );
+}

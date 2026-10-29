@@ -1,0 +1,668 @@
+import type { ShareOperationResult } from '@canopy/protocol/sharing';
+import {
+  toShareOperationResult,
+  withShareStage,
+} from '../sharing/share-operation-result';
+import { assertInstalledResourceShare } from '../lib/resource-install-context';
+import { assertResourceShareDestination } from '../lib/resource-share-context';
+import { resourceContextEnabled } from '../lib/resource-context';
+import { scopeAutomationsToSelectedContext } from '../services/background-execution-context';
+import {
+  IPC_CHANNELS,
+  DEFAULT_CRON_GENERATION_MODEL,
+  DEFAULT_IF_COMMAND_GENERATION_MODEL,
+  getExecutionHarnessForModel,
+  resolveProviderModelConfig,
+  type AutomationCronGenerateRequest,
+  type AutomationCronGenerateResponse,
+  type AutomationIfCommandGenerateRequest,
+  type AutomationIfCommandGenerateResponse,
+  type AutomationCreateRequest,
+  type AutomationCancelRunRequest,
+  type AutomationDeleteRequest,
+  type AutomationMutationResponse,
+  type AutomationRunNowRequest,
+  type AutomationRunHistoryRequest,
+  type AutomationRunHistoryResponse,
+  type AutomationRunStatus,
+  type AutomationRunTrigger,
+  type AutomationUpdateRequest,
+  type AnalyzeAutomationCapabilityPackageRequest,
+  type ApproveAutomationSharedPipelineReviewRequest,
+  type AutomationCapabilityPackageRequest,
+  type AutomationsListRequest,
+  type AutomationsListResponse,
+  AUTOMATION_RUN_HISTORY_DEFAULT_PAGE_SIZE,
+  AUTOMATION_RUN_HISTORY_MAX_PAGE_SIZE,
+  type CommitAutomationCapabilityPackageRequest,
+  type CommitAutomationCapabilityPackageResponse,
+  type CreateSharedAutomationIpcRequest,
+  type DeleteSharedAutomationIpcRequest,
+  type InstallAutomationCapabilityPackageRequest,
+  type ListSharedAutomationsIpcRequest,
+  type ResolveAutomationSharedPipelinePinRequest,
+  type ResolvedAutomationSharedPipelinePin,
+  type UpdateSharedAutomationIpcRequest,
+  type VerifyAutomationSharedPipelinePinRequest,
+} from '@canopy/desktop-shared/types';
+import type {
+  PipelinePackageAnalysisSummary,
+  PipelinePackageReadiness,
+} from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineShareInstallPin } from '@canopy/protocol/pipelines';
+import type { CuratedAutomationDetail } from '@canopy/protocol/automation-catalog';
+import { isCuratedCatalogKey } from '@canopy/protocol/plugin-catalog';
+import type {
+  ListCuratedAutomationsRequest,
+  ListCuratedAutomationsResult,
+} from '@canopy/desktop-shared/types/curated-automations';
+import type {
+  ListSharedAutomationsResponse,
+  SharedAutomationDetail,
+  SharedAutomationPublicShareInfo,
+} from '@canopy/protocol/automations';
+import {
+  validateAutomationAction,
+  validateAutomationActionForWrite,
+  validateAutomationCreateRequest,
+  validateAutomationIfCommand,
+  validateAutomationInstalledFrom,
+  validateAutomationTrigger,
+} from '@canopy/desktop-shared/lib/automations';
+import { getAutomationsService } from '../automations/service';
+import {
+  createSharedAutomation,
+  deleteSharedAutomation,
+  getSharedAutomation,
+  listSharedAutomations,
+  publishAutomationPublicShare,
+  revokeAutomationPublicShare,
+  updateSharedAutomation,
+} from '../automations/canopy-server-client';
+import { assertCanopyCloudCapability } from '../canopy-cloud/client';
+import { generateCronExpression } from '../automations/cron-generator';
+import { generateAutomationIfCommand } from '../automations/if-command-generator';
+import { readPreferencesFile } from '../lib/preferences-store';
+import { isRecord } from '../lib/type-guards';
+import { validateId } from '../lib/validation';
+import { sendToWindow } from '../lib/window-send';
+import { registerIpcHandler } from './register';
+import type { WindowAccessors } from './index';
+import {
+  analyzeAutomationCapabilityPackage,
+  cancelPackageAnalysis,
+  createPackagedAutomationCapabilityPackage,
+  getAutomationCapabilityPackageReadiness,
+  getSharedPipelineAutomationInstallPin,
+  installAutomationCapabilityPackage,
+  removeAutomationCapabilityPackageInstall,
+  verifySharedPipelineAutomationInstallPin,
+} from '../pipelines/pipeline-package-service';
+import {
+  getCuratedAutomation,
+  listCuratedAutomations,
+} from '../automations/curated-automation-catalog';
+
+const MAX_CRON_DESCRIPTION_CHARS = 1000;
+const MAX_IF_COMMAND_DESCRIPTION_CHARS = 1000;
+const AUTOMATIONS_CAPABILITY = 'automations-crud-v1';
+const AUTOMATION_CATALOG_CAPABILITY = 'automation-catalog-v1';
+
+async function assertSharedAutomationsSupported(): Promise<void> {
+  await assertCanopyCloudCapability(AUTOMATIONS_CAPABILITY);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function validateCreateRequest(request: unknown): string | null {
+  return validateAutomationCreateRequest(request as AutomationCreateRequest);
+}
+
+function validateUpdateRequest(request: unknown): string | null {
+  if (!isRecord(request)) return 'Automation update request must be an object.';
+  if (typeof request.id !== 'string' || request.id.trim() === '') {
+    return 'Automation id is required.';
+  }
+  try {
+    validateId(request.id, 'automation id');
+  } catch (error) {
+    return errorMessage(error);
+  }
+  if (request.name !== undefined) {
+    if (typeof request.name !== 'string' || request.name.trim() === '') {
+      return 'Automation name must be a non-empty string.';
+    }
+  }
+  if (request.enabled !== undefined && typeof request.enabled !== 'boolean') {
+    return 'Automation enabled must be a boolean.';
+  }
+  if (request.schedule !== undefined) {
+    const scheduleError = validateAutomationTrigger(request.schedule);
+    if (scheduleError) return scheduleError;
+  }
+  if (request.action !== undefined) {
+    const actionError = validateAutomationActionForWrite(request.action);
+    if (actionError) return actionError;
+  }
+  if (request.ifCommand !== undefined) {
+    const ifCommandError = validateAutomationIfCommand(request.ifCommand);
+    if (ifCommandError) return ifCommandError;
+  }
+  const installedFromError = validateAutomationInstalledFrom(
+    request.installedFrom,
+  );
+  if (installedFromError) return installedFromError;
+  return null;
+}
+
+function validateIdRequest(request: unknown): string | null {
+  if (
+    !isRecord(request) ||
+    typeof request.id !== 'string' ||
+    request.id.trim() === ''
+  ) {
+    return 'Automation id is required.';
+  }
+  try {
+    validateId(request.id, 'automation id');
+  } catch (error) {
+    return errorMessage(error);
+  }
+  return null;
+}
+
+const RUN_STATUSES = new Set<AutomationRunStatus>([
+  'running',
+  'success',
+  'failure',
+  'skipped',
+  'canceled',
+  'missed',
+]);
+const RUN_TRIGGERS = new Set<AutomationRunTrigger>([
+  'scheduled',
+  'manual',
+  'catch_up',
+]);
+
+function validateRunHistoryRequest(
+  request: unknown,
+): AutomationRunHistoryRequest {
+  if (!isRecord(request) || typeof request.activityId !== 'string') {
+    throw new Error('Automation activity id is required.');
+  }
+  validateId(request.activityId, 'automation activity id');
+  if (request.cursor !== undefined && typeof request.cursor !== 'string') {
+    throw new Error('Automation run history cursor must be a string.');
+  }
+  if (
+    request.limit !== undefined &&
+    (!Number.isInteger(request.limit) ||
+      (request.limit as number) < 1 ||
+      (request.limit as number) > AUTOMATION_RUN_HISTORY_MAX_PAGE_SIZE)
+  ) {
+    throw new Error(
+      `Automation run history limit must be between 1 and ${AUTOMATION_RUN_HISTORY_MAX_PAGE_SIZE}.`,
+    );
+  }
+  if (
+    request.statuses !== undefined &&
+    (!Array.isArray(request.statuses) ||
+      request.statuses.some((status) => !RUN_STATUSES.has(status as never)))
+  ) {
+    throw new Error('Automation run history statuses are invalid.');
+  }
+  if (
+    request.triggers !== undefined &&
+    (!Array.isArray(request.triggers) ||
+      request.triggers.some((trigger) => !RUN_TRIGGERS.has(trigger as never)))
+  ) {
+    throw new Error('Automation run history triggers are invalid.');
+  }
+  return {
+    activityId: request.activityId,
+    ...(request.cursor ? { cursor: request.cursor } : {}),
+    limit:
+      request.limit === undefined
+        ? AUTOMATION_RUN_HISTORY_DEFAULT_PAGE_SIZE
+        : (request.limit as number),
+    ...(request.statuses
+      ? { statuses: request.statuses as AutomationRunStatus[] }
+      : {}),
+    ...(request.triggers
+      ? { triggers: request.triggers as AutomationRunTrigger[] }
+      : {}),
+  };
+}
+
+function validateGenerateCronRequest(request: unknown): string | null {
+  if (
+    !isRecord(request) ||
+    typeof request.description !== 'string' ||
+    request.description.trim() === ''
+  ) {
+    return 'Trigger schedule description is required.';
+  }
+  if (request.description.length > MAX_CRON_DESCRIPTION_CHARS) {
+    return `Trigger schedule description is too long (max ${MAX_CRON_DESCRIPTION_CHARS} characters).`;
+  }
+  return null;
+}
+
+function validateGenerateIfCommandRequest(request: unknown): string | null {
+  if (
+    !isRecord(request) ||
+    typeof request.description !== 'string' ||
+    request.description.trim() === ''
+  ) {
+    return 'If Command description is required.';
+  }
+  if (request.description.length > MAX_IF_COMMAND_DESCRIPTION_CHARS) {
+    return `If Command description is too long (max ${MAX_IF_COMMAND_DESCRIPTION_CHARS} characters).`;
+  }
+  const currentCommandError = validateAutomationIfCommand(
+    request.currentCommand,
+  );
+  if (currentCommandError) return currentCommandError;
+  return null;
+}
+
+export function registerAutomationsHandlers(accessors: WindowAccessors): void {
+  const service = getAutomationsService();
+  service.configure({
+    getMainWindow: accessors.getMainWindow,
+    getAppAdvisorWindow: accessors.getAppAdvisorWindow,
+    openAppAdvisorWindow: accessors.openAppAdvisorWindow,
+    ensureAppAdvisorWindow: accessors.ensureAppAdvisorWindow,
+    sendAppAdvisorWindowCommand: accessors.sendAppAdvisorWindowCommand,
+    onChange: (snapshot: AutomationsListResponse) => {
+      sendToWindow(
+        accessors.getMainWindow(),
+        IPC_CHANNELS.automationsChanged,
+        snapshot,
+      );
+      sendToWindow(
+        accessors.getAppAdvisorWindow(),
+        IPC_CHANNELS.automationsChanged,
+        snapshot,
+      );
+    },
+  });
+
+  registerIpcHandler<
+    [AutomationsListRequest | undefined],
+    AutomationsListResponse
+  >(IPC_CHANNELS.automationsList, async (_event, request) => {
+    const snapshot = await service.list();
+    // App Advisor lists what the Automations page shows; everything else
+    // reads the full snapshot.
+    return isRecord(request) && request.scope === 'selected-context'
+      ? scopeAutomationsToSelectedContext(snapshot)
+      : snapshot;
+  });
+
+  registerIpcHandler<
+    [AutomationRunHistoryRequest],
+    AutomationRunHistoryResponse
+  >(IPC_CHANNELS.automationsListRuns, async (_event, request) => {
+    const safeRequest = validateRunHistoryRequest(request);
+    const response = await service.listRuns(safeRequest);
+    return JSON.parse(JSON.stringify(response)) as AutomationRunHistoryResponse;
+  });
+
+  registerIpcHandler<[AutomationCreateRequest], AutomationMutationResponse>(
+    IPC_CHANNELS.automationsCreate,
+    async (_event, request) => {
+      try {
+        const validationError = validateCreateRequest(request);
+        if (validationError) return { ok: false, error: validationError };
+        // A person writing the automation clears any agent marker.
+        return await service.create(request, { agentAuthor: null });
+      } catch (error) {
+        return { ok: false, error: errorMessage(error) };
+      }
+    },
+  );
+
+  registerIpcHandler<[AutomationUpdateRequest], AutomationMutationResponse>(
+    IPC_CHANNELS.automationsUpdate,
+    async (_event, request) => {
+      try {
+        const validationError = validateUpdateRequest(request);
+        if (validationError) return { ok: false, error: validationError };
+        return await service.update(request, undefined, undefined, {
+          agentAuthor: null,
+        });
+      } catch (error) {
+        return { ok: false, error: errorMessage(error) };
+      }
+    },
+  );
+
+  registerIpcHandler<[AutomationDeleteRequest], AutomationMutationResponse>(
+    IPC_CHANNELS.automationsDelete,
+    async (_event, request) => {
+      try {
+        const validationError = validateIdRequest(request);
+        if (validationError) return { ok: false, error: validationError };
+        return await service.delete(request);
+      } catch (error) {
+        return { ok: false, error: errorMessage(error) };
+      }
+    },
+  );
+
+  registerIpcHandler<[AutomationRunNowRequest], AutomationMutationResponse>(
+    IPC_CHANNELS.automationsRunNow,
+    async (_event, request) => {
+      try {
+        const validationError = validateIdRequest(request);
+        if (validationError) return { ok: false, error: validationError };
+        return await service.runNow(request);
+      } catch (error) {
+        return { ok: false, error: errorMessage(error) };
+      }
+    },
+  );
+
+  registerIpcHandler<[AutomationCancelRunRequest], AutomationMutationResponse>(
+    IPC_CHANNELS.automationsCancelRun,
+    async (_event, request) => {
+      if (!isRecord(request) || typeof request.runId !== 'string') {
+        return { ok: false, error: 'Run id is required.' };
+      }
+      try {
+        validateId(request.runId, 'automation run id');
+        return await service.cancelRun({ runId: request.runId });
+      } catch (error) {
+        return { ok: false, error: errorMessage(error) };
+      }
+    },
+  );
+
+  registerIpcHandler<
+    [AutomationCronGenerateRequest],
+    AutomationCronGenerateResponse
+  >(IPC_CHANNELS.automationsGenerateCron, async (_event, request) => {
+    try {
+      const validationError = validateGenerateCronRequest(request);
+      if (validationError) return { ok: false, error: validationError };
+      const preferences = await readPreferencesFile();
+      const model =
+        preferences.cronGenerationModel ?? DEFAULT_CRON_GENERATION_MODEL;
+      const thinkingLevel = preferences.cronGenerationThinkingLevel ?? 'medium';
+      const executionHarness = getExecutionHarnessForModel(model);
+      if (!executionHarness) {
+        return {
+          ok: false,
+          error: `No execution harness is available for model "${model}".`,
+        };
+      }
+      const modelConfig = resolveProviderModelConfig(
+        executionHarness,
+        { thinkingLevel },
+        preferences.providerModelConfigDefaults,
+      );
+      const result = await generateCronExpression({
+        description: request.description,
+        model,
+        thinkingLevel,
+        modelConfig,
+      });
+      return { ok: true, expression: result.expression };
+    } catch (error) {
+      return { ok: false, error: errorMessage(error) };
+    }
+  });
+
+  registerIpcHandler<
+    [AutomationIfCommandGenerateRequest],
+    AutomationIfCommandGenerateResponse
+  >(IPC_CHANNELS.automationsGenerateIfCommand, async (_event, request) => {
+    try {
+      const validationError = validateGenerateIfCommandRequest(request);
+      if (validationError) return { ok: false, error: validationError };
+      const preferences = await readPreferencesFile();
+      const result = await generateAutomationIfCommand({
+        description: request.description,
+        currentCommand: request.currentCommand,
+        model:
+          preferences.ifCommandGenerationModel ??
+          DEFAULT_IF_COMMAND_GENERATION_MODEL,
+        thinkingLevel: preferences.ifCommandGenerationThinkingLevel ?? 'medium',
+      });
+      return { ok: true, command: result.command };
+    } catch (error) {
+      return { ok: false, error: errorMessage(error) };
+    }
+  });
+
+  // Shared-Automation cloud CRUD (CAN-1581). These mirror the shared-Agent
+  // handlers: they throw (rejecting the invoke) rather than returning the
+  // local mutation envelope, and every one is gated on the server capability.
+  const writeRemoteMetadataFromDetail = async (
+    activityId: string,
+    detail: SharedAutomationDetail,
+  ): Promise<void> => {
+    await service.setActivityRemoteMetadata(activityId, {
+      accountId: detail.createdBy.id,
+      remoteId: detail.id,
+      contentHash: detail.contentHash,
+      shareScope: detail.shareScope,
+      // Server-canonical share/update time — the local clock can drift from
+      // the timestamps the server reports in list/detail responses.
+      sharedAt: detail.updatedAt,
+    });
+  };
+
+  registerIpcHandler<
+    [ListSharedAutomationsIpcRequest],
+    ListSharedAutomationsResponse
+  >(IPC_CHANNELS.automationsSharedList, async (_event, request) => {
+    await assertSharedAutomationsSupported();
+    return listSharedAutomations(request);
+  });
+
+  registerIpcHandler<[string], SharedAutomationDetail>(
+    IPC_CHANNELS.automationsSharedGet,
+    async (_event, automationId) => {
+      validateId(automationId, 'shared automation id');
+      await assertSharedAutomationsSupported();
+      return getSharedAutomation(automationId);
+    },
+  );
+
+  registerIpcHandler<
+    [ListCuratedAutomationsRequest?],
+    ListCuratedAutomationsResult
+  >(IPC_CHANNELS.automationsCuratedList, async (_event, request = {}) => {
+    await assertCanopyCloudCapability(AUTOMATION_CATALOG_CAPABILITY);
+    return listCuratedAutomations(request);
+  });
+
+  registerIpcHandler<[string], CuratedAutomationDetail>(
+    IPC_CHANNELS.automationsCuratedGet,
+    async (_event, key) => {
+      if (!isCuratedCatalogKey(key)) {
+        throw new Error('Invalid curated automation key.');
+      }
+      await assertCanopyCloudCapability(AUTOMATION_CATALOG_CAPABILITY);
+      return getCuratedAutomation(key);
+    },
+  );
+
+  registerIpcHandler<
+    [CreateSharedAutomationIpcRequest],
+    ShareOperationResult<SharedAutomationDetail>
+  >(IPC_CHANNELS.automationsSharedCreate, async (_event, request) => {
+    const { activityId, ...createRequest } = request;
+    validateId(activityId, 'automation id');
+    return toShareOperationResult(async () => {
+      await withShareStage('access', async () => {
+        await assertSharedAutomationsSupported();
+        if (resourceContextEnabled()) {
+          await service.assertActivityResourceContext(activityId);
+          const destination =
+            await assertResourceShareDestination(createRequest);
+          await assertInstalledResourceShare(
+            'automations',
+            activityId,
+            destination,
+            getSharedAutomation,
+          );
+        }
+      });
+      const detail = await createSharedAutomation(createRequest);
+      await writeRemoteMetadataFromDetail(activityId, detail);
+      return detail;
+    });
+  });
+
+  registerIpcHandler<
+    [UpdateSharedAutomationIpcRequest],
+    ShareOperationResult<SharedAutomationDetail>
+  >(IPC_CHANNELS.automationsSharedUpdate, async (_event, request) => {
+    const { activityId, ...updateRequest } = request;
+    validateId(activityId, 'automation id');
+    validateId(updateRequest.automationId, 'shared automation id');
+    return toShareOperationResult(async () => {
+      await withShareStage('access', assertSharedAutomationsSupported);
+      const detail = await updateSharedAutomation(updateRequest);
+      await writeRemoteMetadataFromDetail(activityId, detail);
+      return detail;
+    });
+  });
+
+  registerIpcHandler<[DeleteSharedAutomationIpcRequest], void>(
+    IPC_CHANNELS.automationsSharedDelete,
+    async (_event, request) => {
+      validateId(request.automationId, 'shared automation id');
+      await assertSharedAutomationsSupported();
+      await deleteSharedAutomation(request);
+      await service.clearActivityRemoteMetadataByRemoteId(request.automationId);
+    },
+  );
+  registerIpcHandler<[string], SharedAutomationPublicShareInfo>(
+    IPC_CHANNELS.automationsPublicSharePublish,
+    async (_event, automationId): Promise<SharedAutomationPublicShareInfo> => {
+      validateId(automationId, 'shared automation id');
+      await assertSharedAutomationsSupported();
+      return publishAutomationPublicShare(automationId);
+    },
+  );
+  registerIpcHandler<[string], void>(
+    IPC_CHANNELS.automationsPublicShareRevoke,
+    async (_event, automationId): Promise<void> => {
+      validateId(automationId, 'shared automation id');
+      await assertSharedAutomationsSupported();
+      await revokeAutomationPublicShare(automationId);
+    },
+  );
+  registerIpcHandler<
+    [AnalyzeAutomationCapabilityPackageRequest],
+    PipelinePackageAnalysisSummary
+  >(IPC_CHANNELS.automationsCapabilityPackageAnalyze, async (_event, request) =>
+    analyzeAutomationCapabilityPackage(request),
+  );
+  registerIpcHandler<[string], void>(
+    IPC_CHANNELS.automationsCapabilityPackageCancel,
+    (_event, analysisId) => {
+      validateId(analysisId, 'package analysis id');
+      cancelPackageAnalysis(analysisId);
+    },
+  );
+  registerIpcHandler<
+    [CommitAutomationCapabilityPackageRequest],
+    ShareOperationResult<CommitAutomationCapabilityPackageResponse>
+  >(IPC_CHANNELS.automationsCapabilityPackageCommit, (_event, request) =>
+    toShareOperationResult(async () => {
+      if ('localAutomationId' in request) {
+        validateId(request.localAutomationId, 'automation id');
+        if (resourceContextEnabled())
+          await service.assertActivityResourceContext(
+            request.localAutomationId,
+          );
+      }
+      return createPackagedAutomationCapabilityPackage(request, () =>
+        accessors.getMainWindow(),
+      );
+    }, 'prepare'),
+  );
+  registerIpcHandler<
+    [AutomationCapabilityPackageRequest],
+    PipelinePackageReadiness
+  >(
+    IPC_CHANNELS.automationsCapabilityPackageReadiness,
+    async (_event, request) => {
+      if (request.source === 'curated') {
+        await assertCanopyCloudCapability(AUTOMATION_CATALOG_CAPABILITY);
+      }
+      return getAutomationCapabilityPackageReadiness(request);
+    },
+  );
+  registerIpcHandler<[InstallAutomationCapabilityPackageRequest], void>(
+    IPC_CHANNELS.automationsCapabilityPackageInstall,
+    async (_event, request) => {
+      validateId(request.localAutomationId, 'automation id');
+      if (request.remove === true) {
+        await removeAutomationCapabilityPackageInstall(
+          request.localAutomationId,
+        );
+        return;
+      }
+      if (request.source === 'curated') {
+        await assertCanopyCloudCapability(AUTOMATION_CATALOG_CAPABILITY);
+      }
+      await installAutomationCapabilityPackage(request);
+    },
+  );
+  registerIpcHandler<
+    [VerifyAutomationSharedPipelinePinRequest],
+    PipelineShareInstallPin
+  >(IPC_CHANNELS.automationsSharedPipelinePinVerify, async (_event, request) =>
+    verifySharedPipelineAutomationInstallPin(
+      request.remoteId,
+      request.installPin,
+    ),
+  );
+  registerIpcHandler<
+    [ResolveAutomationSharedPipelinePinRequest],
+    ResolvedAutomationSharedPipelinePin
+  >(IPC_CHANNELS.automationsSharedPipelinePinResolve, async (_event, request) =>
+    getSharedPipelineAutomationInstallPin(request.remoteId),
+  );
+  registerIpcHandler<
+    [ApproveAutomationSharedPipelineReviewRequest],
+    AutomationMutationResponse
+  >(
+    IPC_CHANNELS.automationsSharedPipelineReviewApprove,
+    async (_event, request) => {
+      if (!isRecord(request) || typeof request.id !== 'string') {
+        return { ok: false, error: 'Automation id is required.' };
+      }
+      try {
+        validateId(request.id, 'automation id');
+      } catch (error) {
+        return { ok: false, error: errorMessage(error) };
+      }
+      if (request.runNow !== undefined && typeof request.runNow !== 'boolean') {
+        return { ok: false, error: 'runNow must be a boolean.' };
+      }
+      const pinError = validateAutomationAction({
+        type: 'worktree_pipeline',
+        workspaceId: 'review',
+        pipelineId: 'review',
+        pipelineSource: 'shared',
+        sharedPipeline: {
+          serverId: 'canopy-cloud',
+          remoteId: 'review',
+          installPin: request.installPin,
+        },
+      });
+      if (pinError) return { ok: false, error: pinError };
+      return service.approveSharedPipelineReview(request);
+    },
+  );
+}

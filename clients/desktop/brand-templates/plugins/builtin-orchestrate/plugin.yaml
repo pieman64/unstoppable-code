@@ -1,0 +1,9 @@
+name: builtin-orchestrate
+version: 3.0.0
+description: Generic orchestration toolkit for {{BRAND_DISPLAY_NAME}} — create worktrees, hand planned work to briefed agents in other workspaces, and review changes through the bundled multi-provider pipeline.
+author:
+  name: '{{BRAND_DISPLAY_NAME}}'
+category: development
+targets:
+  codex:
+    category: Development

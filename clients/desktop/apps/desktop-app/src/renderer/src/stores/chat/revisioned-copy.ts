@@ -1,0 +1,32 @@
+// User-facing copy for the revisioned chat-state recovery states (frontend
+// plan, "Required UI Behavior"). Central so tests, the store, and the UI all
+// render the exact approved strings.
+
+/** Toast shown while a delta gap forces a one-shot snapshot refresh. */
+export const CHAT_STATE_REFRESHING_TOAST = 'Chat state changed. Refreshing…';
+
+/** Inline error heading when the gap-recovery refresh fails. */
+export const CHAT_STATE_REFRESH_ERROR_HEADING =
+  'Chat state couldn’t be refreshed';
+
+/** Inline error helper below the heading. */
+export const CHAT_STATE_REFRESH_ERROR_HELPER =
+  'Your last loaded transcript is still shown. Retry to load the latest state.';
+
+/** Inline error action label. */
+export const CHAT_STATE_REFRESH_RETRY_LABEL = 'Retry';
+
+/**
+ * Shown when a destructive command was rejected as stale (conflict). The
+ * notice leads with `CHAT_STATE_CONFLICT_TITLE` and this message follows it
+ * on the same line.
+ */
+export const CHAT_STATE_CONFLICT_TITLE = 'Chat changed elsewhere';
+export const CHAT_STATE_CONFLICT_NOTICE = 'Your view has been refreshed.';
+
+/**
+ * Shown when a non-conflict command failure rolled back one overlay. Same
+ * title-then-message shape as the conflict notice.
+ */
+export const CHAT_STATE_COMMAND_FAILED_TITLE = 'Change not saved';
+export const CHAT_STATE_COMMAND_FAILED_NOTICE = 'Try again.';

@@ -1,0 +1,34 @@
+name: Create Worktree
+description: Create a workspace worktree and output its id for later worktree-scoped steps.
+scope: [global, directory, worktree]
+inputs:
+  workspace_id:
+    description: Workspace id where the worktree should be created.
+    required: true
+  branch:
+    description: Optional branch name for the new worktree. Defaults to a generated worktree id.
+    required: false
+  base_branch:
+    description: Optional branch, tag, or commit to use as the git worktree start point.
+    required: false
+  repair:
+    description: For source-backed multi-repo workspaces, repair workspace root files when creation requires it.
+    required: false
+    default: false
+  restore_claude_md:
+    description: For source-backed multi-repo workspace repair, restore CLAUDE.md from the workspace source repo.
+    required: false
+outputs:
+  worktree_id:
+    description: Id of the created worktree.
+  workspace_id:
+    description: Workspace id where the worktree was created.
+  path:
+    description: Absolute path to the created worktree.
+  branch_name:
+    description: Branch name used for the created worktree.
+  created_at:
+    description: Creation timestamp recorded for the worktree.
+runs:
+  using: node
+  main: index.js

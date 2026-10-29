@@ -1,0 +1,25 @@
+{
+  "name": "@canopy/app-core",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Platform-agnostic data-access interface (CanopyClient), capability flags, domain-event contract, navigation abstraction, and the neutral session view-model shared by the desktop and web feature UI.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./client": "./src/client/index.ts",
+    "./cost": "./src/cost/index.ts",
+    "./events": "./src/events/index.ts",
+    "./gating": "./src/gating/index.ts",
+    "./ledger": "./src/ledger/index.ts",
+    "./navigation": "./src/navigation/index.ts",
+    "./view-model": "./src/view-model/index.ts",
+    "./release-notes": "./src/release-notes/index.ts",
+    "./settings": "./src/settings/index.ts"
+  },
+  "dependencies": {
+    "@canopy/protocol": "workspace:*"
+  }
+}

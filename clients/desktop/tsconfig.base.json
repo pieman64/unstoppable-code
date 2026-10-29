@@ -1,0 +1,134 @@
+{
+  "compilerOptions": {
+    "lib": [
+      "ES2020",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "noUnusedLocals": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "resolveJsonModule": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": [
+        "apps/desktop-app/src/renderer/src/*"
+      ],
+      "@canopy/protocol": [
+        "packages/protocol/src/index.ts"
+      ],
+      "@canopy/protocol/*": [
+        "packages/protocol/src/*"
+      ],
+      "@canopy/artifact-crypto": [
+        "packages/artifact-crypto/src/index.ts"
+      ],
+      "@canopy/artifact-crypto/*": [
+        "packages/artifact-crypto/src/*"
+      ],
+      "@canopy/plugin-interop": [
+        "packages/plugin-interop/src/index.ts"
+      ],
+      "@canopy/plugin-interop/*": [
+        "packages/plugin-interop/src/*"
+      ],
+      "@canopy/agent-actions": [
+        "packages/agent-actions/src/index.ts"
+      ],
+      "@canopy/agent-actions/*": [
+        "packages/agent-actions/src/*"
+      ],
+      "@canopy/agent-transcript": [
+        "packages/agent-transcript/src/index.ts"
+      ],
+      "@canopy/agent-transcript/*": [
+        "packages/agent-transcript/src/*"
+      ],
+      "@canopy/app-core": [
+        "packages/app-core/src/index.ts"
+      ],
+      "@canopy/app-core/*": [
+        "packages/app-core/src/*"
+      ],
+      "@canopy/app-state": [
+        "packages/app-state/src/index.ts"
+      ],
+      "@canopy/app-state/*": [
+        "packages/app-state/src/*"
+      ],
+      "@canopy/ui-app": [
+        "packages/ui-app/src/index.ts"
+      ],
+      "@canopy/ui-app/*": [
+        "packages/ui-app/src/*"
+      ],
+      "@canopy/core-client": [
+        "packages/core-client/src/index.ts"
+      ],
+      "@canopy/core-client/*": [
+        "packages/core-client/src/*"
+      ],
+      "@canopy/core-runtime": [
+        "packages/core-runtime/src/index.ts"
+      ],
+      "@canopy/core-runtime/*": [
+        "packages/core-runtime/src/*"
+      ],
+      "@canopy/core-platform": [
+        "packages/core-platform/src/index.ts"
+      ],
+      "@canopy/core-platform/*": [
+        "packages/core-platform/src/*"
+      ],
+      "@canopy/core-transport": [
+        "packages/core-transport/src/index.ts"
+      ],
+      "@canopy/core-transport/*": [
+        "packages/core-transport/src/*"
+      ],
+      "@canopy/desktop-shared": [
+        "packages/desktop-shared/src/index.ts"
+      ],
+      "@canopy/desktop-shared/*": [
+        "packages/desktop-shared/src/*"
+      ],
+      "@canopy/desktop-instrumentation": [
+        "packages/desktop-instrumentation/src/index.ts"
+      ],
+      "@canopy/desktop-instrumentation/*": [
+        "packages/desktop-instrumentation/src/*"
+      ],
+      "@canopy/ui-shared": [
+        "packages/ui-shared/src/index.ts"
+      ],
+      "@canopy/ui-shared/*": [
+        "packages/ui-shared/src/*"
+      ],
+      "@canopy/ui-rich": [
+        "packages/ui-rich/src/index.ts"
+      ],
+      "@canopy/ui-rich/*": [
+        "packages/ui-rich/src/*"
+      ],
+      "@canopy/brand/current": [
+        ".cache/brand/current/desktop-brand.ts"
+      ],
+      "@canopy/pipeline-interop": [
+        "packages/pipeline-interop/src/index.ts"
+      ],
+      "@canopy/pipeline-interop/*": [
+        "packages/pipeline-interop/src/*"
+      ],
+      "@canopy/mcp-oauth-core": [
+        "packages/mcp-oauth-core/src/index.ts"
+      ]
+    }
+  }
+}

@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      /* Reserve the plot's height so the page measures right before it draws. */
+      #plot {
+        min-height: 300px;
+      }
+      /* Plot draws SVG, so theme variables work directly and follow theme changes. */
+      #plot svg {
+        display: block;
+        background: transparent;
+        color: var(--fg-secondary);
+        font-family: var(--font-sans);
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="plot"
+      role="img"
+      aria-label="Response time distribution by region"
+    ></div>
+    <script
+      src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"
+      integrity="sha384-CjloA8y00+1SDAUkjs099PVfnY2KmDC2BZnws9kh8D/lX1s46w6EPhpXdqMfjK6i"
+      crossorigin="anonymous"
+    ></script>
+    <script
+      src="https://cdn.jsdelivr.net/npm/@observablehq/plot@0.6.17/dist/plot.umd.min.js"
+      integrity="sha384-JUpn2GgRr0gxU0xOBd8D8P634jhRCwobtG8G2MMEkX1RnGJ7/FJNnuukpfT+H2w1"
+      crossorigin="anonymous"
+    ></script>
+    <script>
+      // Inline the data. A fixed seed keeps this example's numbers stable.
+      const random = d3.randomLcg(7);
+      const regions = [
+        { region: 'us-east', mean: 120, spread: 22 },
+        { region: 'eu-west', mean: 150, spread: 30 },
+        { region: 'ap-south', mean: 205, spread: 45 },
+      ];
+      const samples = regions.flatMap(({ region, mean, spread }) =>
+        Array.from(
+          { length: 400 },
+          d3.randomNormal.source(random)(mean, spread),
+        ).map((ms) => ({ region, ms })),
+      );
+
+      // Small multiples: one panel per region on a shared scale, instead of
+      // three overlapping colors.
+      function render() {
+        const plot = Plot.plot({
+          width: document.body.clientWidth,
+          height: 300,
+          marginLeft: 36,
+          marginRight: 72,
+          x: { label: 'Response time (ms)', nice: true },
+          y: { label: null, ticks: 2, grid: true },
+          fy: { label: null, domain: regions.map((r) => r.region) },
+          marks: [
+            Plot.rectY(
+              samples,
+              Plot.binX(
+                { y: 'count' },
+                {
+                  x: 'ms',
+                  fy: 'region',
+                  fill: 'var(--categorical-1)',
+                  inset: 0.5,
+                  thresholds: 30,
+                },
+              ),
+            ),
+            // Mark each region's median and print it, so no value needs hover.
+            Plot.ruleX(
+              samples,
+              Plot.groupZ(
+                { x: 'median' },
+                {
+                  x: 'ms',
+                  fy: 'region',
+                  stroke: 'var(--fg-primary)',
+                  strokeWidth: 1.5,
+                },
+              ),
+            ),
+            Plot.text(
+              samples,
+              Plot.groupZ(
+                {
+                  x: 'median',
+                  text: (values) =>
+                    `median ${Math.round(d3.median(values))} ms`,
+                },
+                {
+                  x: 'ms',
+                  fy: 'region',
+                  text: 'ms',
+                  frameAnchor: 'top',
+                  dx: 6,
+                  dy: 2,
+                  textAnchor: 'start',
+                  fill: 'var(--fg-primary)',
+                },
+              ),
+            ),
+            Plot.ruleY([0], { stroke: 'var(--line-primary)' }),
+          ],
+        });
+        document.getElementById('plot').replaceChildren(plot);
+      }
+
+      render();
+      // The reply column can change width; redraw when it does.
+      let width = document.body.clientWidth;
+      new ResizeObserver(() => {
+        if (document.body.clientWidth === width) return;
+        width = document.body.clientWidth;
+        render();
+      }).observe(document.body);
+    </script>
+  </body>
+</html>

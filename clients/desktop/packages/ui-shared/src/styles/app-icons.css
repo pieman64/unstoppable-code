@@ -1,0 +1,95 @@
+@layer utilities {
+  /* Lucide owns its two app sizes. These utility-layer important rules take
+ * precedence over legacy host and menu utility sizes, so every host gets 14px compact
+ * and 20px regular artwork. Explicit numeric size props normalize in the
+ * shared SVG root. Brand/provider marks do not carry this family attribute. */
+  :root svg[data-icon-family='lucide'] {
+    flex-shrink: 0;
+    stroke-width: 2px;
+  }
+
+  /* `data-icon-size='exact'` (the `exactSize` prop) keeps a glyph at its
+ * requested size for a surface that sizes every glyph to one box. */
+  :root svg[data-icon-family='lucide']:not([data-icon-size='exact']) {
+    width: 14px !important;
+    height: 14px !important;
+  }
+
+  /* Compatibility with existing regular-size utility callers. Compact callers
+ * (including h-4/w-4 and size-4) use the 14px default above. */
+  :root
+    svg[data-icon-family='lucide']:not([data-icon-size='exact']):is(
+      [width='20px'],
+      .size-4\.5,
+      .size-5,
+      .size-6,
+      .size-7,
+      .size-8,
+      .size-9,
+      .size-10,
+      .size-12,
+      .size-14,
+      .size-16,
+      .size-20,
+      .size-24,
+      .h-4\.5,
+      .h-5,
+      .h-6,
+      .h-7,
+      .h-8,
+      .h-9,
+      .h-10,
+      .h-12,
+      .h-16,
+      .w-4\.5,
+      .w-5,
+      .w-6,
+      .w-7,
+      .w-8,
+      .w-9,
+      .w-10,
+      .w-12,
+      .w-16
+    ) {
+    width: 20px !important;
+    height: 20px !important;
+  }
+
+  :root
+    svg[data-icon-family='lucide']:not([data-icon-size='exact']):is(
+      .size-3,
+      .size-3\.5,
+      .size-4,
+      .h-3,
+      .h-3\.5,
+      .h-4,
+      .w-3,
+      .w-3\.5,
+      .w-4
+    ) {
+    width: 14px !important;
+    height: 14px !important;
+  }
+
+  /* Menu rows: every catalog glyph in a menu row's icon slot draws at the
+ * compact size, as the sidebar worktree menu's do, even when a caller asks
+ * for the regular size. The slot class makes it more specific than the size
+ * rules above. */
+  :root
+    .canopy-dropdown-menu-icon
+    > svg[data-icon-family='lucide']:not([data-icon-size='exact']):not(
+      [hidden]
+    ) {
+    width: 14px !important;
+    height: 14px !important;
+  }
+
+  /* Brand and provider marks in a menu row (GitHub, Claude, Codex) take the
+ * same compact box, so a logo row reads at the size of its neighbours. */
+  :root .canopy-dropdown-menu-icon > svg:not([data-icon-family]) {
+    width: 14px !important;
+    height: 14px !important;
+  }
+
+  /* Keep this in the same layer as Tailwind important menu descendant utilities. */
+}

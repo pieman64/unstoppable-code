@@ -1,0 +1,851 @@
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type JSX,
+  type ReactNode,
+  type RefObject,
+} from 'react';
+import {
+  THINKING_LEVEL_LABELS,
+  advanceThinkingLevel,
+  isThinkingLevel,
+  normalizeThinkingForUi,
+  thinkingDotCount,
+  type ThinkingLevel,
+  type ThinkingUiLevel,
+} from '@canopy/protocol/thinking';
+import {
+  CheckIcon,
+  FastModeIcon,
+  FastModeOnIcon,
+  ThinkingIcon,
+} from '../icons/AppIcons';
+import { CAPSULE_TOUCH_FLOOR_CLASS } from './ChatComposerToolbar';
+import { DropdownMenuItem } from './DropdownMenu';
+import { COMPOSER_ROW_MENU_GAP, FloatingMenu } from './FloatingMenu';
+import { FoldReveal } from './FoldReveal';
+import { PickerTrigger, PickerTriggerChevron } from './PickerMenu';
+import { IconToggleButton } from './IconToggleButton';
+import { Tooltip } from './Tooltip';
+import { ControlSelect } from './ControlSelect';
+
+export interface ThinkingLevelControlProps {
+  value: ThinkingLevel | undefined;
+  supportedLevels: readonly ThinkingLevel[];
+  onChange: (next: ThinkingLevel | undefined) => void;
+  /**
+   * `select` variant only: fill the parent's width, so the thinking dropdown
+   * lines up with the ones in neighboring rows.
+   */
+  selectFill?: boolean;
+  /** Match the enclosing Settings dropdowns without changing composer controls. */
+  selectShape?: 'rounded' | 'capsule';
+  variant?: 'cycle' | 'capsule' | 'select';
+  /**
+   * Hide the effort label while keeping the icon, dots, and capsule geometry.
+   * Space-constrained composer rails pass this as they narrow.
+   */
+  compact?: boolean;
+  disabled?: boolean;
+  allowWorkspaceDefault?: boolean;
+  testId?: string;
+  /** Override the cycle/capsule button's default accessible label. */
+  ariaLabel?: string;
+  /** Preserve canonical `low` for editor surfaces that historically exposed it. */
+  includeLow?: boolean;
+}
+
+interface ThinkingLevelProviderHintProps {
+  providerHint: string | undefined;
+  children: ReactNode;
+}
+
+const ThinkingLevelProviderHintContext = createContext<string | undefined>(
+  undefined,
+);
+
+/**
+ * Supplies the host's provider discriminator without widening the shared
+ * control's model-only props contract. The legacy/default branch uses the
+ * Claude dot table; Codex hosts pass `providerHint="codex"`.
+ */
+export function ThinkingLevelProviderHint({
+  providerHint,
+  children,
+}: ThinkingLevelProviderHintProps): JSX.Element {
+  return (
+    <ThinkingLevelProviderHintContext.Provider value={providerHint}>
+      {children}
+    </ThinkingLevelProviderHintContext.Provider>
+  );
+}
+
+const WORKSPACE_DEFAULT_LABEL = 'Default';
+const TOOLTIP_LABEL = 'Effort';
+const FAST_MODE_DESCRIPTION = 'Faster replies, 2x usage';
+const ULTRA_FAST_DESCRIPTION = 'Fastest replies, more usage';
+
+/**
+ * Escalating effort ramp: green (`medium`) -> blue (`high`) -> amber
+ * (`xhigh`) -> red (`max`) -> purple (`ultra`). `ApprovalModePicker` reuses
+ * the first three stops so the two composer controls read as one system.
+ */
+function getThinkingIconColorClass(level: ThinkingLevel | undefined): string {
+  switch (level) {
+    case 'medium':
+      return 'fg-success';
+    case 'high':
+      return 'fg-blue';
+    case 'xhigh':
+      return 'fg-warning';
+    case 'max':
+      return 'fg-destructive';
+    case 'ultra':
+      return 'fg-purple';
+    case 'low':
+    case 'off':
+    case undefined:
+      return 'fg-secondary';
+  }
+  return 'fg-secondary';
+}
+
+interface ThinkingLevelIconProps {
+  value: ThinkingLevel | undefined;
+}
+
+/** The shared effort glyph and its current-level color. */
+export function ThinkingLevelIcon({
+  value,
+}: ThinkingLevelIconProps): JSX.Element {
+  return (
+    <ThinkingIcon
+      width={16}
+      height={16}
+      className={`shrink-0 ${getThinkingIconColorClass(value)}`}
+      active={value !== undefined && value !== 'off'}
+    />
+  );
+}
+
+function getLabel(
+  level: ThinkingLevel | undefined,
+  includeLow: boolean,
+): string {
+  return level === undefined
+    ? WORKSPACE_DEFAULT_LABEL
+    : level === 'low' && includeLow
+      ? 'Low'
+      : THINKING_LEVEL_LABELS[normalizeThinkingForUi(level)];
+}
+
+function getSupportedUiLevels(
+  supportedLevels: readonly ThinkingLevel[],
+  includeLow: boolean,
+): readonly ThinkingLevel[] {
+  return includeLow
+    ? supportedLevels
+    : supportedLevels.filter(
+        (level): level is ThinkingUiLevel => level !== 'low',
+      );
+}
+
+function advanceControlLevel(
+  value: ThinkingLevel,
+  supportedLevels: readonly ThinkingLevel[],
+  includeLow: boolean,
+): ThinkingLevel {
+  if (!includeLow) return advanceThinkingLevel(value, supportedLevels);
+  const index = supportedLevels.indexOf(value);
+  if (supportedLevels.length === 0) return 'off';
+  if (index < 0) return supportedLevels[0] ?? 'off';
+  return supportedLevels[(index + 1) % supportedLevels.length] ?? 'off';
+}
+
+function ThinkingDots({
+  level,
+  supportedLevels,
+  providerHint,
+  includeLow,
+}: {
+  level: ThinkingLevel;
+  supportedLevels: readonly ThinkingLevel[];
+  providerHint: string | undefined;
+  includeLow: boolean;
+}): JSX.Element {
+  const active =
+    includeLow && level === 'low'
+      ? 0
+      : thinkingDotCount(level, supportedLevels, providerHint);
+
+  return (
+    <span
+      className="flex shrink-0 flex-col items-center gap-0.5 fg-secondary"
+      aria-hidden="true"
+    >
+      {[3, 2, 1].map((dot) => (
+        <span
+          key={dot}
+          className={`block h-0.5 w-0.5 rounded-full ${
+            dot <= active ? 'bg-current' : 'bg-current opacity-20'
+          }`}
+        />
+      ))}
+    </span>
+  );
+}
+
+export function ThinkingLevelControl(
+  props: ThinkingLevelControlProps,
+): JSX.Element {
+  const {
+    value,
+    supportedLevels,
+    variant = 'cycle',
+    selectFill = false,
+    selectShape = 'rounded',
+    compact = false,
+    disabled = false,
+    allowWorkspaceDefault = false,
+    includeLow = false,
+    testId,
+    ariaLabel,
+    onChange,
+  } = props;
+  const providerHint = useContext(ThinkingLevelProviderHintContext);
+  const supportedUiLevels = getSupportedUiLevels(supportedLevels, includeLow);
+  const normalizedValue =
+    value === undefined || (value === 'low' && includeLow)
+      ? value
+      : normalizeThinkingForUi(value);
+  const labelText = getLabel(value, includeLow);
+  const valueRef = useRef(value);
+  useEffect(() => {
+    valueRef.current = value;
+  }, [value]);
+
+  const handleAdvance = useCallback((): void => {
+    if (disabled) return;
+    const firstLevel = supportedUiLevels[0];
+    const current = valueRef.current;
+    if (current === undefined) {
+      valueRef.current = firstLevel;
+      onChange(firstLevel);
+      return;
+    }
+
+    const next = advanceControlLevel(current, supportedUiLevels, includeLow);
+    if (
+      allowWorkspaceDefault &&
+      firstLevel !== undefined &&
+      next === firstLevel
+    ) {
+      valueRef.current = undefined;
+      onChange(undefined);
+      return;
+    }
+    valueRef.current = next;
+    onChange(next);
+  }, [
+    allowWorkspaceDefault,
+    disabled,
+    includeLow,
+    onChange,
+    supportedUiLevels,
+  ]);
+
+  if (variant === 'select') {
+    return (
+      <ControlSelect
+        fill={selectFill}
+        shape={selectShape}
+        value={normalizedValue ?? ''}
+        disabled={disabled}
+        onChange={(event): void => {
+          const next = event.target.value;
+          if (allowWorkspaceDefault && next === '') {
+            onChange(undefined);
+          } else if (isThinkingLevel(next)) {
+            onChange(next);
+          }
+        }}
+        aria-label="Thinking level"
+        data-testid={testId}
+      >
+        {allowWorkspaceDefault && (
+          <option value="">{WORKSPACE_DEFAULT_LABEL}</option>
+        )}
+        {supportedUiLevels.map((level) => (
+          <option key={level} value={level}>
+            {level === 'low' ? 'Low' : THINKING_LEVEL_LABELS[level]}
+          </option>
+        ))}
+      </ControlSelect>
+    );
+  }
+
+  const isWorkspaceDefault = value === undefined;
+  const isActive = normalizedValue !== undefined && normalizedValue !== 'off';
+  // Off shows only the resting glyph; compact mode hides the effort label but
+  // preserves the same horizontal padding and target geometry as the other
+  // capsule controls. Whenever the label is hidden the tooltip names the
+  // current effort so the state stays legible.
+  const labelVisible = !compact && (isActive || isWorkspaceDefault);
+  const capsule = variant === 'capsule';
+
+  return (
+    <Tooltip
+      label={labelVisible ? TOOLTIP_LABEL : `${TOOLTIP_LABEL}: ${labelText}`}
+      delay="long"
+    >
+      <button
+        type="button"
+        onClick={handleAdvance}
+        disabled={disabled}
+        className={`flex shrink-0 items-center transition hover:bg-subtle disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent ${
+          capsule
+            ? `h-8 gap-1.5 rounded-full px-2.5 text-xs ${CAPSULE_TOUCH_FLOOR_CLASS}`
+            : 'gap-1 rounded-md px-1.5 py-0.5 text-2xs'
+        } ${isActive ? 'fg-primary' : 'fg-secondary hover:fg-primary'}`}
+        aria-label={ariaLabel ?? `Thinking: ${labelText}; click to cycle`}
+        data-testid={testId}
+        data-thinking-level={normalizedValue ?? 'default'}
+      >
+        <ThinkingLevelIcon value={value} />
+        {isActive && normalizedValue !== undefined && (
+          <ThinkingDots
+            level={normalizedValue}
+            supportedLevels={supportedLevels}
+            providerHint={providerHint}
+            includeLow={includeLow}
+          />
+        )}
+        {/* Folds with the row's compact switch and the off level; the
+            negative margin takes back the button's gap while folded. */}
+        <FoldReveal
+          open={labelVisible}
+          className={capsule ? '-ml-1.5' : '-ml-1'}
+        >
+          <span className={capsule ? 'pl-1.5' : 'pl-1'}>{labelText}</span>
+        </FoldReveal>
+      </button>
+    </Tooltip>
+  );
+}
+
+export interface ThinkingLevelPickerProps {
+  value: ThinkingLevel | undefined;
+  supportedLevels: readonly ThinkingLevel[];
+  onChange: (next: ThinkingLevel | undefined) => void;
+  disabled?: boolean;
+  allowWorkspaceDefault?: boolean;
+  /** Preserve canonical `low` for surfaces that historically exposed it. */
+  includeLow?: boolean;
+  /**
+   * Lines the menu's right edge up with this element (the composer box), as
+   * the permission and model menus do, while it still opens above the trigger.
+   */
+  menuAlignRef?: RefObject<HTMLElement | null>;
+  testId?: string;
+}
+
+/**
+ * Effort as a dropdown: the level's name and a chevron on the trigger, and
+ * the model's levels in a menu with a check on the current one. The
+ * alternative to the cycling capsule, for rows that read as a set of pickers.
+ */
+export function ThinkingLevelPicker({
+  value,
+  supportedLevels,
+  onChange,
+  disabled = false,
+  allowWorkspaceDefault = false,
+  includeLow = false,
+  menuAlignRef,
+  testId,
+}: ThinkingLevelPickerProps): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuId = useId();
+  const levels = getSupportedUiLevels(supportedLevels, includeLow);
+  const current =
+    value === undefined || (value === 'low' && includeLow)
+      ? value
+      : normalizeThinkingForUi(value);
+  const options: Array<ThinkingLevel | undefined> = allowWorkspaceDefault
+    ? [undefined, ...levels]
+    : [...levels];
+
+  useEffect(() => {
+    if (disabled) setOpen(false);
+  }, [disabled]);
+
+  return (
+    <div className="relative shrink-0">
+      <Tooltip label={TOOLTIP_LABEL} delay="long" suppressed={open}>
+        <PickerTrigger
+          ref={triggerRef}
+          data-testid={testId}
+          textLead
+          disabled={disabled}
+          onClick={(): void => setOpen((previous) => !previous)}
+          className="shrink-0"
+          aria-label={`Effort, current level ${getLabel(value, includeLow)}`}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          aria-controls={open ? menuId : undefined}
+          data-thinking-level={current ?? 'default'}
+        >
+          <span className="fg-primary">{getLabel(value, includeLow)}</span>
+          <PickerTriggerChevron open={open} />
+        </PickerTrigger>
+      </Tooltip>
+      <FloatingMenu
+        id={menuId}
+        open={open}
+        onOpenChange={setOpen}
+        anchorRef={triggerRef}
+        {...(menuAlignRef
+          ? { alignRef: menuAlignRef, gap: COMPOSER_ROW_MENU_GAP }
+          : {})}
+        placement="top-right"
+        aria-label="Effort options"
+        data-testid={testId ? `${testId}-menu` : undefined}
+        className="w-44"
+      >
+        {options.map((option) => {
+          const selected = option === current;
+          return (
+            <DropdownMenuItem
+              key={option ?? 'default'}
+              role="menuitemradio"
+              aria-checked={selected}
+              data-testid={
+                testId ? `${testId}-option-${option ?? 'default'}` : undefined
+              }
+              onMouseDown={(event): void => {
+                event.preventDefault();
+              }}
+              onClick={(): void => {
+                onChange(option);
+                setOpen(false);
+              }}
+            >
+              <span className="min-w-0 flex-1 truncate">
+                {getLabel(option, includeLow)}
+              </span>
+              {selected && (
+                <span
+                  aria-hidden="true"
+                  className="ml-auto inline-flex h-4 w-4 shrink-0 items-center justify-center"
+                >
+                  <CheckIcon width={16} height={16} />
+                </span>
+              )}
+            </DropdownMenuItem>
+          );
+        })}
+      </FloatingMenu>
+    </div>
+  );
+}
+
+/**
+ * The thumb stands proud of the track (no inset), and its stops run from
+ * edge to edge.
+ */
+const EFFORT_TRACK_INSET_PX = 0;
+
+/** Slider geometry: a 28px thumb over a 20px track. */
+const EFFORT_SLIDER_GEOMETRY = {
+  thumbPx: 28,
+  box: 'h-7',
+  track: 'h-5',
+  knob: 'h-7 w-7',
+} as const;
+
+/** Where stop `index` of `count` puts the thumb's left edge. */
+function effortStopLeft(index: number, count: number, thumbPx: number): string {
+  const fraction = count <= 1 ? 0 : index / (count - 1);
+  return `calc(${EFFORT_TRACK_INSET_PX}px + (100% - ${
+    EFFORT_TRACK_INSET_PX * 2 + thumbPx
+  }px) * ${fraction})`;
+}
+
+/**
+ * Faster-to-smarter slider over a model's effort levels: one stop per level,
+ * a filled track up to the thumb, drag or click to pick, arrow keys to step.
+ */
+function EffortSlider({
+  levels,
+  index,
+  label,
+  disabled,
+  onSelect,
+  testId,
+}: {
+  levels: readonly ThinkingLevel[];
+  index: number;
+  label: string;
+  disabled: boolean;
+  /**
+   * `commit` is false while a drag is still moving (a preview) and true once
+   * it lands: on release, or for a key press.
+   */
+  onSelect: (index: number, commit: boolean) => void;
+  testId?: string;
+}): JSX.Element {
+  const geometry = EFFORT_SLIDER_GEOMETRY;
+  const thumbPx = geometry.thumbPx;
+  const trackRef = useRef<HTMLDivElement>(null);
+  const dragIndexRef = useRef<number | null>(null);
+  const count = levels.length;
+  const clampIndex = (next: number): number =>
+    Math.min(count - 1, Math.max(0, next));
+  const indexAt = (clientX: number): number => {
+    const track = trackRef.current;
+    if (!track || count <= 1) return 0;
+    const rect = track.getBoundingClientRect();
+    const usable = rect.width - EFFORT_TRACK_INSET_PX * 2 - thumbPx;
+    const offset = clientX - rect.left - EFFORT_TRACK_INSET_PX - thumbPx / 2;
+    return clampIndex(Math.round((offset / usable) * (count - 1)));
+  };
+  const thumbLeft = effortStopLeft(Math.max(0, index), count, thumbPx);
+  return (
+    <div
+      ref={trackRef}
+      role="slider"
+      tabIndex={disabled ? -1 : 0}
+      aria-label="Effort"
+      aria-valuemin={0}
+      aria-valuemax={Math.max(0, count - 1)}
+      aria-valuenow={Math.max(0, index)}
+      aria-valuetext={label}
+      aria-disabled={disabled || undefined}
+      data-testid={testId}
+      className={`focus-ring relative ${geometry.box} w-full cursor-pointer touch-none rounded-full aria-disabled:cursor-not-allowed aria-disabled:opacity-40`}
+      onPointerDown={(event): void => {
+        if (disabled) return;
+        event.currentTarget.setPointerCapture(event.pointerId);
+        dragIndexRef.current = indexAt(event.clientX);
+        onSelect(dragIndexRef.current, false);
+      }}
+      onPointerMove={(event): void => {
+        if (disabled) return;
+        if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+        dragIndexRef.current = indexAt(event.clientX);
+        onSelect(dragIndexRef.current, false);
+      }}
+      // The drag lands where the pointer lets go.
+      onPointerUp={(): void => {
+        const landed = dragIndexRef.current;
+        dragIndexRef.current = null;
+        if (landed !== null) onSelect(landed, true);
+      }}
+      onPointerCancel={(): void => {
+        const landed = dragIndexRef.current;
+        dragIndexRef.current = null;
+        if (landed !== null) onSelect(landed, true);
+      }}
+      onKeyDown={(event): void => {
+        if (disabled) return;
+        const step =
+          event.key === 'ArrowRight' || event.key === 'ArrowUp'
+            ? 1
+            : event.key === 'ArrowLeft' || event.key === 'ArrowDown'
+              ? -1
+              : 0;
+        if (step !== 0) {
+          event.preventDefault();
+          onSelect(clampIndex(index + step), true);
+        } else if (event.key === 'Home' || event.key === 'End') {
+          event.preventDefault();
+          onSelect(event.key === 'Home' ? 0 : count - 1, true);
+        }
+      }}
+    >
+      <span
+        aria-hidden="true"
+        className={`absolute inset-x-0 top-1/2 ${geometry.track} -translate-y-1/2 rounded-full bg-muted`}
+      />
+      {/* Filled up to the thumb's middle. */}
+      <span
+        aria-hidden="true"
+        className={`absolute left-0 top-1/2 ${geometry.track} -translate-y-1/2 rounded-full bg-accent transition-[width] duration-150 ease-out motion-reduce:transition-none`}
+        style={{
+          width: `calc(${thumbLeft} + ${thumbPx / 2}px)`,
+        }}
+      />
+      {levels.map((level, stop) => (
+        <span
+          key={level}
+          aria-hidden="true"
+          className={`absolute top-1/2 h-0.5 w-0.5 -translate-x-1/2 -translate-y-1/2 rounded-full ${
+            stop <= index ? 'bg-fg-emphasis/30' : 'bg-fg-tertiary/60'
+          }`}
+          style={{
+            left: `calc(${effortStopLeft(stop, count, thumbPx)} + ${thumbPx / 2}px)`,
+          }}
+        />
+      ))}
+      <span
+        aria-hidden="true"
+        // The accent's own ink: light on the blue fill in both themes.
+        className={`absolute top-0 ${geometry.knob} rounded-full bg-fg-emphasis shadow-lg transition-[left] duration-150 ease-out motion-reduce:transition-none`}
+        style={{ left: thumbLeft }}
+      />
+    </div>
+  );
+}
+
+export interface ThinkingLevelPanelPickerProps {
+  value: ThinkingLevel | undefined;
+  supportedLevels: readonly ThinkingLevel[];
+  onChange: (next: ThinkingLevel | undefined) => void;
+  disabled?: boolean;
+  /** Preserve canonical `low` for surfaces that historically exposed it. */
+  includeLow?: boolean;
+  /**
+   * The chat's fast mode, when its model offers it: the panel carries its
+   * switch, and the trigger leads with the bolt while it is on. `ultra` marks
+   * the on state as Ultra fast, which turns the bolt the special purple; the
+   * host owns the cycle, so `onToggle` selects whichever speed comes next.
+   */
+  fastMode?: {
+    on: boolean;
+    ultra?: boolean;
+    disabled?: boolean;
+    onToggle: () => void;
+  };
+  /** Lines the panel's right edge up with this element (the composer box). */
+  menuAlignRef?: RefObject<HTMLElement | null>;
+  /**
+   * Which edge the panel lines up with, of `menuAlignRef` or else of the
+   * trigger itself; `right` by default.
+   */
+  menuAlignEdge?: 'left' | 'right';
+  /** Horizontal shift of the panel, in pixels (negative is left). */
+  menuAlignOffset?: number;
+  /**
+   * Where the scale starts: `off` (thinking off, the composer's usual
+   * floor) or `low` (thinking always on; Low replaces Off).
+   */
+  lowestLevel?: 'off' | 'low';
+  /**
+   * Lets the trigger shrink with its row, truncating the level's name,
+   * instead of holding its full width.
+   */
+  allowTriggerShrink?: boolean;
+  /** Leaves the trigger's chevron off: the level's name alone. */
+  hideTriggerChevron?: boolean;
+  testId?: string;
+}
+
+/**
+ * Effort as a panel: the trigger names the level, and opens a panel headed by
+ * the level, with fast mode as a toggle in its top-right corner, over a slider
+ * across the model's levels.
+ */
+export function ThinkingLevelPanelPicker({
+  value,
+  supportedLevels,
+  onChange,
+  disabled = false,
+  includeLow = false,
+  fastMode,
+  menuAlignRef,
+  lowestLevel = 'off',
+  menuAlignEdge = 'right',
+  menuAlignOffset,
+  allowTriggerShrink = false,
+  hideTriggerChevron = false,
+  testId,
+}: ThinkingLevelPanelPickerProps): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelId = useId();
+  // Starting at Low keeps the model's Low and drops Off.
+  const lowFloor = lowestLevel === 'low';
+  const keepsLow = includeLow || lowFloor;
+  const levels = lowFloor
+    ? supportedLevels.filter((level) => level !== 'off')
+    : getSupportedUiLevels(supportedLevels, includeLow);
+  const current =
+    value === undefined || (value === 'low' && keepsLow)
+      ? value
+      : normalizeThinkingForUi(value);
+  // A drag previews its level in the panel; the chat's setting, and the
+  // trigger under the composer, change only when it lands.
+  const [draft, setDraft] = useState<ThinkingLevel | null>(null);
+  const shown = draft ?? current;
+  const index = shown === undefined ? -1 : levels.indexOf(shown);
+  const nameOf = (level: ThinkingLevel | undefined): string =>
+    getLabel(level, keepsLow);
+  const committedLabel = nameOf(value);
+  const label = draft === null ? committedLabel : nameOf(draft);
+
+  useEffect(() => {
+    if (disabled) setOpen(false);
+  }, [disabled]);
+
+  const slider = (
+    <EffortSlider
+      levels={levels}
+      index={index}
+      label={label}
+      disabled={disabled}
+      onSelect={(next, commit): void => {
+        const level = levels[next];
+        if (level === undefined) return;
+        if (!commit) {
+          setDraft(level);
+          return;
+        }
+        setDraft(null);
+        if (level !== current) onChange(level);
+      }}
+      {...(testId ? { testId: `${testId}-slider` } : {})}
+    />
+  );
+  // Ultra fast is fast mode at its top speed, set apart by the special hue.
+  const ultraFast = fastMode?.on === true && fastMode.ultra === true;
+  const fastModeName = ultraFast ? 'Ultra fast mode' : 'Fast mode';
+  return (
+    <div className={`relative ${allowTriggerShrink ? 'min-w-0' : 'shrink-0'}`}>
+      <Tooltip
+        label={TOOLTIP_LABEL}
+        delay="long"
+        suppressed={open}
+        allowShrink={allowTriggerShrink}
+        className={allowTriggerShrink ? 'max-w-full' : undefined}
+      >
+        <PickerTrigger
+          ref={triggerRef}
+          data-testid={testId}
+          textLead
+          textTrail={hideTriggerChevron}
+          disabled={disabled}
+          onClick={(): void => setOpen((previous) => !previous)}
+          className={allowTriggerShrink ? 'max-w-full' : 'shrink-0'}
+          aria-label={`Effort, current level ${committedLabel}${
+            fastMode?.on ? `, ${fastModeName.toLowerCase()} on` : ''
+          }`}
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          aria-controls={open ? panelId : undefined}
+          data-thinking-level={current ?? 'default'}
+        >
+          {fastMode ? (
+            // The bolt's slot opens and closes with fast mode, so the trigger
+            // (and the model picker beside it) resizes smoothly, while the
+            // bolt itself fades and scales from its centre rather than being
+            // clipped by the moving edge. The trigger keeps its 12px
+            // label-first inset; open, the slot takes 2px back so the glyph
+            // sits at a glyph trigger's 10px. Its -mr-1 takes back the
+            // trigger's 4px gap while closed; open, the 22px slot (16px glyph,
+            // 6px after) plus that gap less the margin leaves 6px to the label.
+            <span
+              aria-hidden="true"
+              className={`relative -mr-1 inline-flex h-4 shrink-0 transition-[width,margin] duration-200 ease-out motion-reduce:transition-none ${
+                fastMode.on ? '-ml-0.5 w-5.5' : 'ml-0 w-0'
+              }`}
+            >
+              {/* The model picker's glyph ink and ink height: the filled bolt
+                  spans nearly its whole grid, so it draws at 14px in the 16px
+                  slot, its stroke scaled to the composer's weight. */}
+              <span
+                data-testid={testId ? `${testId}-speed-bolt` : undefined}
+                className={`absolute left-0 top-0 inline-flex h-4 w-4 items-center justify-center transition-[opacity,scale] duration-200 ease-out motion-reduce:transition-none ${
+                  ultraFast ? 'fg-special' : 'fg-secondary'
+                } ${
+                  fastMode.on ? 'scale-100 opacity-100' : 'scale-50 opacity-0'
+                }`}
+              >
+                <FastModeOnIcon size={14} />
+              </span>
+            </span>
+          ) : null}
+          <span
+            className={
+              allowTriggerShrink ? 'min-w-0 truncate fg-primary' : 'fg-primary'
+            }
+          >
+            {committedLabel}
+          </span>
+          {hideTriggerChevron ? null : <PickerTriggerChevron open={open} />}
+        </PickerTrigger>
+      </Tooltip>
+      <FloatingMenu
+        id={panelId}
+        role="dialog"
+        open={open}
+        onOpenChange={setOpen}
+        anchorRef={triggerRef}
+        // 4px over the row, whether it spans to the composer's edge or opens
+        // over its own trigger.
+        {...(menuAlignRef ? { alignRef: menuAlignRef } : {})}
+        gap={COMPOSER_ROW_MENU_GAP}
+        {...(menuAlignOffset !== undefined
+          ? { alignOffset: menuAlignOffset }
+          : {})}
+        placement={menuAlignEdge === 'left' ? 'top-left' : 'top-right'}
+        interaction="manual"
+        trapFocus
+        padding="readout"
+        aria-label="Effort"
+        data-testid={testId ? `${testId}-panel` : undefined}
+        // No text selection: a slider drag must not select the heading.
+        className="w-55 select-none"
+      >
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex min-w-0 items-baseline gap-2 text-xs">
+              <span className="fg-secondary">Effort</span>
+              <span
+                data-testid={testId ? `${testId}-level` : undefined}
+                className="truncate fg-primary"
+              >
+                {label}
+              </span>
+            </div>
+            {fastMode ? (
+              // The corner toggle follows the selected speed tier.
+              <IconToggleButton
+                pressed={fastMode.on}
+                label={fastModeName}
+                tooltip={`${fastModeName}: ${(ultraFast
+                  ? ULTRA_FAST_DESCRIPTION
+                  : FAST_MODE_DESCRIPTION
+                ).toLowerCase()}`}
+                disabled={fastMode.disabled === true}
+                onClick={(): void => fastMode.onToggle()}
+                placement="panel-corner"
+                activeTone={ultraFast ? 'special' : 'accent'}
+                dataSpeed={
+                  ultraFast ? 'ultrafast' : fastMode.on ? 'fast' : 'standard'
+                }
+                icon={
+                  fastMode.on ? (
+                    <FastModeOnIcon size={16} />
+                  ) : (
+                    <FastModeIcon size={16} />
+                  )
+                }
+                {...(testId ? { testId: `${testId}-fast-mode` } : {})}
+              />
+            ) : null}
+          </div>
+          {/* The heading names the level; the slider needs no scale. It
+                sits 4px low so the track (not the taller thumb) keeps the
+                panel's 12px inset at the bottom, as at the sides. */}
+          <div className="-mb-1">{slider}</div>
+        </div>
+      </FloatingMenu>
+    </div>
+  );
+}

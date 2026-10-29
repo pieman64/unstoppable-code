@@ -1,0 +1,812 @@
+import {
+  createBoundedReadEvidence,
+  type ReadEvidenceCursor,
+  type ReadEvidenceSnapshot,
+} from '@canopy/desktop-shared/lib/bounded-read-evidence';
+import { create } from 'zustand';
+import type {
+  FileIndexResponse,
+  FileTreeEntry,
+  FileTreeDirectoryResponse,
+  FileTreeRoot,
+  FileTreeRootsResponse,
+} from '@canopy/desktop-shared/types';
+
+/**
+ * Cache entry for a full-worktree file index. Mention search is keyed by
+ * `${projectId}/${worktreeId}`; explorer search uses the suffixed key returned
+ * by {@link getFileTreeIndexCacheKey} so its inclusive results cannot leak
+ * into Cmd+P or `@` mentions.
+ */
+interface CachedIndexEntry {
+  data: FileIndexResponse;
+  fetchedAt: number;
+}
+
+/**
+ * Cache entry for the lazy file-tree explorer's root descriptors. Keyed by
+ * `${projectId}/${worktreeId}`.
+ */
+interface CachedRootsEntry {
+  data: FileTreeRootsResponse;
+  fetchedAt: number;
+}
+
+/**
+ * Cache entry for a single directory's immediate children in the lazy file
+ * tree. Keyed by `${projectId}/${worktreeId}::${repoId}::${relativeDir}`.
+ */
+interface CachedDirectoryEntry {
+  data: FileTreeDirectoryResponse;
+  fetchedAt: number;
+}
+
+interface FileListState {
+  // Full-worktree indexes for mention search and explorer search. Purpose-
+  // specific cache keys keep their different exclusion semantics isolated.
+  indexCache: Record<string, CachedIndexEntry>;
+  indexErrors: Record<string, string>;
+  indexLoading: Set<string>;
+  indexVersions: Record<string, number>;
+
+  // Explorer roots.
+  rootsCache: Record<string, CachedRootsEntry>;
+  rootsErrors: Record<string, string>;
+  rootsLoading: Set<string>;
+  rootsVersions: Record<string, number>;
+
+  // Explorer directory listings.
+  directoryCache: Record<string, CachedDirectoryEntry>;
+  directoryErrors: Record<string, string>;
+  directoryLoading: Set<string>;
+  directoryVersions: Record<string, number>;
+
+  // Explorer UI state. The standalone tree uses the worktree key; embedded
+  // trees append their owning file-tab scope so surfaces never share state.
+  fileTreeExpandedPaths: Record<string, Set<string>>;
+  // Explorer scroll offset, retained across remounts (navigation, panel
+  // collapse/expand, worktree switches) so the tree returns to where the user
+  // left it. Keyed by the same per-surface UI key as expansion state.
+  fileTreeScrollPositions: Record<string, number>;
+
+  fetchFileIndex: (projectId: string, worktreeId: string) => Promise<void>;
+  fetchFileTreeIndex: (projectId: string, worktreeId: string) => Promise<void>;
+  fetchFileTreeRoots: (projectId: string, worktreeId: string) => Promise<void>;
+  fetchFileTreeDirectory: (
+    projectId: string,
+    worktreeId: string,
+    repoId: string,
+    relativeDir: string,
+  ) => Promise<void>;
+  setFileTreeExpandedPaths: (
+    projectId: string,
+    worktreeId: string,
+    paths: Set<string>,
+    uiStateScope?: string,
+  ) => void;
+  toggleFileTreeExpandedPath: (
+    projectId: string,
+    worktreeId: string,
+    path: string,
+    uiStateScope?: string,
+  ) => void;
+  setFileTreeScrollPosition: (
+    projectId: string,
+    worktreeId: string,
+    scrollTop: number,
+    uiStateScope?: string,
+  ) => void;
+  markFileTreeStale: (projectId: string, worktreeId: string) => void;
+  invalidate: (projectId: string, worktreeId: string) => void;
+  invalidateAll: () => void;
+}
+
+export function getWorktreeCacheKey(
+  projectId: string,
+  worktreeId: string,
+): string {
+  return `${projectId}/${worktreeId}`;
+}
+
+export function getFileTreeUiStateKey(
+  projectId: string,
+  worktreeId: string,
+  uiStateScope?: string,
+): string {
+  const worktreeKey = getWorktreeCacheKey(projectId, worktreeId);
+  return uiStateScope
+    ? `${worktreeKey}::file-tree-ui:${uiStateScope}`
+    : worktreeKey;
+}
+
+export function getFileTreeIndexCacheKey(
+  projectId: string,
+  worktreeId: string,
+): string {
+  return `${getWorktreeCacheKey(projectId, worktreeId)}::file-explorer`;
+}
+
+export function getDirectoryCacheKey(
+  projectId: string,
+  worktreeId: string,
+  repoId: string,
+  relativeDir: string,
+): string {
+  return `${getWorktreeCacheKey(projectId, worktreeId)}::${repoId}::${relativeDir}`;
+}
+
+function isStale(
+  entry: { fetchedAt: number } | undefined,
+  maxAgeMs = 60_000,
+): boolean {
+  if (!entry) return true;
+  return Date.now() - entry.fetchedAt > maxAgeMs;
+}
+
+export function isFileIndexStale(
+  entry: CachedIndexEntry | undefined,
+  maxAgeMs = 60_000,
+): boolean {
+  return isStale(entry, maxAgeMs);
+}
+
+export function isFileTreeCacheStale(
+  entry: { fetchedAt: number } | undefined,
+  maxAgeMs = 60_000,
+): boolean {
+  return isStale(entry, maxAgeMs);
+}
+
+function omitKey<V>(record: Record<string, V>, key: string): Record<string, V> {
+  if (!(key in record)) return record;
+  const next = { ...record };
+  delete next[key];
+  return next;
+}
+
+function removeFromSet(set: Set<string>, key: string): Set<string> {
+  if (!set.has(key)) return set;
+  const next = new Set(set);
+  next.delete(key);
+  return next;
+}
+
+function sameFileTreeRoot(left: FileTreeRoot, right: FileTreeRoot): boolean {
+  return (
+    left.repoId === right.repoId &&
+    left.repoName === right.repoName &&
+    left.absolutePath === right.absolutePath &&
+    left.rootKind === right.rootKind
+  );
+}
+
+function sameFileTreeEntry(left: FileTreeEntry, right: FileTreeEntry): boolean {
+  return (
+    left.name === right.name &&
+    left.relativePath === right.relativePath &&
+    left.absolutePath === right.absolutePath &&
+    left.kind === right.kind &&
+    left.isIgnored === right.isIgnored &&
+    left.isIndexExcluded === right.isIndexExcluded &&
+    left.isSymlink === right.isSymlink &&
+    left.hasChildren === right.hasChildren
+  );
+}
+
+/**
+ * Reuse unchanged list items by stable path identity. An identical response
+ * keeps the whole array reference; additions/removals allocate one shallow
+ * list while preserving every unaffected item for memoized tree rows.
+ */
+function reconcileItems<T>(
+  previous: T[],
+  incoming: T[],
+  keyOf: (item: T) => string,
+  equals: (left: T, right: T) => boolean,
+): T[] {
+  const previousByKey = new Map(previous.map((item) => [keyOf(item), item]));
+  const reconciled = incoming.map((item) => {
+    const existing = previousByKey.get(keyOf(item));
+    return existing && equals(existing, item) ? existing : item;
+  });
+  return previous.length === reconciled.length &&
+    reconciled.every((item, index) => item === previous[index])
+    ? previous
+    : reconciled;
+}
+
+function reconcileRootsResponse(
+  previous: FileTreeRootsResponse | undefined,
+  incoming: FileTreeRootsResponse,
+): FileTreeRootsResponse {
+  if (!previous) return incoming;
+  const roots = reconcileItems(
+    previous.roots,
+    incoming.roots,
+    (root) => root.repoId,
+    sameFileTreeRoot,
+  );
+  return roots === previous.roots ? previous : { roots };
+}
+
+function reconcileDirectoryResponse(
+  previous: FileTreeDirectoryResponse | undefined,
+  incoming: FileTreeDirectoryResponse,
+): FileTreeDirectoryResponse {
+  if (!previous) return incoming;
+  const entries = reconcileItems(
+    previous.entries,
+    incoming.entries,
+    (entry) => `${entry.kind}:${entry.relativePath}`,
+    sameFileTreeEntry,
+  );
+  return entries === previous.entries ? previous : { entries };
+}
+
+// Root descriptors are shared by every file-tree surface in a worktree. Keep
+// overlapping consumers on the same request so an earlier waiter cannot be
+// invalidated by a redundant later fetch and resume before any roots commit.
+const inFlightRootsRequests = new Map<string, Promise<void>>();
+/** Extra reads a roots waiter makes when invalidations keep discarding them. */
+const MAX_INVALIDATED_ROOTS_RETRIES = 2;
+
+type FilesRendererEvidenceEvent = {
+  key: string;
+  operation: 'roots' | 'directory';
+  version: number;
+  request: number;
+  phase: 'started' | 'success' | 'failed' | 'discarded';
+};
+const filesEvidence = createBoundedReadEvidence<FilesRendererEvidenceEvent>();
+let filesRequestSequence = 0;
+
+export const useFileListStore = create<FileListState>((set, get) => ({
+  indexCache: {},
+  indexErrors: {},
+  indexLoading: new Set<string>(),
+  indexVersions: {},
+
+  rootsCache: {},
+  rootsErrors: {},
+  rootsLoading: new Set<string>(),
+  rootsVersions: {},
+
+  directoryCache: {},
+  directoryErrors: {},
+  directoryLoading: new Set<string>(),
+  directoryVersions: {},
+
+  fileTreeExpandedPaths: {},
+  fileTreeScrollPositions: {},
+
+  fetchFileIndex: async (projectId, worktreeId): Promise<void> => {
+    const key = getWorktreeCacheKey(projectId, worktreeId);
+    const version = (get().indexVersions[key] ?? 0) + 1;
+
+    set((state) => ({
+      indexVersions: { ...state.indexVersions, [key]: version },
+      indexErrors: omitKey(state.indexErrors, key),
+      indexLoading: new Set(state.indexLoading).add(key),
+    }));
+
+    try {
+      const data = await window.api.getFileIndex({ projectId, worktreeId });
+      set((state) => {
+        if ((state.indexVersions[key] ?? 0) !== version) return state;
+        return {
+          indexCache: {
+            ...state.indexCache,
+            [key]: { data, fetchedAt: Date.now() },
+          },
+          indexErrors: omitKey(state.indexErrors, key),
+          indexLoading: removeFromSet(state.indexLoading, key),
+        };
+      });
+    } catch (error: unknown) {
+      set((state) => {
+        if ((state.indexVersions[key] ?? 0) !== version) return state;
+        return {
+          indexErrors: {
+            ...state.indexErrors,
+            [key]:
+              error instanceof Error ? error.message : 'Unable to load files.',
+          },
+          indexLoading: removeFromSet(state.indexLoading, key),
+        };
+      });
+    }
+  },
+
+  fetchFileTreeIndex: async (projectId, worktreeId): Promise<void> => {
+    const key = getFileTreeIndexCacheKey(projectId, worktreeId);
+    const version = (get().indexVersions[key] ?? 0) + 1;
+
+    set((state) => ({
+      indexVersions: { ...state.indexVersions, [key]: version },
+      indexErrors: omitKey(state.indexErrors, key),
+      indexLoading: new Set(state.indexLoading).add(key),
+    }));
+
+    try {
+      const data = await window.api.getFileIndex({
+        projectId,
+        worktreeId,
+        purpose: 'file-explorer',
+      });
+      set((state) => {
+        if ((state.indexVersions[key] ?? 0) !== version) return state;
+        return {
+          indexCache: {
+            ...state.indexCache,
+            [key]: { data, fetchedAt: Date.now() },
+          },
+          indexErrors: omitKey(state.indexErrors, key),
+          indexLoading: removeFromSet(state.indexLoading, key),
+        };
+      });
+    } catch (error: unknown) {
+      set((state) => {
+        if ((state.indexVersions[key] ?? 0) !== version) return state;
+        return {
+          indexErrors: {
+            ...state.indexErrors,
+            [key]:
+              error instanceof Error ? error.message : 'Unable to load files.',
+          },
+          indexLoading: removeFromSet(state.indexLoading, key),
+        };
+      });
+    }
+  },
+
+  fetchFileTreeRoots: (projectId, worktreeId): Promise<void> => {
+    const key = getWorktreeCacheKey(projectId, worktreeId);
+    const existing = inFlightRootsRequests.get(key);
+    if (existing) return existing;
+
+    /** One roots read. Returns false when an invalidation discarded it. */
+    const loadRoots = async (): Promise<boolean> => {
+      const version = (get().rootsVersions[key] ?? 0) + 1;
+      let committed = false;
+      const event = {
+        key,
+        operation: 'roots' as const,
+        version,
+        request: ++filesRequestSequence,
+      };
+      filesEvidence.record({ ...event, phase: 'started' });
+
+      set((state) => ({
+        rootsVersions: { ...state.rootsVersions, [key]: version },
+        rootsErrors: omitKey(state.rootsErrors, key),
+        rootsLoading: new Set(state.rootsLoading).add(key),
+      }));
+
+      try {
+        const incoming = await window.api.getFileTreeRoots({
+          projectId,
+          worktreeId,
+        });
+        set((state) => {
+          if ((state.rootsVersions[key] ?? 0) !== version) {
+            filesEvidence.record({ ...event, phase: 'discarded' });
+            return state;
+          }
+          filesEvidence.record({ ...event, phase: 'success' });
+          committed = true;
+          const data = reconcileRootsResponse(
+            state.rootsCache[key]?.data,
+            incoming,
+          );
+          return {
+            rootsCache: {
+              ...state.rootsCache,
+              [key]: { data, fetchedAt: Date.now() },
+            },
+            rootsErrors: omitKey(state.rootsErrors, key),
+            rootsLoading: removeFromSet(state.rootsLoading, key),
+          };
+        });
+      } catch (error: unknown) {
+        set((state) => {
+          if ((state.rootsVersions[key] ?? 0) !== version) {
+            filesEvidence.record({ ...event, phase: 'discarded' });
+            return state;
+          }
+          filesEvidence.record({ ...event, phase: 'failed' });
+          committed = true;
+          return {
+            rootsErrors: {
+              ...state.rootsErrors,
+              [key]:
+                error instanceof Error
+                  ? error.message
+                  : 'Unable to load files.',
+            },
+            rootsLoading: removeFromSet(state.rootsLoading, key),
+          };
+        });
+      }
+      return committed;
+    };
+
+    let settle: () => void = () => undefined;
+    const request = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    inFlightRootsRequests.set(key, request);
+    void (async (): Promise<void> => {
+      try {
+        // Waiters read the cache right after this resolves, so it resolves
+        // only once current roots (or an error) commit. An invalidation
+        // discards the read in flight (a worktree's first diff stats do this
+        // at startup); follow the request that replaced it, or read again.
+        for (let attempt = 0; attempt <= MAX_INVALIDATED_ROOTS_RETRIES; ) {
+          if (await loadRoots()) return;
+          attempt += 1;
+          const replacement = inFlightRootsRequests.get(key);
+          if (replacement !== undefined && replacement !== request) {
+            await replacement;
+            return;
+          }
+          inFlightRootsRequests.set(key, request);
+        }
+      } finally {
+        if (inFlightRootsRequests.get(key) === request) {
+          inFlightRootsRequests.delete(key);
+        }
+        settle();
+      }
+    })();
+    return request;
+  },
+
+  fetchFileTreeDirectory: async (
+    projectId,
+    worktreeId,
+    repoId,
+    relativeDir,
+  ): Promise<void> => {
+    const key = getDirectoryCacheKey(
+      projectId,
+      worktreeId,
+      repoId,
+      relativeDir,
+    );
+    const version = (get().directoryVersions[key] ?? 0) + 1;
+    const event = {
+      key,
+      operation: 'directory' as const,
+      version,
+      request: ++filesRequestSequence,
+    };
+    filesEvidence.record({ ...event, phase: 'started' });
+
+    set((state) => ({
+      directoryVersions: { ...state.directoryVersions, [key]: version },
+      directoryErrors: omitKey(state.directoryErrors, key),
+      directoryLoading: new Set(state.directoryLoading).add(key),
+    }));
+
+    try {
+      const incoming = await window.api.getFileTreeDirectory({
+        projectId,
+        worktreeId,
+        repoId,
+        relativeDir,
+      });
+      set((state) => {
+        if ((state.directoryVersions[key] ?? 0) !== version) {
+          filesEvidence.record({ ...event, phase: 'discarded' });
+          return state;
+        }
+        filesEvidence.record({ ...event, phase: 'success' });
+        const data = reconcileDirectoryResponse(
+          state.directoryCache[key]?.data,
+          incoming,
+        );
+        return {
+          directoryCache: {
+            ...state.directoryCache,
+            [key]: { data, fetchedAt: Date.now() },
+          },
+          directoryErrors: omitKey(state.directoryErrors, key),
+          directoryLoading: removeFromSet(state.directoryLoading, key),
+        };
+      });
+    } catch (error: unknown) {
+      set((state) => {
+        if ((state.directoryVersions[key] ?? 0) !== version) {
+          filesEvidence.record({ ...event, phase: 'discarded' });
+          return state;
+        }
+        filesEvidence.record({ ...event, phase: 'failed' });
+        return {
+          directoryErrors: {
+            ...state.directoryErrors,
+            [key]:
+              error instanceof Error ? error.message : 'Unable to load folder.',
+          },
+          directoryLoading: removeFromSet(state.directoryLoading, key),
+        };
+      });
+    }
+  },
+
+  setFileTreeExpandedPaths: (
+    projectId,
+    worktreeId,
+    paths,
+    uiStateScope,
+  ): void => {
+    const key = getFileTreeUiStateKey(projectId, worktreeId, uiStateScope);
+    set((state) => ({
+      fileTreeExpandedPaths: {
+        ...state.fileTreeExpandedPaths,
+        [key]: new Set(paths),
+      },
+    }));
+  },
+
+  toggleFileTreeExpandedPath: (
+    projectId,
+    worktreeId,
+    path,
+    uiStateScope,
+  ): void => {
+    const key = getFileTreeUiStateKey(projectId, worktreeId, uiStateScope);
+    set((state) => {
+      const nextPaths = new Set(state.fileTreeExpandedPaths[key] ?? []);
+      if (nextPaths.has(path)) {
+        nextPaths.delete(path);
+      } else {
+        nextPaths.add(path);
+      }
+      return {
+        fileTreeExpandedPaths: {
+          ...state.fileTreeExpandedPaths,
+          [key]: nextPaths,
+        },
+      };
+    });
+  },
+
+  setFileTreeScrollPosition: (
+    projectId,
+    worktreeId,
+    scrollTop,
+    uiStateScope,
+  ): void => {
+    const key = getFileTreeUiStateKey(projectId, worktreeId, uiStateScope);
+    set((state) => ({
+      fileTreeScrollPositions: {
+        ...state.fileTreeScrollPositions,
+        [key]: scrollTop,
+      },
+    }));
+  },
+
+  markFileTreeStale: (projectId, worktreeId): void => {
+    const worktreeKey = getWorktreeCacheKey(projectId, worktreeId);
+    const explorerIndexKey = getFileTreeIndexCacheKey(projectId, worktreeId);
+    const directoryPrefix = `${worktreeKey}::`;
+    set((state) => {
+      const indexCache = { ...state.indexCache };
+      for (const key of [worktreeKey, explorerIndexKey]) {
+        const entry = indexCache[key];
+        if (entry) indexCache[key] = { ...entry, fetchedAt: 0 };
+      }
+      const rootsCache = { ...state.rootsCache };
+      const rootEntry = rootsCache[worktreeKey];
+      if (rootEntry) {
+        rootsCache[worktreeKey] = { ...rootEntry, fetchedAt: 0 };
+      }
+      const directoryCache = { ...state.directoryCache };
+      for (const [key, entry] of Object.entries(directoryCache)) {
+        if (key.startsWith(directoryPrefix)) {
+          directoryCache[key] = { ...entry, fetchedAt: 0 };
+        }
+      }
+      return { indexCache, rootsCache, directoryCache };
+    });
+  },
+
+  invalidate: (projectId, worktreeId): void => {
+    const worktreeKey = getWorktreeCacheKey(projectId, worktreeId);
+    const explorerIndexKey = getFileTreeIndexCacheKey(projectId, worktreeId);
+    const directoryPrefix = `${worktreeKey}::`;
+    inFlightRootsRequests.delete(worktreeKey);
+
+    set((state) => {
+      // Index
+      const nextIndexCache = omitKey(state.indexCache, worktreeKey);
+      delete nextIndexCache[explorerIndexKey];
+      const nextIndexErrors = omitKey(state.indexErrors, worktreeKey);
+      delete nextIndexErrors[explorerIndexKey];
+      const nextIndexVersions = {
+        ...state.indexVersions,
+        [worktreeKey]: (state.indexVersions[worktreeKey] ?? 0) + 1,
+        [explorerIndexKey]: (state.indexVersions[explorerIndexKey] ?? 0) + 1,
+      };
+      const nextIndexLoading = removeFromSet(
+        removeFromSet(state.indexLoading, worktreeKey),
+        explorerIndexKey,
+      );
+
+      // Roots
+      const nextRootsCache = omitKey(state.rootsCache, worktreeKey);
+      const nextRootsErrors = omitKey(state.rootsErrors, worktreeKey);
+      const nextRootsVersions = {
+        ...state.rootsVersions,
+        [worktreeKey]: (state.rootsVersions[worktreeKey] ?? 0) + 1,
+      };
+      const nextRootsLoading = removeFromSet(state.rootsLoading, worktreeKey);
+
+      // Directories — drop everything for this worktree.
+      const nextDirectoryCache: Record<string, CachedDirectoryEntry> = {};
+      for (const [key, value] of Object.entries(state.directoryCache)) {
+        if (!key.startsWith(directoryPrefix)) {
+          nextDirectoryCache[key] = value;
+        }
+      }
+      const nextDirectoryErrors: Record<string, string> = {};
+      for (const [key, value] of Object.entries(state.directoryErrors)) {
+        if (!key.startsWith(directoryPrefix)) {
+          nextDirectoryErrors[key] = value;
+        }
+      }
+      const nextDirectoryVersions: Record<string, number> = {};
+      for (const [key, value] of Object.entries(state.directoryVersions)) {
+        // Bump versions for in-flight fetches so their results discard.
+        nextDirectoryVersions[key] = key.startsWith(directoryPrefix)
+          ? value + 1
+          : value;
+      }
+      const nextDirectoryLoading = new Set<string>();
+      state.directoryLoading.forEach((key) => {
+        if (!key.startsWith(directoryPrefix)) {
+          nextDirectoryLoading.add(key);
+        }
+      });
+
+      return {
+        indexCache: nextIndexCache,
+        indexErrors: nextIndexErrors,
+        indexVersions: nextIndexVersions,
+        indexLoading: nextIndexLoading,
+        rootsCache: nextRootsCache,
+        rootsErrors: nextRootsErrors,
+        rootsVersions: nextRootsVersions,
+        rootsLoading: nextRootsLoading,
+        directoryCache: nextDirectoryCache,
+        directoryErrors: nextDirectoryErrors,
+        directoryVersions: nextDirectoryVersions,
+        directoryLoading: nextDirectoryLoading,
+      };
+    });
+  },
+
+  invalidateAll: (): void => {
+    inFlightRootsRequests.clear();
+    set((state) => {
+      const bumpEvery = (
+        versions: Record<string, number>,
+      ): Record<string, number> => {
+        const next: Record<string, number> = {};
+        for (const [key, value] of Object.entries(versions)) {
+          next[key] = value + 1;
+        }
+        return next;
+      };
+      return {
+        indexCache: {},
+        indexErrors: {},
+        indexLoading: new Set<string>(),
+        indexVersions: bumpEvery(state.indexVersions),
+        rootsCache: {},
+        rootsErrors: {},
+        rootsLoading: new Set<string>(),
+        rootsVersions: bumpEvery(state.rootsVersions),
+        directoryCache: {},
+        directoryErrors: {},
+        directoryLoading: new Set<string>(),
+        directoryVersions: bumpEvery(state.directoryVersions),
+      };
+    });
+  },
+}));
+
+export type { CachedIndexEntry, CachedRootsEntry, CachedDirectoryEntry };
+
+export type FilesRendererEvidenceTarget = {
+  projectId: string;
+  worktreeId: string;
+} & (
+  | { operation: 'roots' }
+  | { operation: 'directory'; repoId: string; relativeDir: string }
+);
+
+export interface FilesRendererEvidenceSnapshot extends ReadEvidenceSnapshot<
+  Omit<FilesRendererEvidenceEvent, 'key'> & { matchesTarget: boolean }
+> {
+  source: 'desktop-renderer-file-list-store-v1';
+  version: number;
+  settled: boolean;
+  hasError: boolean;
+  currentSuccess: boolean;
+  itemCount: number;
+}
+
+/** Selectors are inputs only: neither paths, file contents nor errors leave the store. */
+export function snapshotFilesRendererEvidence(
+  target: FilesRendererEvidenceTarget,
+  after?: ReadEvidenceCursor,
+): FilesRendererEvidenceSnapshot {
+  const state = useFileListStore.getState();
+  const roots = target.operation === 'roots';
+  const key =
+    target.operation === 'roots'
+      ? getWorktreeCacheKey(target.projectId, target.worktreeId)
+      : getDirectoryCacheKey(
+          target.projectId,
+          target.worktreeId,
+          target.repoId,
+          target.relativeDir,
+        );
+  const version =
+    (roots ? state.rootsVersions : state.directoryVersions)[key] ?? 0;
+  const cache = roots ? state.rootsCache[key] : state.directoryCache[key];
+  const settled = !(roots ? state.rootsLoading : state.directoryLoading).has(
+    key,
+  );
+  const hasError = key in (roots ? state.rootsErrors : state.directoryErrors);
+  const snapshot = filesEvidence.snapshot(after);
+  const entries = snapshot.entries.map(({ key: entryKey, ...entry }) => ({
+    ...entry,
+    matchesTarget: entryKey === key && entry.operation === target.operation,
+  }));
+  const targetEntries = entries.filter((entry) => entry.matchesTarget);
+  const success = targetEntries.find(
+    (entry) => entry.version === version && entry.phase === 'success',
+  );
+  const starts = targetEntries.filter((entry) => entry.phase === 'started');
+  const finished = new Set(
+    targetEntries
+      .filter((entry) => entry.phase !== 'started')
+      .map((entry) => entry.request),
+  );
+  return {
+    source: 'desktop-renderer-file-list-store-v1',
+    ...snapshot,
+    entries,
+    version,
+    settled,
+    hasError,
+    currentSuccess:
+      snapshot.complete &&
+      success !== undefined &&
+      starts.some((entry) => entry.request === success.request) &&
+      starts.every((entry) => finished.has(entry.request)) &&
+      settled &&
+      !hasError &&
+      !isFileTreeCacheStale(cache),
+    itemCount: roots
+      ? (state.rootsCache[key]?.data.roots.length ?? 0)
+      : (state.directoryCache[key]?.data.entries.length ?? 0),
+  };
+}
+
+const evidenceGlobal: PropertyDescriptorMap = {
+  __CANOPY_FILES_RENDERER_EVIDENCE__: {
+    value: Object.freeze({ snapshot: snapshotFilesRendererEvidence }),
+  },
+};
+// First evaluation wins, as in main: after a dev HMR reload of this store the
+// observer keeps reporting the first instance until the window reloads.
+if (
+  Object.keys(evidenceGlobal).every(
+    (key) => !Object.getOwnPropertyDescriptor(globalThis, key),
+  )
+) {
+  Object.defineProperties(globalThis, evidenceGlobal);
+}

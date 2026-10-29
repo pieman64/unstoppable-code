@@ -1,0 +1,6 @@
+{
+  "name": "canopy-s03-tab-enforcement-probe",
+  "private": true,
+  "type": "module",
+  "main": "main.mjs"
+}

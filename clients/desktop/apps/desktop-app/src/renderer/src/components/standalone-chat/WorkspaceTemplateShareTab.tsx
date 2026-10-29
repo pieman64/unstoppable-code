@@ -1,0 +1,198 @@
+import { useResourceContext } from '@canopy/ui-app/capability';
+import { useEffect, useState, type JSX } from 'react';
+import type {
+  ChatProjectTemplateDraft,
+  ChatProjectTemplateDocumentResult,
+  ChatProjectTemplateShareInfo,
+} from '@canopy/desktop-shared/types';
+import { WORKSPACE_TEMPLATE_SHARE_LABEL_LOWER } from '@canopy/protocol';
+import {
+  CopyLinkButton,
+  ShareActionButton,
+  ShareAudienceLabel,
+} from '@canopy/ui-shared/components';
+import {
+  createShareLinkResolver,
+  resolveSharedSkillUrl,
+} from '@/lib/share-links';
+import { copyTextToClipboard } from '@/lib/clipboard';
+import { ShareProjectTemplateModal } from './ShareProjectTemplateModal';
+
+interface WorkspaceTemplateShareTabProps {
+  projectId: string;
+  draft: ChatProjectTemplateDraft;
+}
+
+const templateLinks = createShareLinkResolver(
+  (id) => `/portal/plugins/project-templates/${encodeURIComponent(id)}`,
+  resolveSharedSkillUrl,
+);
+
+function omissionCopy(
+  omitted: ChatProjectTemplateDocumentResult['omitted'],
+): string | null {
+  const unavailable = omitted.unresolvedRefs.length > 0;
+  if (omitted.mcpServers && unavailable) {
+    return 'MCP servers on this device and unavailable items aren’t included.';
+  }
+  if (omitted.mcpServers) return 'MCP servers on this device aren’t included.';
+  if (unavailable) return 'Some unavailable items aren’t included.';
+  return null;
+}
+
+function audienceFor(
+  share: ChatProjectTemplateShareInfo,
+): 'team' | 'organization' | 'public' {
+  if (share.audience === 'TEAM') return 'team';
+  if (share.audience === 'ORGANIZATION') return 'organization';
+  return 'public';
+}
+
+/** Compact settings entry point; the common modal owns the actual share flow. */
+export function WorkspaceTemplateShareTab({
+  projectId,
+  draft,
+}: WorkspaceTemplateShareTabProps): JSX.Element {
+  const { personalOrganizationId } = useResourceContext();
+  const [built, setBuilt] = useState<ChatProjectTemplateDocumentResult | null>(
+    null,
+  );
+  const [share, setShare] = useState<ChatProjectTemplateShareInfo | null>(null);
+  const [shareUrl, setShareUrl] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let canceled = false;
+    setLoading(true);
+    setError('');
+    void (async (): Promise<void> => {
+      try {
+        const next = await window.api.chatProject.buildTemplate({
+          projectId,
+          draft,
+        });
+        if (canceled) return;
+        setBuilt(next);
+        const existing = await window.api.chatProject.getTemplateShare({
+          projectId,
+          document: next.document,
+        });
+        if (!canceled) setShare(existing);
+      } catch (cause) {
+        if (!canceled) {
+          setError(
+            cause instanceof Error
+              ? cause.message
+              : 'Could not load sharing details.',
+          );
+        }
+      } finally {
+        if (!canceled) setLoading(false);
+      }
+    })();
+    return (): void => {
+      canceled = true;
+    };
+  }, [draft, projectId]);
+
+  useEffect(() => {
+    let canceled = false;
+    if (!share) {
+      setShareUrl(null);
+      return undefined;
+    }
+    const audience = audienceFor(share);
+    void templateLinks
+      .resolveLink(
+        audience === 'public'
+          ? { kind: 'public', sharePath: share.sharePath }
+          : { kind: 'scoped', id: share.externalId },
+      )
+      .then((link) => {
+        if (!canceled) setShareUrl(link.url);
+      });
+    return (): void => {
+      canceled = true;
+    };
+  }, [share]);
+
+  const omitted = built ? omissionCopy(built.omitted) : null;
+  const audience = share ? audienceFor(share) : null;
+
+  return (
+    <div
+      className="flex flex-col gap-3"
+      data-testid="workspace-template-share-tab"
+    >
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h3 className="text-s font-medium fg-primary">
+            {`Share ${WORKSPACE_TEMPLATE_SHARE_LABEL_LOWER}`}
+          </h3>
+          <p className="mt-1 text-xs fg-secondary">
+            Shares this project’s setup. Chats and files stay private.
+          </p>
+        </div>
+        <ShareActionButton
+          ariaLabel={`Share ${draft.name}`}
+          placement="header"
+          disabled={loading || built === null}
+          dataTestId="workspace-template-share-open"
+          onClick={(): void => setDialogOpen(true)}
+        />
+      </div>
+
+      {loading ? (
+        <p className="text-xs fg-secondary">Loading sharing details…</p>
+      ) : share && audience ? (
+        <div className="flex flex-wrap items-center gap-3">
+          <ShareAudienceLabel
+            audience={audience}
+            personal={
+              share.owner?.type === 'organization' &&
+              share.owner.id === personalOrganizationId
+            }
+            teamName={
+              audience === 'team' && share.owner?.type === 'team'
+                ? share.owner.name
+                : null
+            }
+            dataTestId="workspace-template-share-audience"
+          />
+          {shareUrl ? (
+            <CopyLinkButton
+              url={shareUrl}
+              dataTestId="workspace-template-copy-link"
+              write={copyTextToClipboard}
+            />
+          ) : null}
+          {!share.upToDate ? (
+            <span className="text-xs fg-secondary">
+              This shared project template is out of date.
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+
+      {omitted ? <p className="text-xs fg-secondary">{omitted}</p> : null}
+      {error ? (
+        <p className="text-xs fg-destructive" role="alert">
+          {error}
+        </p>
+      ) : null}
+
+      {dialogOpen && built ? (
+        <ShareProjectTemplateModal
+          projectId={projectId}
+          built={built}
+          existing={share}
+          onShared={setShare}
+          onRevoked={(): void => setShare(null)}
+          onClose={(): void => setDialogOpen(false)}
+        />
+      ) : null}
+    </div>
+  );
+}

@@ -1,0 +1,2040 @@
+/* Tailwind's automatic source detection starts from the directory the build
+ * runs in, which for the desktop app is the repository root. Left there it
+ * scans every file Git does not ignore, so docs, the web and mobile apps, and
+ * E2E specs all add rules to this stylesheet. Limit detection to the
+ * renderer's own tree; the shared packages are registered below. */
+@import 'tailwindcss' source('../..');
+@import '@canopy/ui-shared/styles/canopy-tokens.css';
+@import '@canopy/ui-shared/styles/panels.css';
+@import '@canopy/ui-shared/styles/toast-stack.css';
+@plugin "@tailwindcss/typography";
+
+/* Every top-level page reserves the same scrollbar width, whether or not its
+ * current tab overflows, so shared centered containers never change geometry. */
+.page-scroll-gutter {
+  scrollbar-gutter: stable;
+}
+
+/* Keep the Marketplace scrollbar below the pinned titlebar without
+ * introducing another scroll container or a fixed page element: the shared
+ * 40px bar, or 46px when a breadcrumb adds its bottom clearance. */
+.marketplace-page-scroll::-webkit-scrollbar-track {
+  margin-top: 40px;
+}
+.marketplace-page-scroll[data-tall-titlebar='true']::-webkit-scrollbar-track {
+  margin-top: 46px;
+}
+
+/* Both app surfaces use the same self-hosted Inter 4.001 and JetBrains Mono
+ * 2.304 variable fonts from @canopy/ui-shared (DESIGN.md: Inter for product
+ * UI, JetBrains Mono for code, commands, paths, and identifiers). Keep these
+ * declarations in the app entry stylesheet so Vite resolves and fingerprints
+ * the font assets before Tailwind flattens the imported shared token CSS. */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400 500;
+  font-display: swap;
+  src: url('../../../../../../packages/ui-shared/src/assets/fonts/inter/InterVariable.woff2')
+    format('woff2');
+}
+
+@font-face {
+  font-family: 'Inter';
+  font-style: italic;
+  font-weight: 400 500;
+  font-display: swap;
+  src: url('../../../../../../packages/ui-shared/src/assets/fonts/inter/InterVariable-Italic.woff2')
+    format('woff2');
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400 500;
+  font-display: swap;
+  src: url('../../../../../../packages/ui-shared/src/assets/fonts/jetbrains-mono/JetBrainsMonoVariable.woff2')
+    format('woff2');
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: italic;
+  font-weight: 400 500;
+  font-display: swap;
+  src: url('../../../../../../packages/ui-shared/src/assets/fonts/jetbrains-mono/JetBrainsMonoVariable-Italic.woff2')
+    format('woff2');
+}
+
+/* Tailwind only auto-detects utility classes inside this app's own source
+ * tree (see the note on the import above, and the matching one in
+ * canopy-tokens.css, which registers the ui-shared package the same way).
+ * The renderer imports from most workspace packages, and they ship their own
+ * class strings. Those mostly overlap with desktop-authored classes because
+ * the code was extracted from this tree, but that overlap is a coincidence,
+ * not a guarantee (CAN-1485: the web portal hit exactly this with the shared
+ * worktree top bar). Register the packages explicitly. */
+@source '../../../../../../packages';
+
+/* Desktop renderer-specific styles. All shared design tokens (themes, color
+ * modes, animation keyframes, base element styles, scrollbar, ui-scale,
+ * reduced-motion) live in @canopy/ui-shared/styles/canopy-tokens.css. */
+
+/* Override prose typography defaults to use theme-aware text color */
+.prose {
+  --tw-prose-body: var(--fg-primary);
+  --tw-prose-headings: var(--fg-primary);
+  --tw-prose-bold: var(--fg-primary);
+  --tw-prose-counters: var(--fg-secondary);
+  --tw-prose-bullets: var(--fg-secondary);
+  --tw-prose-quotes: var(--fg-primary);
+  --tw-prose-quote-borders: var(--line-base);
+  --tw-prose-code: var(--fg-accent);
+  --tw-prose-links: var(--fg-accent);
+}
+
+:root {
+  --codex-fast-mode-foreground: var(--fg-info);
+  --codex-fast-mode-background: color-mix(
+    in srgb,
+    var(--fg-info) 15%,
+    transparent
+  );
+}
+
+/* Electron window dragging area */
+.electron-drag {
+  -webkit-app-region: drag;
+}
+
+.electron-no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* The Header States page renders REAL worktree top bars, which mark
+   themselves as OS window-drag regions. Inside a scrollable page that breaks
+   scrolling outright: the window manager consumes wheel events over a drag
+   region, and those bars covered ~43% of the visible page, so the wheel did
+   nothing unless the pointer happened to sit in a gap between rows. The
+   attribute+class selector outranks `.electron-drag` without `!important`. */
+[data-testid='header-states-page'] .electron-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* The worktree header is app chrome, not a document, so everything in it keeps
+   the arrow cursor — including links. Scoped to the bar rather than repeated
+   as a `cursor-default` class on each control, because the pointer cursor
+   arrives from UA/preflight defaults on whole ELEMENT TYPES (`a[href]`, and
+   Tailwind preflight's `button`), so any control added later would reintroduce
+   it one component at a time. Text inputs keep their caret. */
+[data-testid='worktree-top-bar'],
+[data-testid='worktree-top-bar'] *:not(input):not(textarea),
+[data-testid='pr-status-bar'],
+[data-testid='pr-status-bar'] *:not(input):not(textarea) {
+  cursor: default;
+}
+
+/* The app window and sidebar share one material. The main content shell paints
+ * its own base surface; the sidebar stays transparent so this global material
+ * remains visible without stacking the tint twice. */
+.app-window-material {
+  background-color: var(--bg-sidebar);
+  /*
+   * Capture the same design-system foreground tokens used by the persistent
+   * titlebar controls before the translucent sidebar overrides `--fg-*`.
+   */
+  --app-titlebar-control-fg: var(--fg-secondary);
+  --app-titlebar-control-hover-fg: var(--fg-primary);
+}
+
+/*
+ * Intentionally unlayered: this shared app-window token must outrank local
+ * layered foreground utilities inherited from the translucent sidebar.
+ */
+.titlebar-control-fg {
+  color: var(--app-titlebar-control-fg, var(--fg-secondary));
+}
+
+.titlebar-control-fg:hover:not(:disabled) {
+  color: var(--app-titlebar-control-hover-fg, var(--fg-primary));
+}
+
+.app-sidebar-material,
+.app-sidebar-titlebar-surface {
+  background-color: transparent;
+}
+
+.app-sidebar-material {
+  --sidebar-selected-pin-surface: var(--bg-sidebar);
+}
+
+/* CAN-2415: the hover preview floats ABOVE page content, so it needs an opaque
+ * surface of its own rather than the transparent window material. It keeps
+ * `.app-sidebar-material` so every child rule below still applies — notably the
+ * `.bg-sidebar` neutralization for workspace headers, which would otherwise
+ * paint `--bg-depth` blocks on top of this surface. */
+.app-sidebar-material.app-sidebar-preview-surface {
+  background-color: var(--bg-tertiary);
+  --sidebar-selected-pin-surface: var(--bg-tertiary);
+}
+
+/* The `.bg-sidebar` neutralization further down is macOS-only, because only
+ * there does the sidebar sit on the window material. The preview surface is
+ * opaque on EVERY platform, so workspace headers must inherit it everywhere or
+ * they read as `--bg-depth` blocks floating on the panel. */
+.app-sidebar-material.app-sidebar-preview-surface .bg-sidebar {
+  background-color: transparent;
+}
+
+/* The revealed sidebar slides in as a whole panel rather than growing its
+ * width, so nothing in the flex row ever changes size.
+ *
+ * The class is doubled for specificity (0,2,0) on purpose: it has to outrank
+ * BOTH `.sidebar-instant-interactions *`, which forces `0ms !important` on
+ * every descendant, and `.sidebar-layout-transition`'s blanket `200ms
+ * !important` — otherwise the slide is flattened to a jump cut or pinned to a
+ * duration this element cannot control.
+ *
+ * The shipped motion is easing.dev's "Snappy Out" at 250ms. The values read
+ * from custom properties whose fallbacks are what ships, so the motion can be
+ * retuned live by setting those properties on the document root — no rebuild.
+ * See docs/planning/2026-08-20-can-2415-sidebar-preview/slide-tuner.md for the
+ * development-only panel used to tune them (deliberately not shipped). */
+.sidebar-preview-slide.sidebar-preview-slide {
+  transition-property: transform, opacity;
+  transition-duration: var(--sidebar-preview-duration, 250ms) !important;
+  transition-timing-function: var(
+    --sidebar-preview-ease,
+    cubic-bezier(0.19, 1, 0.22, 1)
+  );
+  transition-delay: 0ms !important;
+}
+
+/*
+ * Chrome inside the revealed panel that should not ride the slide in: it waits
+ * for the panel to land, then fades in on its own, and drops out immediately
+ * when the preview closes rather than lingering as the panel travels away.
+ * Doubled specificity for the same reason as the slide above.
+ */
+.sidebar-preview-delayed-fade.sidebar-preview-delayed-fade {
+  opacity: 0;
+  transition-property: opacity;
+  transition-duration: var(--sidebar-preview-fade-duration, 120ms) !important;
+  transition-timing-function: ease-out;
+  transition-delay: 0ms !important;
+}
+
+.sidebar-preview-delayed-fade.sidebar-preview-delayed-fade[data-preview-visible='true'] {
+  opacity: 1;
+  /* No delay: the chrome fades in together with the panel. Any wait at all
+   * read as lag against the reveal. The variable stays so a delay can be
+   * reintroduced without a rebuild. */
+  transition-delay: var(--sidebar-preview-fade-delay, 0ms) !important;
+}
+
+/*
+ * Pins an element's ENTRY state with transitions off, so the browser has a
+ * static origin to animate from on the next frame. Applied for the opening
+ * frame only. Without it the panel would transition `none` ->
+ * `translateX(-100%)` (sliding out before it slides in) and the delayed-fade
+ * chrome below would animate 1 -> 0 instead of simply starting hidden.
+ *
+ * Declared after both rules above so it wins at equal specificity.
+ */
+.sidebar-preview-instant.sidebar-preview-instant {
+  transition-duration: 0ms !important;
+  transition-delay: 0ms !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Matches the doubled specificity above so reduced motion still wins. */
+  .sidebar-preview-slide.sidebar-preview-slide,
+  .sidebar-preview-delayed-fade.sidebar-preview-delayed-fade,
+  .sidebar-preview-delayed-fade.sidebar-preview-delayed-fade[data-preview-visible='true'] {
+    transition-duration: 0ms !important;
+    transition-delay: 0ms !important;
+  }
+}
+
+/* Translucent sidebars use neutral-alpha foregrounds so content remains
+ * legible over the material. Opaque sidebars inherit the theme's solid fg
+ * tokens without a local override. */
+html[data-sidebar-appearance='translucent'] .app-sidebar-material {
+  --fg-primary: var(--sidebar-fg-primary);
+  --fg-secondary: var(--sidebar-fg-secondary);
+  --fg-tertiary: var(--sidebar-fg-tertiary);
+  --fg-quaternary: var(--sidebar-fg-quaternary);
+}
+
+/* The resize handle is only a wider hit target. Hovering or dragging it
+ * changes the existing 0.5px sidebar divider color instead of painting a
+ * second line over the edge. */
+.sidebar-resizable-divider.sidebar-resizable-surface:has(
+    > .sidebar-resize-handle:hover
+  ),
+.sidebar-resizable-divider.sidebar-resizable-surface:has(
+    > .sidebar-resize-handle[data-resizing='true']
+  ),
+.sidebar-resizable-surface:has(> .sidebar-resize-handle:hover)
+  > .sidebar-resizable-clip
+  > .sidebar-resizable-divider,
+.sidebar-resizable-surface:has(> .sidebar-resize-handle[data-resizing='true'])
+  > .sidebar-resizable-clip
+  > .sidebar-resizable-divider {
+  border-right-color: var(--line-selected);
+}
+
+/* Early access: the floating App Advisor panel's page sits in a transparent
+ * native view and rounds its own corners (FloatingChatWindow), so the body
+ * paints nothing behind it. */
+body[data-app-advisor-floating] {
+  background-color: transparent;
+}
+
+/* Early access inset layout (`data-window-layout='inset'` on the app window,
+ * set from App.tsx). The sidebar and the worktree/chat top bar sit on the
+ * window material; the work area below them is one card inset 4px from the
+ * window's right and bottom edges. Inside the card the base surface resolves
+ * to the card surface, so panel groups and pages need no per-surface rules. */
+[data-window-layout='inset'] [data-testid='app-main-shell'],
+[data-window-layout='inset'] [data-testid='worktree-part'],
+[data-window-layout='inset'] [data-testid='page-chat'] > section,
+[data-window-layout='inset'] [data-testid='worktree-top-bar'] {
+  background-color: transparent;
+}
+
+[data-window-layout='inset'] [data-testid='cowork-top-bar'] {
+  border-bottom-color: transparent;
+  background-color: transparent;
+}
+
+/* The top bar's leading breadcrumb sits 4px in, level with the first tab of
+ * the card below (`useTopBarLeadingInsetClassName`, `pl-1`). The cards start
+ * one hairline in for their edge (`--inset-card-edge-room`), so the
+ * breadcrumb takes that hairline too and the two stay on one line. With the
+ * sidebar hidden the hook keeps the bar's 9px and this does not apply. */
+[data-window-layout='inset'] [data-testid='pr-status-bar'].pl-1,
+[data-window-layout='inset'] [data-testid='cowork-top-bar'] > .pl-1 {
+  padding-left: calc(var(--inset-card-edge-room) + 4px);
+}
+
+[data-window-layout='inset'] [data-testid='worktree-top-bar']::after {
+  display: none;
+}
+
+/* The sidebar has no edge line of its own here, even while it is resized:
+ * the cards beside it light their edge instead (below). Matches the resize
+ * hover rule's specificity and comes after it. */
+[data-window-layout='inset']
+  .sidebar-resizable-surface
+  > .sidebar-resizable-clip
+  > .sidebar-resizable-divider[data-testid='sidebar-panel'] {
+  border-right-color: transparent;
+}
+
+/* Revealed on hover with the sidebar hidden, the panel floats over the cards
+ * and runs the window's full height against its left edge, so only its right
+ * side is a real edge. It draws one hairline there plus a soft shadow cast to
+ * the right, instead of the floating-surface ring (`shadow-xl`) that outlined
+ * the top, left and bottom as well. */
+[data-window-layout='inset'] .app-sidebar-material.app-sidebar-preview-surface {
+  --sidebar-preview-shadow-color: rgb(0 0 0 / 0.12);
+  box-shadow:
+    var(--border-hairline) 0 0 0 var(--inset-card-edge-color, var(--line-base)),
+    12px 0 24px -12px var(--sidebar-preview-shadow-color);
+}
+
+.dark
+  [data-window-layout='inset']
+  .app-sidebar-material.app-sidebar-preview-surface {
+  --sidebar-preview-shadow-color: rgb(0 0 0 / 0.4);
+}
+
+/* The account footer's divider spans the sidebar's content column instead of
+ * its full width: 16px in from each edge, where the rows' icons and labels
+ * start (the footer's 8px inset plus the rows' own 8px). */
+[data-window-layout='inset'] [data-sidebar-footer-banners] + div {
+  position: relative;
+  border-top-color: transparent;
+}
+
+[data-window-layout='inset'] [data-sidebar-footer-banners] + div::before {
+  content: '';
+  position: absolute;
+  top: calc(-1 * var(--default-border-width));
+  right: 16px;
+  left: 16px;
+  height: var(--default-border-width);
+  background-color: var(--line-base);
+  pointer-events: none;
+}
+
+/* Concentric with the OS window corner: its radius (window points, from
+ * lib/windowCornerRadius.ts, divided by the interface zoom) minus the 4px
+ * inset. 12px when the OS radius is unknown; never fully square. */
+[data-window-layout='inset'] {
+  --inset-card-radius: max(
+    calc(var(--window-corner-radius, 16px) / var(--ui-zoom, 1) - 4px),
+    4px
+  );
+}
+
+/* Every card's edge. Dark mode lights it with a neutral line around the
+ * card: the cards are one step off the near-black window, and the default
+ * ring disappears there. The line sits outside the card (the gaps between
+ * cards have room for it), never inset: a page fills its card with its own
+ * background, which paints over anything drawn on the card's inside edge.
+ * It replaces the 2xs shadow there rather than joining it: that shadow's own
+ * dark ring is inset, so it showed only where a card's content left it bare
+ * (a panel's tab row, Settings) and doubled the edge on those cards alone.
+ *
+ * One frame for every card in the window (a page, Settings, a loading grid,
+ * each panel group): `--inset-card-radius`, `--bg-primary`, and this edge.
+ * A new card takes all three; none sets its own radius, fill or shadow.
+ * `InsetWindowCards.styles.test.ts` holds every card rule to that. */
+[data-window-layout='inset'] {
+  --inset-card-shadow: var(--shadow-2xs);
+  /* Room for that outside line on the one side with no gap: a card's left
+   * edge meets the sidebar, and on a worktree page it is also the edge of
+   * the scrolling area the cards sit in, which clipped the line there. Every
+   * card starts one hairline in, so its edge is whole on all four sides and
+   * sits at the same place on every page. */
+  --inset-card-edge-room: var(--border-hairline);
+}
+
+/* With the sidebar hidden nothing sits beside the cards, so their left edge
+ * keeps the window's 4px inset, as the right and bottom edges do. (The
+ * sidebar's hover preview floats over the page and changes nothing here.) */
+[data-window-layout='inset'][data-sidebar-hidden='true'] {
+  --inset-card-edge-room: 4px;
+}
+
+/* Settings and Your plugins bring their own sidebar, which is never hidden:
+ * their card always sits against it. */
+[data-window-layout='inset'][data-sidebar-hidden='true']
+  .settings-page-overlay {
+  --inset-card-edge-room: var(--border-hairline);
+}
+
+/* The inset eases in step with the sidebar's own 200ms open and close, so
+ * the cards do not hop sideways the moment it is toggled. */
+@media (prefers-reduced-motion: no-preference) {
+  [data-window-layout='inset'] main[data-main-frame],
+  [data-window-layout='inset']
+    main[data-main-frame='split']
+    :is([data-panel-grid-loading], [data-testid='panel-grid-root']) {
+    transition: margin-left 200ms ease-in-out;
+  }
+}
+
+.dark [data-window-layout='inset'] {
+  --inset-card-edge-color: var(--line-tertiary);
+  --inset-card-shadow: 0 0 0 var(--border-hairline) var(--inset-card-edge-color);
+}
+
+/* Dark mode: the divider under a card's tab row is the same line as the
+ * card's edge, in the same color, so the two read as one frame. Only where
+ * the divider shows: at the top of its content the tab row hides it. */
+.dark
+  [data-window-layout='inset']
+  .canopy-panel-group:not([data-title-edge='top'])
+  > .canopy-panel-group-title {
+  border-bottom-color: var(--inset-card-edge-color);
+}
+
+/* Resizing between cards: hovering or dragging the gap shows an 8px white
+ * handle (white in every theme: `--fg-emphasis`), 48px long and centered in
+ * the gap (not a line along the whole edge). It shows the moment the pointer
+ * is over the gap (`:hover`, not the engine's delayed `.hover`), with no fade.
+ * Its shadow is `shadow-xl`, the largest token, laid twice: on a handle this
+ * narrow the token's wide layers shrink to nothing, so one coat reads faint.
+ * The 4px hit target still spans the full edge; the handle overhangs it onto
+ * the cards, so the sash rises above them (and every other sash) while shown,
+ * staying under the drag-and-drop targets. */
+[data-window-layout='inset'] .canopy-sash {
+  --canopy-sash-hover-size: 8px;
+}
+
+[data-window-layout='inset'] .canopy-sash::before {
+  transition: none;
+}
+
+[data-window-layout='inset'] .canopy-sash:hover,
+[data-window-layout='inset'] .canopy-sash.hover,
+[data-window-layout='inset'] .canopy-sash.active {
+  z-index: 50; /* z-exception: a shown resize handle overhangs the cards */
+}
+
+[data-window-layout='inset'] .canopy-sash:hover::before,
+[data-window-layout='inset'] .canopy-sash.hover::before,
+[data-window-layout='inset'] .canopy-sash.active::before {
+  background: var(--fg-emphasis);
+  box-shadow: var(--shadow-xl);
+}
+
+[data-window-layout='inset'] .canopy-sash.vertical::before {
+  top: calc(50% - 24px);
+  height: 48px;
+  border-radius: 9999px;
+}
+
+[data-window-layout='inset'] .canopy-sash.horizontal::before {
+  left: calc(50% - 24px);
+  width: 48px;
+  border-radius: 9999px;
+}
+
+/* The worktree page clips its panel grid at the sidebar edge, where the
+ * left card sits flush: clip with a margin instead, so that card's edge line
+ * and shadow show on its left like on its other sides. Nothing scrolls here;
+ * the panels lay out inside the grid. Kanban keeps scrolling: its board and
+ * chat stack in a narrow window and need the room. */
+[data-window-layout='inset']
+  main[data-main-frame='split']:has([data-testid='panel-grid-root']):not(
+    :has([data-testid='worktree-kanban-board'])
+  ),
+[data-window-layout='inset']
+  main[data-main-frame='split']:not(:has([data-testid='worktree-kanban-board']))
+  [data-testid='worktree-part']:has([data-testid='panel-grid-root']) {
+  overflow: clip;
+  overflow-clip-margin: 4px;
+}
+
+/* Settings (outside the app window element, so it carries its own flag):
+ * its page is one card like the main window's, under the window's empty 46px
+ * top row and 4px from the window's right and bottom edges. The nav beside it
+ * has no edge line, like the main sidebar. */
+.settings-page-overlay[data-settings-layout='inset'] {
+  --inset-card-radius: max(
+    calc(var(--window-corner-radius, 16px) / var(--ui-zoom, 1) - 4px),
+    4px
+  );
+}
+
+.settings-page-overlay[data-settings-layout='inset']
+  [data-testid='settings-content'] {
+  --bg-base: var(--bg-primary);
+  /* One hairline of room on the left so the card's edge is not clipped
+   * against the nav. */
+  margin: 0 4px 4px var(--border-hairline);
+  overflow: hidden;
+  border-radius: var(--inset-card-radius);
+  background-color: var(--bg-primary);
+  box-shadow: var(--inset-card-shadow, var(--shadow-2xs));
+}
+
+/* Pages without a panel grid are one card. A top bar on the worktree page,
+ * kept mounted but hidden while another page shows, does not count. */
+[data-window-layout='inset'] main[data-main-frame='card'],
+[data-window-layout='inset'] main[data-main-frame='card-below-bar'],
+[data-window-layout='inset']
+  main[data-main-frame='split']:not(
+    :has(
+      :is([data-testid='worktree-top-bar'], [data-testid='cowork-top-bar']):not(
+        [data-main-page-hidden] *
+      )
+    )
+  ) {
+  --bg-base: var(--bg-primary);
+  margin: 0 4px 4px var(--inset-card-edge-room);
+  border-radius: var(--inset-card-radius);
+  background-color: var(--bg-primary);
+  box-shadow: var(--inset-card-shadow);
+}
+
+/* Your plugins covers the window with its own sidebar and page. The page is
+ * one card in the main window's frame: under its 40px drag row plus 6px (the
+ * window's 46px top row), 4px from the right and bottom edges. Its shared
+ * heading brings 16px, so the card adds 40px to seat it 56px under the card's
+ * top edge, like every other page. */
+/* Around that card, the page shows the window material (the sidebar and
+ * titlebar surface), as Settings does, not its own base: otherwise the drag
+ * row above the card reads as a separate band. */
+[data-window-layout='inset']
+  .settings-page-overlay
+  [data-testid='plugins-management-content'] {
+  background-color: transparent;
+}
+
+[data-window-layout='inset']
+  .settings-page-overlay
+  [data-testid='plugins-management-content']
+  > .page-scroll-gutter {
+  --bg-base: var(--bg-primary);
+  margin: 6px 4px 4px var(--inset-card-edge-room);
+  padding-top: 40px;
+  border-radius: var(--inset-card-radius);
+  background-color: var(--bg-primary);
+  box-shadow: var(--inset-card-shadow);
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+
+/* Settings pages bring 32px above their heading; 24px more seats it 56px
+ * under the card's top edge too. The card itself is the rule above
+ * (`[data-settings-layout='inset']`). */
+.settings-page-overlay[data-settings-layout='inset']
+  [data-testid='settings-content']
+  > .page-scroll-gutter {
+  padding-top: 24px;
+}
+
+/* While a worktree's panel layout loads, the space under the top bar is one
+ * card with the loading state inside it, the same frame the panels land in.
+ * An empty grid (no group yet) shows the same card. */
+[data-window-layout='inset']
+  main[data-main-frame='split']
+  [data-panel-grid-loading],
+[data-window-layout='inset']
+  main[data-main-frame='split']
+  [data-testid='panel-grid-root']:not(
+    :has(.canopy-panel-group, .canopy-panel-collapsed-bar)
+  ) {
+  --bg-base: var(--bg-primary);
+  margin: 0 4px 4px var(--inset-card-edge-room);
+  border-radius: var(--inset-card-radius);
+  background-color: var(--bg-primary);
+  box-shadow: var(--inset-card-shadow);
+}
+
+/* Under a top bar, every panel group (chat, Side Panel, bottom panel) is its
+ * own card, 4px apart. Each group keeps a 2px margin inside its grid cell, so
+ * neighbours sit 4px apart; the grid itself reaches 2px past the sidebar and
+ * the top bar and stops 2px short of the window's right and bottom edges, so
+ * the outer cards line up with them exactly and sit 4px from the window. */
+[data-window-layout='inset']
+  main[data-main-frame='split']
+  [data-testid='panel-grid-root'] {
+  --bg-base: var(--bg-primary);
+  /* The grid host is `width: 100%`; as a stretched flex item it fills the
+   * width minus its margins instead. */
+  width: auto;
+  margin: -2px 2px 2px calc(var(--inset-card-edge-room) - 2px);
+}
+
+[data-window-layout='inset']
+  main[data-main-frame='split']
+  [data-testid='panel-grid-root']
+  :is(
+    .canopy-panel-group,
+    .canopy-panel-collapsed-bar:not(.canopy-panel-group *)
+  ) {
+  width: calc(100% - 4px);
+  height: calc(100% - 4px);
+  margin: 2px;
+  border-radius: var(--inset-card-radius);
+  background-color: var(--bg-primary);
+  box-shadow: var(--inset-card-shadow);
+}
+
+/* The group itself does not clip (its menus open past its edges), so its
+ * title row and body round their own corners. */
+[data-window-layout='inset']
+  main[data-main-frame='split']
+  [data-testid='panel-grid-root']
+  .canopy-panel-group-title {
+  border-radius: var(--inset-card-radius) var(--inset-card-radius) 0 0;
+  /* One surface per card: the tab row takes the card's color. */
+  background: transparent;
+}
+
+[data-window-layout='inset']
+  main[data-main-frame='split']
+  [data-testid='panel-grid-root']
+  .canopy-panel-group-body {
+  border-radius: 0 0 var(--inset-card-radius) var(--inset-card-radius);
+}
+
+/* The Browser's page is a native view, which no CSS clip reaches: it would
+ * paint square over the card's rounded corners. The page fills the card's
+ * body edge to edge, square under the toolbar, and rounds only the corners
+ * it shares with the card. The pane hands these radii to the native view
+ * (BrowserPane `sendBounds`). An open inspector takes the bottom-right. */
+[data-window-layout='inset']
+  main[data-main-frame='split']
+  [data-testid='panel-grid-root']
+  [data-testid='browser-page-area'] {
+  border-radius: 0 0 var(--inset-card-radius) var(--inset-card-radius);
+  overflow: hidden;
+}
+
+[data-window-layout='inset']
+  main[data-main-frame='split']
+  [data-testid='panel-grid-root']
+  [data-testid='browser-page-area']:not(:last-child) {
+  border-bottom-right-radius: 0;
+}
+
+[data-window-layout='inset']
+  main[data-main-frame='split']
+  [data-testid='panel-grid-root']
+  .canopy-panel-group
+  .canopy-panel-collapsed-bar {
+  border-radius: var(--inset-card-radius);
+}
+
+[data-window-layout='inset']
+  main[data-main-frame='split']
+  [data-testid='panel-grid-root']
+  .canopy-panel-collapsed-bar {
+  background: var(--bg-primary);
+}
+
+/* The gaps between cards replace the split view's hairline separators. */
+[data-window-layout='inset']
+  main[data-main-frame='split']
+  [data-testid='panel-grid-root']
+  .canopy-split-view.separator-border
+  > .split-view-container
+  > .split-view-view::before {
+  display: none;
+}
+
+/* A page's card keeps the same strip on both sides as the scrollbar's
+ * reserved one, so content centered in the card (the New Task composer) has
+ * equal insets. */
+[data-window-layout='inset'] .page-scroll-gutter {
+  scrollbar-gutter: stable both-edges;
+}
+
+/* A page's heading keeps 16px under the page's own 40px bar instead of 48px:
+ * its card already starts below the window's empty 46px top row, so the full
+ * gap left the title floating far below the card's top edge. Category and
+ * detail headings under a breadcrumb bar move up by the same amount. */
+[data-window-layout='inset'] [data-testid='page-heading'] {
+  padding-top: 16px;
+}
+
+/* Every page without a top bar of its own (New Task, Automations, and the
+ * rest, plus a worktree page with nothing selected) keeps the 46px top bar
+ * row empty, so its card starts exactly where a worktree's panel grid does. */
+[data-window-layout='inset'] main[data-main-frame='card'],
+[data-window-layout='inset'] main[data-main-frame='card-below-bar'],
+[data-window-layout='inset']
+  main[data-main-frame='split']:not(
+    :has(
+      :is([data-testid='worktree-top-bar'], [data-testid='cowork-top-bar']):not(
+        [data-main-page-hidden] *
+      )
+    )
+  ) {
+  margin-top: 46px;
+}
+
+/* Hovering or dragging a sidebar's resize handle draws a line on the edge
+ * beside the sidebar. It does not follow the pointer: it runs the whole edge,
+ * solid through its middle 70% and fading out over the last 15% at each end.
+ * It is the handle's own `::after` (the handle sits over the
+ * sidebar edge, above the page), so it shows on every page with a sidebar
+ * whatever that page paints. The edge runs from below the top bar row's card
+ * corner to above the bottom corner. */
+[data-window-layout='inset']
+  .sidebar-resize-handle:is(:hover, [data-resizing='true'])::after {
+  content: '';
+  position: absolute;
+  top: calc(46px + var(--inset-card-radius));
+  bottom: calc(4px + var(--inset-card-radius));
+  left: 50%;
+  width: var(--border-hairline);
+  background-image: linear-gradient(
+    to bottom,
+    transparent,
+    var(--line-selected) 15%,
+    var(--line-selected) 85%,
+    transparent
+  );
+  pointer-events: none;
+}
+
+/* Dark mode: the selected line is a light grey that glares on the near-black
+ * window, so the same line shows at half strength. */
+.dark
+  [data-window-layout='inset']
+  .sidebar-resize-handle:is(:hover, [data-resizing='true'])::after {
+  opacity: 0.5;
+}
+
+html[data-platform='darwin'] body[data-renderer-surface='main'] {
+  background-color: transparent;
+}
+
+html[data-platform='darwin'] .app-window-material {
+  /* Opaque is the startup-safe default before preferences hydrate. */
+  --app-window-material-tint-color: var(--bg-depth);
+  --app-window-material-tint-opacity: 100%;
+  background-color: color-mix(
+    in srgb,
+    var(--app-window-material-tint-color)
+      var(--app-window-material-tint-opacity),
+    transparent
+  );
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+html[data-platform='darwin'][data-sidebar-appearance='translucent']
+  .app-window-material {
+  --app-window-material-tint-opacity: 56%;
+  -webkit-backdrop-filter: blur(8px) saturate(100%);
+  backdrop-filter: blur(8px) saturate(100%);
+}
+
+html[data-platform='darwin'][data-sidebar-appearance='translucent']
+  .app-sidebar-material:not(.app-sidebar-preview-surface) {
+  /* The band PAINTS, as the web portal's does. With the clip line now sitting
+   * ON the band's bottom edge, a transparent band lets rows render straight
+   * through the headers; with the clip below that edge instead, the strip
+   * between showed neither band nor row and stranded a branch name under the
+   * pinned header. Painting is what makes the aligned line work. */
+  --sidebar-selected-pin-surface: var(--bg-sidebar);
+}
+
+/* The window material is a 56% tint, so a solid `--bg-sidebar` fill on a
+ * sticky header or pin band reads as a black block on it. Occlude with a
+ * frosted backdrop instead: over the uniform material the blur is invisible,
+ * and rows scrolling underneath are blurred out rather than painted through. */
+html[data-platform='darwin'][data-sidebar-appearance='translucent']
+  .app-sidebar-material:not(.app-sidebar-preview-surface)
+  :is(
+    .bg-sidebar.sticky,
+    .sidebar-sticky-workspace-slot,
+    .sidebar-selected-pin-top,
+    .sidebar-selected-pin-bottom,
+    .sidebar-chats-selected-pin-row
+  ) {
+  background: transparent;
+  -webkit-backdrop-filter: blur(24px);
+  backdrop-filter: blur(24px);
+}
+
+/* Workspace headers should read as ordinary sidebar items at rest, inheriting
+ * the sidebar material without adding a surface of their own. */
+html[data-platform='darwin'] .app-sidebar-material .bg-sidebar:not(.sticky) {
+  background-color: transparent;
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  html[data-platform='darwin'] .app-window-material {
+    background-color: var(--bg-sidebar);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+
+  html[data-platform='darwin'] .app-sidebar-material .bg-sidebar:not(.sticky) {
+    background-color: transparent;
+  }
+
+  html[data-platform='darwin'][data-sidebar-appearance='translucent']
+    .app-sidebar-material:not(.app-sidebar-preview-surface) {
+    --sidebar-selected-pin-surface: var(--bg-sidebar);
+  }
+
+  html[data-platform='darwin'][data-sidebar-appearance='translucent']
+    .app-sidebar-material:not(.app-sidebar-preview-surface)
+    :is(
+      .bg-sidebar.sticky,
+      .sidebar-sticky-workspace-slot,
+      .sidebar-selected-pin-top,
+      .sidebar-selected-pin-bottom,
+      .sidebar-chats-selected-pin-row
+    ) {
+    background: var(--bg-sidebar);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+/* Content search highlighting */
+.search-match {
+  background-color: color-mix(in srgb, var(--fg-warning) 35%, transparent);
+  color: inherit;
+  border-radius: 2px;
+}
+.search-match-active {
+  background-color: color-mix(in srgb, var(--fg-warning) 65%, transparent);
+  outline: 1px solid var(--fg-warning);
+}
+::highlight(search-matches) {
+  background-color: color-mix(in srgb, var(--fg-warning) 35%, transparent);
+  color: inherit;
+}
+::highlight(search-match-active) {
+  background-color: color-mix(in srgb, var(--fg-warning) 65%, transparent);
+}
+::highlight(code-review-search-matches) {
+  background-color: color-mix(in srgb, var(--fg-warning) 35%, transparent);
+  color: inherit;
+}
+::highlight(code-review-search-match-active) {
+  background-color: color-mix(in srgb, var(--fg-warning) 65%, transparent);
+}
+
+.browser-bar {
+  container: browser-bar / inline-size;
+}
+
+.browser-bar-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  min-width: 0;
+  padding: 0.25rem 0.375rem;
+}
+
+.browser-bar-nav,
+.browser-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.125rem;
+  min-width: 0;
+}
+
+.browser-bar-nav {
+  flex: 0 0 auto;
+}
+
+.browser-bar-url {
+  min-width: 7rem;
+  flex: 1 1 11rem;
+}
+
+.browser-bar-actions {
+  flex: 0 1 auto;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.browser-bar-actions::-webkit-scrollbar {
+  display: none;
+}
+
+/* Horizontally scrollable strips (terminal/browser nested session tabs) that
+   must not surrender vertical space to a native scrollbar — a visible
+   horizontal scrollbar shrinks the content box and clips the tab tops. */
+.canopy-hide-scrollbar {
+  scrollbar-width: none;
+}
+
+.canopy-hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.browser-bar-pick-button {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.25rem;
+  border-radius: 0.25rem;
+  padding: 0.25rem 0.5rem;
+  font-size: 11px;
+  font-weight: var(--font-weight-medium);
+  transition-property:
+    color, background-color, border-color, text-decoration-color, fill, stroke;
+  transition-duration: 150ms;
+}
+
+@container browser-bar (max-width: 520px) {
+  .browser-bar-toolbar {
+    flex-wrap: wrap;
+    align-items: stretch;
+  }
+
+  .browser-bar-url {
+    order: 1;
+    min-width: 0;
+    flex-basis: 100%;
+  }
+
+  .browser-bar-nav {
+    order: 2;
+  }
+
+  .browser-bar-actions {
+    order: 3;
+    flex: 1 1 0;
+    justify-content: flex-end;
+  }
+}
+
+@container browser-bar (max-width: 340px) {
+  .browser-bar-actions {
+    justify-content: flex-start;
+  }
+
+  .browser-bar-pick-label {
+    display: none;
+  }
+}
+
+/* Compact diff popover — remove the library's 1000px min-width, shrink font, wrap lines */
+.diff-popover-compact .diff-content-view {
+  overflow-x: hidden !important;
+}
+.diff-popover-compact .diff-content-view table {
+  min-width: unset !important;
+  table-layout: fixed !important;
+  width: 100% !important;
+}
+.diff-popover-compact .diff-content-view pre {
+  white-space: pre-wrap !important;
+  word-break: break-all !important;
+  font-size: 11px !important;
+}
+.diff-popover-compact .diff-content-view td {
+  font-size: 11px !important;
+}
+
+/* Reveal the gutter "+" comment affordance on row hover. `group-hover` can't
+   drive this because react-diff-viewer-continued renders its own <tr> rows
+   with no row-class prop to attach the Tailwind `group` marker to. */
+tr:hover .review-line-plus {
+  opacity: 1;
+}
+
+/* GitHub-style selection band for the current review line range. The gutter
+   cell carries `data-review-selected` (see `ReviewDiffContentView.tsx`) for
+   every row inside `highlightRange`; a `:has()` rule then paints a translucent
+   primary band across that whole row (layered over the diff's own
+   added/removed cell backgrounds) plus a solid left
+   accent on the row's first cell. This is the always-visible highlight used
+   while dragging the gutter "+", after a line/shift click, on search reveal,
+   and on a bottom-tray jump. */
+tr:has(td[data-review-selected]) td {
+  background-image: linear-gradient(
+    color-mix(in srgb, var(--fg-accent) 12%, transparent),
+    color-mix(in srgb, var(--fg-accent) 12%, transparent)
+  );
+}
+tr:has(td[data-review-selected]) td:first-child {
+  background-image:
+    linear-gradient(to right, var(--fg-accent) 0 3px, transparent 3px),
+    linear-gradient(
+      color-mix(in srgb, var(--fg-accent) 12%, transparent),
+      color-mix(in srgb, var(--fg-accent) 12%, transparent)
+    );
+}
+
+@keyframes onboarding-logo-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: scale(0.97);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.onboarding-logo-pulse {
+  animation: onboarding-logo-pulse 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .onboarding-logo-pulse {
+    animation: none;
+  }
+}
+
+/* Home onboarding suggestions (Getting started module): a queue row that
+ * backfills into a freed slot slides up into place. Applied only to entries
+ * that were not rendered on the previous pass, so initial mounts stay
+ * still. */
+@keyframes onboarding-suggestion-enter {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.onboarding-suggestion-enter {
+  animation: onboarding-suggestion-enter 0.24s cubic-bezier(0.16, 1, 0.3, 1)
+    both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .onboarding-suggestion-enter {
+    animation: none;
+  }
+}
+
+/* The add-repo spotlight overlay fades in as one unit (scrim + hint card)
+ * instead of popping. */
+@keyframes onboarding-spotlight-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.onboarding-spotlight-fade {
+  animation: onboarding-spotlight-fade 0.18s ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .onboarding-spotlight-fade {
+    animation: none;
+  }
+}
+
+@keyframes workspace-highlight-pulse {
+  0% {
+    outline-color: transparent;
+  }
+  25% {
+    outline-color: var(--line-focus);
+  }
+  50% {
+    outline-color: transparent;
+  }
+  75% {
+    outline-color: var(--line-focus);
+  }
+  100% {
+    outline-color: transparent;
+  }
+}
+
+.workspace-highlight-pulse {
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+  animation: workspace-highlight-pulse 3.5s ease-in-out 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace-highlight-pulse {
+    animation: none;
+    outline-color: var(--line-focus);
+  }
+}
+
+/* React Flow diagram controls (Explore plan visualizer). The library ships
+ * hard-coded light styling for the zoom/fit controls, which is unreadable in
+ * dark mode. Map them onto theme tokens so they track light/dark. !important is
+ * required to win over the library stylesheet regardless of import order. */
+.react-flow__controls {
+  box-shadow: var(--shadow-md) !important;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.react-flow__controls-button {
+  background-color: var(--bg-card) !important;
+  border-bottom: 0.5px solid var(--line-base) !important;
+  color: var(--fg-primary) !important;
+  fill: var(--fg-primary) !important;
+}
+.react-flow__controls-button:hover {
+  background-color: var(--bg-secondary) !important;
+}
+.react-flow__controls-button svg {
+  fill: var(--fg-primary) !important;
+}
+
+/* VS Code-style sticky scroll for the file explorer (FilesTreeTab). Folder
+ * headers are `position: sticky` (set inline, offset by depth) and stack at the
+ * top of the scroll container as you scroll into a subtree. The scroll
+ * container toggles `data-stuck` on the headers that are currently pinned and
+ * `data-stuck-edge` on the single bottom-most one.
+ *
+ * The pinned stack reads as ONE block: every pinned row is opaque and squared
+ * off (overriding the row's default `rounded-md`) with no inner borders, and
+ * `z-index: 1` lifts the pinned stack above sibling folders that are merely
+ * scrolling past (those keep the auto z-index and slide behind). Only the
+ * bottom-most pinned row carries the block's rounded bottom corners plus its
+ * UI Kit surface shadow. box-shadow keeps toggling free of layout reflow. */
+[data-file-tree-folder][data-stuck='true'] {
+  z-index: 1; /* z-exception: pinned rows only stack within the file tree */
+  background-color: var(--bg-card);
+  border-radius: 0;
+}
+[data-file-tree-folder][data-stuck-edge='true'] {
+  border-bottom-left-radius: 0.375rem;
+  border-bottom-right-radius: 0.375rem;
+  box-shadow: var(--shadow-sm);
+}
+
+/* Plan Explore inline comment highlights (CSS Custom Highlight API). The draft
+ * highlight marks the text being commented on while the popover is open; the
+ * anchor highlight marks text that already has committed comment thread(s). */
+::highlight(plan-comment-draft) {
+  background-color: color-mix(in srgb, var(--fg-accent) 30%, transparent);
+}
+::highlight(plan-comment-anchor) {
+  background-color: color-mix(in srgb, var(--fg-warning) 26%, transparent);
+}
+
+/* Editor selection reveal flash (CAN-1250). Applied as a temporary Monaco
+ * decoration when a composer context chip reveals its captured range, then
+ * cleared shortly after so it reads as a flash, not a persistent highlight. */
+.canopy-editor-reveal-flash {
+  background-color: color-mix(in srgb, var(--fg-accent) 28%, transparent);
+}
+
+/* Monaco file-editor find-widget tooltips.
+ *
+ * Monaco's find widget shows delayed hover tooltips (case-sensitive, whole
+ * word, regex, prev/next, close) via its hover service. The overlay is a stack
+ * of `.context-view` > `.workbench-hover-container` > `.monaco-hover`, appended
+ * to the editor's container node (the element carrying our
+ * `canopy-monaco-file-editor` class), and Monaco positions it with inline
+ * coordinates anchored to the hovered button. In a narrow editor panel it lands
+ * directly on top of the toolbar: it captures the pointer (flicker loop +
+ * swallowed clicks) and, even made click-through, it still visually covers the
+ * controls. Because the position is written inline per-button (and the widget
+ * grows to two rows in replace mode), there is no static offset that reliably
+ * moves it clear.
+ *
+ * So we hide the hover overlay while the pointer is over the find widget and
+ * instead mirror each control's `aria-label` onto a native `title` in
+ * MonacoFileEditor — the browser then renders a standard tooltip positioned by
+ * the cursor that never overlaps or blocks the buttons.
+ * `:has(.workbench-hover-container)` restricts this to hover tooltips, leaving
+ * the editor's right-click context menu (a sibling `.context-view` holding a
+ * `.monaco-menu`) untouched. */
+.canopy-monaco-file-editor:has(.find-widget:hover)
+  .context-view:has(.workbench-hover-container) {
+  display: none;
+}
+
+.canopy-monaco-file-editor .canopy-file-annotation,
+.canopy-monaco-file-editor .canopy-file-comment-anchor {
+  background: color-mix(in srgb, var(--fg-accent) 18%, transparent);
+  border-block: 0.5px solid
+    color-mix(in srgb, var(--fg-accent) 42%, transparent);
+}
+
+.canopy-monaco-file-editor .canopy-file-annotation-line-decoration {
+  border-left: 3px solid var(--fg-accent);
+  margin-left: 2px;
+}
+
+.canopy-monaco-file-editor .canopy-file-annotation-glyph,
+.canopy-monaco-file-editor .canopy-file-comment-glyph {
+  cursor: pointer;
+}
+
+.canopy-monaco-file-editor .canopy-file-annotation-glyph::before,
+.canopy-monaco-file-editor .canopy-file-comment-glyph::before {
+  content: '';
+  display: block;
+  width: 8px;
+  height: 8px;
+  margin: 6px auto 0;
+  border-radius: 9999px;
+  background: var(--fg-accent);
+}
+
+.canopy-monaco-file-editor .canopy-file-comment-glyph::before {
+  box-shadow: var(--shadow-xs);
+}
+
+/* While a sidebar dropdown/context menu is open, the background sidebar has
+ * NO hover states at all — no row highlights, no hover-revealed actions, no
+ * tooltips, no cursor changes; the pointer belongs to the menu. Disabling
+ * pointer events on the surface suppresses every hover effect at once. The
+ * menus themselves are body portals, so they stay interactive, and dismissal
+ * presses still reach the document listeners. Scoped off the body attribute
+ * set by useSuspendSidebarHovers. */
+body[data-sidebar-menu-open] .sidebar-resizable-surface,
+body[data-sidebar-menu-open] .sidebar-resizable-surface * {
+  /* !important + `*`: row internals opt back in with `pointer-events-auto`
+   * utilities (diff spans, dot hover targets, drag overlays), which would
+   * re-enable hit-testing and light the hover chain straight through the
+   * inert surface. */
+  pointer-events: none !important;
+}
+
+/* The sidebar is a high-frequency navigation surface, so its interaction
+ * feedback must be immediate. Portaled sidebar menus opt into this scope too. */
+.sidebar-instant-interactions,
+.sidebar-instant-interactions::before,
+.sidebar-instant-interactions::after,
+.sidebar-instant-interactions *,
+.sidebar-instant-interactions *::before,
+.sidebar-instant-interactions *::after {
+  transition-duration: 0ms !important;
+  transition-delay: 0ms !important;
+}
+
+/* Scrollbar motion is the one intentional exception to the sidebar's instant
+ * interaction rule. The rail owns hover so the full 10px hit area animates the
+ * 6px thumb, not only the visible thumb pixels. */
+[data-sidebar-scrollbar],
+[data-overlay-scrollbar] {
+  transition: opacity 200ms ease-out !important;
+}
+
+[data-sidebar-scrollbar-thumb],
+[data-overlay-scrollbar-thumb] {
+  transition:
+    width 250ms ease-out,
+    background-color 250ms ease-out !important;
+}
+
+[data-sidebar-scrollbar]:hover [data-sidebar-scrollbar-thumb],
+[data-overlay-scrollbar]:hover [data-overlay-scrollbar-thumb] {
+  width: 8px;
+  background-color: var(--fg-secondary);
+}
+
+/* Always-visible mode keeps the native fixed width — macOS's permanent
+   scrollbar deepens in colour on hover but does not grow. */
+:root[data-scrollbars='always']
+  [data-sidebar-scrollbar]:hover
+  [data-sidebar-scrollbar-thumb],
+:root[data-scrollbars='always']
+  [data-overlay-scrollbar]:hover
+  [data-overlay-scrollbar-thumb] {
+  width: var(--canopy-scrollbar-thumb-size);
+}
+
+/* The workspace rows' icon→chevron disclosure swap is the other intentional
+ * exception: toggling a hovered row animates the chevron's rotation between
+ * the expanded (down) and collapsed (right) orientations. Only `rotate`
+ * transitions — the hover swap's opacity stays instant like every other
+ * sidebar interaction. Must follow the instant-interaction rule so its
+ * equally-specific !important declaration wins by source order. */
+[data-workspace-disclosure-chevron] {
+  transition: rotate 150ms cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+/* Keep sidebar hover feedback immediate without suppressing the coordinated
+ * shell movement when the sidebar itself expands or collapses. */
+.sidebar-layout-transition {
+  transition-duration: 200ms !important;
+}
+
+/* The collapsed titlebar's New Task seat. Docked, the sidebar's titlebar row
+ * covers it, and at a narrow sidebar the row's last control sits right on it.
+ * That control is only ever cut by the sidebar's moving edge, so New Task is
+ * cut by the same edge from the other side and the seat changes hands in the
+ * frame the edge crosses it. The edge position is a typed length animated on
+ * the aside's own lengths, duration and curve (`sidebarDockedEdgeCss`,
+ * `.sidebar-layout-transition`, Tailwind's `ease-in-out`), so the clip and the
+ * sidebar never disagree. Transitioning `clip-path` itself would not: the
+ * seat is offset from the window edge, so its inset is not proportional to
+ * the sidebar's width. Opacity still fades for the hover preview, whose
+ * floating panel brings the sidebar's own New Task back over the seat.
+ * Uncovered, the clip reaches 4px past the box on every side so the shared
+ * outside focus ring (2px outline at a 2px offset) stays visible.
+ * Doubled for specificity over `.sidebar-instant-interactions *`. */
+@property --titlebar-seat-edge {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+
+.titlebar-create-task-seat.titlebar-create-task-seat {
+  clip-path: inset(
+    -4px -4px -4px
+      max(-4px, calc(var(--titlebar-seat-edge) - var(--titlebar-seat-left)))
+  );
+  transition-property: --titlebar-seat-edge, opacity;
+  transition-duration:
+    200ms, var(--sidebar-preview-fade-duration, 120ms) !important;
+  transition-timing-function:
+    var(--ease-in-out, cubic-bezier(0.4, 0, 0.2, 1)), ease-out;
+  transition-delay: 0ms !important;
+}
+
+.titlebar-create-task-seat-instant.titlebar-create-task-seat-instant {
+  transition-duration:
+    0ms, var(--sidebar-preview-fade-duration, 120ms) !important;
+}
+
+/* `.sidebar-icon-skeleton` and `.sidebar-account-avatar-attention-mask`
+ * moved to @canopy/ui-shared/styles/canopy-tokens.css: the shared account
+ * row paints them on the web portal too. */
+
+/* Early access (the inset layout): the account avatar's cutout sits on its
+ * attention dot. The 6px dot is centered 1px in from the avatar's top-right
+ * corner (it overhangs by 2px), so the hole is centered there too, the dot's
+ * radius plus a 1px gap, and the sidebar shows through it. */
+[data-window-layout='inset'] .sidebar-account-avatar-attention-mask {
+  -webkit-mask-image: radial-gradient(
+    circle 4.5px at calc(100% - 1px) 1px,
+    transparent 0 4px,
+    black 4.5px
+  );
+  mask-image: radial-gradient(
+    circle 4.5px at calc(100% - 1px) 1px,
+    transparent 0 4px,
+    black 4.5px
+  );
+}
+
+/* Page-nav row scroll mask lives in @canopy/ui-shared/styles/canopy-tokens.css. */
+
+/* Settings pages scroll up beneath the floating 40px window drag strip
+ * instead of being cut off by an empty band. The drag strip swallows pointer
+ * input, so content fades across its whole height and only reads as solid,
+ * clickable content once it has cleared the strip. */
+.settings-content-scroll-mask {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, black 2.5rem);
+  mask-image: linear-gradient(to bottom, transparent 0, black 2.5rem);
+}
+
+/* Settings selects nothing on drag (`select-none` on the overlay), except
+ * what the user types and the values they may copy: paths, commands, codes.
+ * In the base layer so an element's own `select-*` utility still wins. */
+@layer base {
+  .settings-page-overlay
+    :where(input, textarea, [contenteditable='true'], code, pre, .font-mono) {
+    user-select: text;
+  }
+}
+
+/* Scroll-written mask stops, registered so they do NOT inherit.
+ *
+ * `AppSidebar` rewrites these three on every wheel event. Custom properties
+ * inherit by default, so setting one on a container invalidates style for its
+ * whole subtree — and the Chats section holds every chat row, so an expanded
+ * list meant hundreds of elements re-resolving style per event. Each is read
+ * only by the `mask-image` on the element it is set on, so `inherits: false`
+ * is safe and confines the invalidation to that element.
+ *
+ * `syntax` also type-checks the value, so a malformed write falls back to the
+ * initial value instead of silently dropping the mask. */
+@property --sidebar-new-task-mask-start {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: -12px;
+}
+
+@property --sidebar-new-task-mask-end {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+
+@property --sidebar-chats-bottom-cut {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+
+/* The project list's occlusion edges, animated by the scroll-driven keyframes
+ * below. Registering them as lengths is what lets the keyframes interpolate
+ * them; composing the clip AND the fade ramp from the same value is what
+ * keeps the two from ever disagreeing. */
+@property --sidebar-workspaces-occlusion-top {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: -100000px;
+}
+
+@property --sidebar-workspaces-occlusion-bottom {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: -100000px;
+}
+
+/* Mirror the development-footer edge directly below fixed New task. The
+ * scroll-synchronized stops keep the 12px ramp pinned to the viewport edge
+ * while masking only primary navigation; More and Workspaces remain outside
+ * this transparent material-safe mask. */
+.sidebar-new-task-scroll-mask {
+  --sidebar-new-task-mask-start: -12px;
+  --sidebar-new-task-mask-end: 0px;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent var(--sidebar-new-task-mask-start),
+    black var(--sidebar-new-task-mask-end)
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent var(--sidebar-new-task-mask-start),
+    black var(--sidebar-new-task-mask-end)
+  );
+}
+
+/* The Chats section (CAN-2363) sits above the project list and scrolls under
+ * the sticky Projects controls like the nav rows do, so it shares that top
+ * fade — but a long list can also reach the selected-item bottom pin, whose
+ * surface is transparent on the macOS translucent sidebar. AppSidebar
+ * publishes how much of the section overlaps that band as
+ * `--sidebar-chats-bottom-cut`, and the mask drops it. */
+.sidebar-chats-scroll-mask {
+  --sidebar-new-task-mask-start: -12px;
+  --sidebar-new-task-mask-end: 0px;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent var(--sidebar-new-task-mask-start),
+    black var(--sidebar-new-task-mask-end),
+    black calc(100% - var(--sidebar-chats-bottom-cut, 0px)),
+    transparent calc(100% - var(--sidebar-chats-bottom-cut, 0px))
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent var(--sidebar-new-task-mask-start),
+    black var(--sidebar-new-task-mask-end),
+    black calc(100% - var(--sidebar-chats-bottom-cut, 0px)),
+    transparent calc(100% - var(--sidebar-chats-bottom-cut, 0px))
+  );
+}
+
+/* Include the group rail's existing gutter in the fade mask while retaining
+ * row alignment and the same vertical occlusion boundaries. */
+.sidebar-chats-scroll-mask:has([data-sidebar-item-group-id]) {
+  margin-left: -0.5rem;
+  padding-left: 0.5rem;
+}
+
+/* The MCP servers table's horizontal scroll region (CAN-4258) fades the side
+ * that hides columns, so the overflow stays discoverable while overlay
+ * scrollbars are hidden at rest. `McpTableScrollRegion` sets the attribute
+ * only when the table is wider than the region. */
+.mcp-table-scroll {
+  --mcp-table-fade: 2rem;
+}
+
+.mcp-table-scroll[data-overflow='end'] {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    black calc(100% - var(--mcp-table-fade)),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to right,
+    black calc(100% - var(--mcp-table-fade)),
+    transparent
+  );
+}
+
+.mcp-table-scroll[data-overflow='start'] {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent,
+    black var(--mcp-table-fade)
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    black var(--mcp-table-fade)
+  );
+}
+
+.mcp-table-scroll[data-overflow='both'] {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent,
+    black var(--mcp-table-fade),
+    black calc(100% - var(--mcp-table-fade)),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    black var(--mcp-table-fade),
+    black calc(100% - var(--mcp-table-fade)),
+    transparent
+  );
+}
+
+/* The focused region keeps its whole inset ring. */
+.mcp-table-scroll[data-overflow]:focus-visible {
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+
+/* Interpolating from `40px - clip-start` at scroll 0 to
+ * `40px + clip-distance` at max scroll keeps the clip line at a constant
+ * viewport position (the bottom of the transparent sticky controls plus the
+ * 40px slot band) for EVERY scroll offset: negative (inert) before the
+ * sticky threshold, the former inset(40px) exactly at it, and tracking 1:1
+ * beyond it. The var fallbacks make both ends equal (deeply negative) so the
+ * animation clips nothing until AppSidebar publishes real geometry.
+ *
+ * The selected-item pin vars deepen both clip lines while a pinned copy of
+ * the selected worktree / work entry occupies the band: the top band grows by
+ * the pinned row (plus a later stuck workspace header) and the bottom band
+ * covers the bottom-pinned group. They are 0px whenever nothing is pinned,
+ * which keeps both bands byte-identical to the pre-pin behavior. The bottom
+ * inset interpolates from `bottom-clip-start` at scroll 0 to
+ * `bottom-clip-start - clip-total` at max scroll, holding the bottom clip
+ * line exactly at the viewport's bottom edge (minus the active pin band) at
+ * every offset — with no pin the line coincides with the viewport bottom and
+ * clips nothing visible. */
+/* `--sidebar-external-projects-header-height` IS part of this sum, and has to
+ * be: the expression computes the band's ABSOLUTE bottom from the controls'
+ * seat, and on the shared surface that seat is followed by a host-rendered
+ * Projects header before the slot. Subtracting `--sidebar-workspaces-flow-top`
+ * is what converts that absolute line into the flow layer's own coordinates,
+ * so the header is counted once rather than twice.
+ *
+ * It was once excluded, back when this was written as a flow-relative offset
+ * with no `flow-top` term — in that form the header WAS already accounted for
+ * by the flow layer's position and adding it double-counted. Dropping it from
+ * the absolute form instead puts the clip one header above the band, which is
+ * the orphaned-subtitle defect (CAN-3126); `SidebarTransition.styles` asserts
+ * the term is present for exactly that reason. */
+@keyframes sidebar-workspace-flow-clip {
+  from {
+    --sidebar-workspaces-occlusion-top: calc(
+      clamp(
+          0px,
+          (
+            var(--sidebar-workspace-header-top, 0px) +
+              var(--sidebar-external-projects-header-height, 0px) +
+              var(--sidebar-selected-pin-top-height, 0px) +
+              var(--sidebar-workspaces-slot-height, 2rem) -
+              var(--sidebar-workspaces-flow-top, 0px) +
+              var(--sidebar-workspaces-clip-start, 0px) -
+              var(--sidebar-selected-pin-top-clip, 0px)
+          ),
+          100vh
+        ) +
+        var(--sidebar-selected-pin-top-clip, 0px) -
+        var(--sidebar-workspaces-clip-start, 100000px)
+    );
+    --sidebar-workspaces-occlusion-bottom: calc(
+      var(--sidebar-workspaces-bottom-clip-start, -100000px) +
+        var(--sidebar-selected-pin-bottom-clip, 0px)
+    );
+  }
+  to {
+    --sidebar-workspaces-occlusion-top: calc(
+      clamp(
+          0px,
+          (
+            var(--sidebar-workspace-header-top, 0px) +
+              var(--sidebar-external-projects-header-height, 0px) +
+              var(--sidebar-selected-pin-top-height, 0px) +
+              var(--sidebar-workspaces-slot-height, 2rem) -
+              var(--sidebar-workspaces-flow-top, 0px) +
+              var(--sidebar-workspaces-clip-start, 0px) -
+              var(--sidebar-selected-pin-top-clip, 0px)
+          ),
+          100vh
+        ) +
+        var(--sidebar-selected-pin-top-clip, 0px) +
+        var(--sidebar-workspaces-clip-distance, -100000px)
+    );
+    --sidebar-workspaces-occlusion-bottom: calc(
+      var(--sidebar-workspaces-bottom-clip-start, -100000px) -
+        var(--sidebar-workspaces-clip-total, 0px) +
+        var(--sidebar-selected-pin-bottom-clip, 0px)
+    );
+  }
+}
+
+/* The real workspace DOM lives entirely in this moving flow layer, occluded
+ * beneath the transparent sticky controls by the scroll-driven clip above.
+ * The clip must remain a pure function of the scroll offset — always
+ * animating, never gated on a per-scroll JS write — because composited
+ * scrolling (trackpad flings deliver non-cancelable wheel events) presents
+ * frames before main-thread scroll handlers run; any JS-synced activation
+ * lets fast flings paint workspace rows through the transparent sticky
+ * band for several frames (see the fast-scroll capture spec). */
+
+/* Each row fades AS A UNIT as it passes under the band (CAN-3126).
+ *
+ * The gradient below is the right shape for the Chats list, whose rows are a
+ * single line: the line dissolves and the row reads as scrolling away. A
+ * project row is two lines, and a horizontal fade cannot help it — anything
+ * above the band's bottom edge is gone whether a clip removes it or the
+ * opaque band covers it, so a row mid-transit shows its branch name with no
+ * title above it. That is the reported defect, and it is inherent to a
+ * two-line row passing under any band.
+ *
+ * So the row carries its own view-progress timeline, inset by the band's
+ * depth, and its contents fade together across the span where it leaves at
+ * that edge. Title and branch name always share one opacity, so neither can
+ * outlive the other. Still a pure function of scroll position — a view
+ * timeline is resolved by the compositor, not by a per-scroll JS write.
+ *
+ * The fade is applied to the row's CONTENTS, not the row: the row's own
+ * `opacity: 0` is how a pinned copy hides its in-flow original, and an
+ * animation on the row itself would override it and paint the duplicate. */
+@keyframes sidebar-workspace-row-band-fade {
+  from {
+    opacity: 1;
+  }
+  /* Gone by the time the row is half-way under.
+   *
+   * A row's title ends ~56% of the way down it, so a row more than half
+   * covered is the first state that can show a branch name with no title
+   * above it. Reaching zero at 50% keeps that state unreachable, with a
+   * little margin, while staying fully painted until the row actually
+   * starts going under. Fading BEFORE it goes under instead — over the
+   * row-height of travel leading up to the band — made a row that was still
+   * completely on screen disappear, which is worse than the defect. */
+  50% {
+    opacity: 0;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+.sidebar-workspaces-rows-clip [data-worktree-id] {
+  view-timeline-name: --sidebar-workspace-row;
+  view-timeline-axis: block;
+  /* Shrink the scrollport's start edge down to the band's bottom, from the
+   * same terms the clip and the divider use. */
+  view-timeline-inset: calc(
+      var(--sidebar-workspace-header-top, 0px) +
+        var(--sidebar-external-projects-header-height, 0px) +
+        var(--sidebar-selected-pin-top-height, 0px) +
+        var(--sidebar-workspaces-slot-height, 2rem)
+    )
+    auto;
+}
+
+/* The row's two absolutely positioned overlays are deliberately exempt: the
+ * action chip and the right-hand status rail. Both are siblings of the row's
+ * content wrapper, and both hide themselves with their OWN `opacity` — the
+ * chip so a row can drop its hover actions while its ••• menu is open, the
+ * rail so its status indicator yields to those actions on hover and focus
+ * (`group-hover:opacity-0` / `group-focus-within:opacity-0`).
+ *
+ * A CSS animation outranks every normal declaration in the cascade, so
+ * `animation-fill-mode: both` holding this keyframe's `opacity: 1` outside the
+ * fade range pinned both overlays visible and made those declarations inert
+ * (CAN-3126 follow-up). Symptoms were a row keeping its hover actions lit
+ * under an open menu, and a status dot painting underneath the actions that
+ * are supposed to replace it.
+ *
+ * Neither overlay consumes layout width, so exempting them moves nothing else,
+ * and both still disappear under the band through the clip below — hard-cut
+ * rather than dissolved. Title and branch name keep fading together as one
+ * unit, which is what CAN-3126 is for. Any future direct child of a row that
+ * manages its own opacity belongs on this list.
+ *
+ * The chip exemption is load-bearing today and covered by
+ * `sidebar-row-actions-menu-open.spec.mjs`. The status-rail exemption is
+ * PRECAUTIONARY: the sidebar's row currently routes its operational indicator
+ * through `worktree-row-trailing-slot`, so the rail renders zero times under
+ * this clip (measured — a row with a live pending tool approval shows the dot
+ * in the trailing slot and no rail element exists page-wide). It is listed
+ * because `WorktreeRow` does render a rail on its other display path, with the
+ * same self-managed `group-hover:opacity-0`, and that path reaching the
+ * sidebar would silently reintroduce the identical cascade bug. */
+.sidebar-workspaces-rows-clip
+  [data-worktree-id]
+  > *:not(
+    [data-testid^='worktree-row-action-chip'],
+    [data-testid^='worktree-row-status-rail']
+  ) {
+  animation-name: sidebar-workspace-row-band-fade;
+  animation-duration: 1ms;
+  animation-timing-function: linear;
+  animation-fill-mode: both;
+  animation-timeline: --sidebar-workspace-row;
+  /* The row's own travel under the band's bottom edge: `exit 0%` is its top
+   * edge reaching that edge, `exit 100%` its bottom edge. The row therefore
+   * stays fully painted until it actually begins to pass under, and the
+   * dissolve happens across that passage — the same thing the Chats list
+   * does, one row at a time. */
+  animation-range: exit 0% exit 100%;
+}
+
+.sidebar-workspaces-rows-clip {
+  /* The rows the clip removes are already invisible: each one fades itself
+   * out as a unit before any of it reaches the band (see the row rules
+   * above). This cut is the structural backstop behind that fade — it also
+   * covers the project HEADERS, which have no fade of their own and are
+   * simply covered by the opaque band.
+   *
+   * There used to be a gradient here as well, fading the last 2rem before
+   * the cut. It became redundant once rows faded themselves, and it was not
+   * free: `mask-image` is not a compositor-animated property, so
+   * interpolating it on every scroll frame repainted the whole list and made
+   * scrolling visibly drop frames. */
+  clip-path: inset(
+    var(--sidebar-workspaces-occlusion-top, -100000px) 0
+      var(--sidebar-workspaces-occlusion-bottom, -100000px)
+      var(--sidebar-workspaces-flow-inline-start, 0px)
+  );
+  translate: 0 0;
+  animation-name: sidebar-workspace-flow-clip;
+  animation-duration: 1ms;
+  animation-timing-function: linear;
+  animation-fill-mode: both;
+  animation-timeline: scroll(nearest block);
+  will-change: clip-path;
+}
+
+/* Group rails occupy the existing 8px left gutter outside row fills. Preserve
+ * their paint and hit targets through the structural clip without shifting rows. */
+.sidebar-workspaces-rows-clip:has([data-sidebar-item-group-id]) {
+  --sidebar-workspaces-flow-inline-start: -0.5rem;
+}
+
+/* While a Chats header is mounted after the project rows, it rides the
+ * viewport's bottom edge whenever its list sits below the fold. Deepen the
+ * bottom clip line by that header's 2rem box so project rows never paint
+ * through its transparent surface. Safe at every offset: once the header is
+ * in flow, the rows' bottom edge is at least the header height (plus its
+ * top margin) above the viewport bottom. */
+/* Real workspace headers always remain in normal flow. The independently
+ * rendered slot below is the only pinned workspace-row surface. */
+.sidebar-workspace-sticky-header {
+  position: relative;
+}
+
+/* While interactive workspace/row chrome is mounted in a sticky or selected
+ * pin copy, the in-flow original stops painting so translucent pin materials
+ * cannot reveal a duplicate underneath. Opacity (not visibility/display)
+ * keeps flow layout intact for sortable and scroll geometry; AppSidebar also
+ * makes only the covered original inert, then restores it with the pin. */
+.sidebar-workspace-sticky-header[data-sidebar-sticky-flow-hidden='true'],
+.sidebar-workspace-sticky-header[data-sidebar-selected-pin-flow-hidden='true'],
+[data-sidebar-selected-item][data-sidebar-selected-pin-flow-hidden='true'],
+[data-sidebar-item-group-header][data-sidebar-selected-pin-flow-hidden='true'] {
+  opacity: 0;
+}
+
+/* A group header sticks at the band's bottom edge, under the stuck project
+ * header, while its group scrolls beneath it; the group's end pushes it off.
+ * Native sticky works here, unlike for project headers, because its seat is
+ * the clip line itself (same terms as the clip and the row fade): the header
+ * sits just below the cut until pushed into it. */
+.sidebar-workspaces-rows-clip [data-sidebar-item-group-id] {
+  --sidebar-item-group-seat: calc(
+    var(--sidebar-workspace-header-top, 0px) +
+      var(--sidebar-external-projects-header-height, 0px) +
+      var(--sidebar-selected-pin-top-height, 0px) +
+      var(--sidebar-workspaces-slot-height, 2rem)
+  );
+  /* SidebarItemGroupHeader's `h-7 pointer-coarse:h-11`. */
+  --sidebar-item-group-header-height: 1.75rem;
+}
+
+@media (pointer: coarse) {
+  .sidebar-workspaces-rows-clip [data-sidebar-item-group-id] {
+    --sidebar-item-group-header-height: 2.75rem;
+  }
+}
+
+/* A header the selected-row pin is standing in for neither sticks nor cuts
+ * its rows: the pin above already shows it. */
+.sidebar-workspaces-rows-clip
+  [data-sidebar-item-group-header]:not(
+    [data-sidebar-selected-pin-flow-hidden='true']
+  ) {
+  position: sticky;
+  top: var(--sidebar-item-group-seat);
+  /* Above its content, which the clip below makes one stacking context. */
+  z-index: 5;
+}
+
+/* The header stays transparent, so its group's content is cut at the stuck
+ * header's bottom edge instead: no fill has to match the sidebar material,
+ * and no row paints through. `exit-crossing` tracks the content's top edge
+ * crossing that line however tall the group is. */
+.sidebar-workspaces-rows-clip
+  [data-sidebar-item-group-id]:has(
+    > [data-sidebar-item-group-header]:not(
+        [data-sidebar-selected-pin-flow-hidden='true']
+      )
+  )
+  > [data-sidebar-item-group-content] {
+  view-timeline-name: --sidebar-item-group-content;
+  view-timeline-axis: block;
+  view-timeline-inset: calc(
+      var(--sidebar-item-group-seat) + var(--sidebar-item-group-header-height)
+    )
+    auto;
+  animation-name: sidebar-item-group-content-clip;
+  animation-duration: 1ms;
+  animation-timing-function: linear;
+  animation-fill-mode: both;
+  animation-timeline: --sidebar-item-group-content;
+  animation-range: exit-crossing 0% exit-crossing 100%;
+}
+
+/* Its rows dissolve passing under that edge, as other rows do under the band. */
+.sidebar-workspaces-rows-clip
+  [data-sidebar-item-group-id]:has(
+    > [data-sidebar-item-group-header]:not(
+        [data-sidebar-selected-pin-flow-hidden='true']
+      )
+  )
+  [data-worktree-id] {
+  view-timeline-inset: calc(
+      var(--sidebar-item-group-seat) + var(--sidebar-item-group-header-height)
+    )
+    auto;
+}
+
+@keyframes sidebar-item-group-content-clip {
+  from {
+    clip-path: inset(0 -100vw -100vh);
+  }
+  to {
+    clip-path: inset(100% -100vw -100vh);
+  }
+}
+
+/* A stable, transparent slot immediately below the sticky Workspaces title.
+ * Its copies follow the incoming header's natural scroll position during a
+ * short push-off handoff. Clip the outgoing copy at the top, but allow the
+ * incoming header to extend below the seat while it approaches. The flow copy
+ * is hidden during that approach, including below the structural flow clip.
+ * The slot itself never moves or adds a background/material seam.
+ * When the selected-item top pin group is active it occupies the seat
+ * directly below the controls, and this slot (then showing the current top
+ * workspace for a later workspace) moves below the pinned pair. */
+/* Positioned from the label's LIVE offset below the seat, not its height.
+ * Until a host-rendered Projects label reaches its sticky seat it is still
+ * travelling down the list, and a copy seated at the constant height is
+ * painted above it — the first project jumping out of the list. The rail
+ * publishes the live value on the controls; it falls back to the height so
+ * the legacy rail, which never publishes it, is unchanged. The clip and the
+ * row fade keep reading the height: they describe the band once it is
+ * occluding, and must not move while nothing is stuck. */
+.sidebar-sticky-workspace-slot {
+  position: absolute;
+  inset-inline: 0;
+  top: calc(
+    100% +
+      var(
+        --sidebar-external-projects-header-offset,
+        var(--sidebar-external-projects-header-height, 0px)
+      ) +
+      var(--sidebar-selected-pin-top-height, 0px)
+  );
+  height: 2rem;
+  background: var(--sidebar-selected-pin-surface);
+  clip-path: inset(0 0 -40px);
+}
+
+/* Pinned selected-item copies (workspace header + selected row) directly
+ * below the sticky controls. The scroll-driven clip remains the primary
+ * occlusion path, while this context-aware fill matches the opaque sidebar,
+ * translucent window material, or hover-preview surface around the pin. */
+/* Seated at the band's bottom edge, plus any Projects header that is NOT a
+ * child of the band. The legacy section renders that header inside the band,
+ * so `100%` already clears it and the var stays 0; a shared surface renders
+ * its own header below the band, and without this the two occupy the same
+ * offset and draw over each other. */
+.sidebar-selected-pin-top {
+  position: absolute;
+  inset-inline: 0;
+  top: calc(
+    100% +
+      var(
+        --sidebar-external-projects-header-offset,
+        var(--sidebar-external-projects-header-height, 0px)
+      )
+  );
+  background-color: var(--sidebar-selected-pin-surface);
+}
+
+.sidebar-selected-pin-bottom {
+  background-color: var(--sidebar-selected-pin-surface);
+}
+
+/* The selected chat's copy under the sticky Chats header, on the same
+ * context-aware surface as the project pins. Its seat is zero-height; this
+ * part carries the row's box. */
+.sidebar-chats-selected-pin-row {
+  background-color: var(--sidebar-selected-pin-surface);
+}
+
+/* Mirror the fixed New task fade at the bottom edge so scrolling workspace
+ * rows dissolve smoothly above the fixed footer banners (update prompt,
+ * guest credits CTA, DEV branch context) instead of clipping hard. Gated on
+ * the banner stack having content: with no banner the list simply meets the
+ * account divider and no fade should render. The stack marker mirrors its
+ * own `empty:hidden` collapse condition. */
+.app-sidebar-material:has([data-sidebar-footer-banners]:not(:empty))
+  .sidebar-scroll-mask {
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    black calc(100% - 12px),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    black calc(100% - 12px),
+    transparent 100%
+  );
+}
+
+/* Main/settings navigation handoff. The sidebar shell (material, width,
+ * divider, and resize edge) stays fixed; only the mounted content pages move. */
+.app-sidebar-content,
+.settings-sidebar-content {
+  --page-slide-dur: 250ms;
+  --page-fade-dur: 250ms;
+  --page-slide-distance: 8px;
+  --page-stagger: 0ms;
+  --page-exit-enabled: 1;
+  --page-slide-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --page-fade-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  opacity: 1;
+  transform: translate3d(0, 0, 0);
+  transition:
+    opacity var(--page-fade-dur) var(--page-fade-ease),
+    transform var(--page-slide-dur) var(--page-slide-ease);
+  /* These content layers live inside `.sidebar-instant-interactions`, whose
+   * descendant rule disables transitions for immediate hover feedback. Restore
+   * only this coordinated page handoff without animating sidebar controls. */
+  transition-duration: var(--page-fade-dur), var(--page-slide-dur) !important;
+  transition-delay: var(--page-stagger), var(--page-stagger) !important;
+  backface-visibility: hidden;
+  will-change: opacity, transform;
+}
+
+.app-sidebar-content[data-page-active='false'] {
+  opacity: 0;
+  pointer-events: none;
+  transform: translate3d(
+    calc(var(--page-slide-distance) * -1 * var(--page-exit-enabled)),
+    0,
+    0
+  );
+}
+
+.settings-page-overlay[data-open='false'] .settings-sidebar-content {
+  opacity: 0;
+  pointer-events: none;
+  transform: translate3d(
+    calc(var(--page-slide-distance) * var(--page-exit-enabled)),
+    0,
+    0
+  );
+}
+
+/* The Resources pill shares the main sidebar's opacity but belongs to the
+ * stationary titlebar control cluster. Counter the page translation with the
+ * same timing so its window position matches the adjacent toggle and arrows. */
+.sidebar-page-stationary-control {
+  transform: translate3d(0, 0, 0);
+  transition: transform var(--page-slide-dur) var(--page-slide-ease);
+  transition-duration: var(--page-slide-dur) !important;
+  transition-delay: var(--page-stagger) !important;
+  backface-visibility: hidden;
+  will-change: transform;
+}
+
+.app-sidebar-content[data-page-active='false']
+  .sidebar-page-stationary-control {
+  transform: translate3d(
+    calc(var(--page-slide-distance) * var(--page-exit-enabled)),
+    0,
+    0
+  );
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-layout-transition,
+  .titlebar-create-task-seat.titlebar-create-task-seat,
+  .app-sidebar-content,
+  .settings-sidebar-content,
+  .sidebar-page-stationary-control,
+  /* The disclosure chevron's rotation is an !important exception to the
+     sidebar's instant-interaction rule, so reduced motion must match its
+     priority to suppress it. */
+  [data-workspace-disclosure-chevron] {
+    transition-duration: 0ms !important;
+  }
+}

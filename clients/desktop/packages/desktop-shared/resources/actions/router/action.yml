@@ -1,0 +1,42 @@
+name: Router
+description: Classify text into one of a small set of route labels.
+log_format_hint: agent
+inputs:
+  text:
+    description: Inline text to classify.
+    required: false
+    default: ''
+  text_file:
+    description: Path to a file containing text to classify.
+    required: false
+  routes:
+    description: JSON array or comma-separated list of route labels.
+    required: true
+  criteria:
+    description: Optional routing guidance.
+    required: false
+  model:
+    description: Optional Claude model override.
+    required: false
+  permission_preset:
+    description: Permission preset for the classifier.
+    required: false
+    default: read_only
+  system_prompt:
+    description: Optional system prompt appendix.
+    required: false
+  max_turns:
+    description: Maximum Claude turns.
+    required: false
+outputs:
+  route:
+    description: Selected route label.
+  confidence:
+    description: Confidence score from 0 to 1.
+  reasoning:
+    description: Short routing rationale.
+  transcript_file:
+    description: Path to the step log or transcript capture containing routing events.
+runs:
+  using: node
+  main: index.js

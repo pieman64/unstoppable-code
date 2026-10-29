@@ -1,0 +1,35 @@
+name: Phase Compaction
+description: Compact prior outputs into a smaller context payload.
+inputs:
+  text:
+    description: Inline text to compact.
+    required: false
+    default: ""
+  text_file:
+    description: Path to a file containing text to compact.
+    required: false
+  max_chars:
+    description: Maximum size of the compacted output.
+    required: false
+    default: 4000
+  model:
+    description: Optional Claude model override.
+    required: false
+outputs:
+  summary:
+    description: Compacted phase summary.
+    value: ${{ steps.condense.outputs.summary }}
+  summary_file:
+    description: File containing the compacted phase summary.
+    value: ${{ steps.condense.outputs.summary_file }}
+runs:
+  using: composite
+  steps:
+    - id: condense
+      uses: builtin/condenser
+      with:
+        text: ${{ inputs.text }}
+        text_file: ${{ inputs.text_file }}
+        max_chars: ${{ inputs.max_chars }}
+        model: ${{ inputs.model }}
+        strategy: key-outputs

@@ -1,0 +1,106 @@
+name: Agent Prompt
+description: Run a single Claude, Ollama, or Codex prompt and expose the result to downstream steps.
+log_format_hint: agent
+inputs:
+  model:
+    description: >
+      Provider model or pipeline model_aliases id to use. When a
+      pipeline model alias is used, the executor resolves it to the alias base
+      model before launching the provider.
+    required: false
+  prompt:
+    description: >
+      Prompt text to send to the selected model. Either "prompt" or
+      "prompt_file" must be provided with non-empty content.
+    required: false
+    default: ''
+  prompt_file:
+    description: >
+      Path to a file containing the prompt text. Takes precedence over "prompt" when set.
+      Either "prompt" or "prompt_file" must be provided with non-empty content.
+    required: false
+  system_prompt:
+    description: >
+      Optional system instructions. Under the Claude harness they are appended
+      to the default Claude Code system prompt; under the Codex harness they are
+      prepended to the prompt. Configurable AI Gateway and Ollama models follow
+      their effective or recovery-captured harness.
+    required: false
+  setting_sources:
+    description: >
+      Optional Claude filesystem setting sources, provided as a JSON array or
+      comma-separated list of "user", "project", and/or "local". Use "[]"
+      to disable loading filesystem settings and CLAUDE.md files entirely.
+      Applied only when the selected execution harness is Claude and ignored
+      when it is Codex, regardless of the model source.
+    required: false
+  thinking_effort:
+    description: >
+      Optional thinking/reasoning effort override. Valid values: off, low,
+      medium, high, xhigh, max.
+    required: false
+  fast_mode:
+    description: >
+      Optional model Fast Mode override. Valid values: true or false.
+      When omitted, inherits the pipeline run model config. Fast mode consumes 2x usage.
+    required: false
+  permission_preset:
+    description: >
+      Optional tool/permission preset. Use "none" (default) to disable all tools
+      on the Claude harness or deny every tool call on the Cursor harness; the
+      Codex harness cannot disable native tools and rejects "none", so choose
+      "read_only" or "dangerous_all" there. Use
+      "read_only" to allow only safe read/search tools, or "dangerous_all" to
+      enable the provider's full tool access mode. Use "plan" to run in planning
+      mode: Claude uses native plan permissions, Codex receives the shared
+      {{BRAND_DISPLAY_NAME}} planning instructions, and Cursor receives read-only plan-mode
+      steering; Codex and Cursor must end with a proposed plan. For
+      normal chat-equivalent Claude skill/plugin discovery with
+      plugin_collection_id, use "dangerous_all".
+    required: false
+    default: none
+  persist_session:
+    description: >
+      Whether Claude-harness sessions should be persisted to disk so they can
+      be resumed later. Codex-harness threads are persisted automatically. The
+      action always outputs the session ID.
+    required: false
+    default: false
+  structured_output_schema:
+    description: JSON Schema string for structured output.
+    required: false
+  max_turns:
+    description: >
+      Maximum conversation turns. When structured_output_schema is provided,
+      the effective value is always at least 2 to accommodate the structured
+      output tool call turn.
+    required: false
+  plugin_collection_id:
+    description: >
+      Optional pipeline plugin collection id to enable for this agent step. If
+      the selected pipeline model alias also defines
+      defaults.plugin_collection_id, both collections are enabled and
+      de-duplicated.
+    required: false
+outputs:
+  session_id:
+    description: Provider session/thread ID for this run.
+  transcript_file:
+    description: Path to the step log or transcript capture containing streamed SDK events.
+  text_response:
+    description: Single-line text response with internal whitespace collapsed.
+  text_response_file:
+    description: File path containing the full text response.
+  json_response:
+    description: Minified JSON response when structured_output_schema is provided.
+  json_response_file:
+    description: File path containing the formatted JSON response when structured_output_schema is provided.
+  proposed_plan_file:
+    description: File path containing the detected proposed plan when the agent emits one.
+  agent_failure_metadata_file:
+    description: Internal executor recovery metadata. Not exposed as a public step output.
+  agent_failure_transcript_file:
+    description: Internal partial transcript used for executor recovery. Not exposed as a public step output.
+runs:
+  using: node
+  main: index.js

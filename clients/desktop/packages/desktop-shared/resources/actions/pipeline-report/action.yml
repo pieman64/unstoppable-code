@@ -1,0 +1,16 @@
+name: '{{BRAND_DISPLAY_NAME}} Report'
+description: Write a final report artifact for the current pipeline execution.
+inputs:
+  content:
+    description: Report content to write.
+    required: true
+  format:
+    description: Report format. Use "text" or "json".
+    required: false
+    default: text
+outputs:
+  report_path:
+    description: Path to the written report file.
+runs:
+  using: node
+  main: index.js

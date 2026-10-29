@@ -1,0 +1,24 @@
+name: Memory Read
+description: Read and filter records from a JSONL memory file.
+inputs:
+  file:
+    description: Relative path to the JSONL memory file.
+    required: true
+  query:
+    description: Optional substring filter applied to step_id and tags.
+    required: false
+    default: ""
+  limit:
+    description: Maximum number of records to return, newest first.
+    required: false
+    default: 20
+outputs:
+  records:
+    description: Minified JSON array of matching records.
+  records_file:
+    description: File path containing the formatted JSON array.
+  record_count:
+    description: Number of matching records returned.
+runs:
+  using: node
+  main: index.js

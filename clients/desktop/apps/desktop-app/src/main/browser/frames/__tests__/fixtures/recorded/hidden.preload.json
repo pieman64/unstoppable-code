@@ -1,0 +1,44 @@
+{
+  "fixture": "hidden",
+  "capturedAt": "6f0b031782",
+  "rows": [
+    {"tagName":"input","role":"textbox","inputType":"text","disabled":false,"locator":"page.locator('#visible')","value":"shown","checked":false},
+    {"tagName":"button","role":"button","inputType":"button","name":"Visible again","text":"Visible again","disabled":false,"locator":"page.getByRole('button', { name: 'Visible again' })"},
+    {"tagName":"div","role":"button","name":"Contents","text":"Contents","disabled":false,"locator":"page.getByRole('button', { name: 'Contents' })"},
+    {"tagName":"input","role":"textbox","inputType":"text","disabled":false,"locator":"page.locator('#in-contents')","value":"contents child","checked":false},
+    {"tagName":"input","role":"textbox","inputType":"text","disabled":false,"locator":"page.locator('#under-display-none')","value":"under none","checked":false},
+    {"tagName":"div","role":"tab","name":"Tab under none","text":"Tab under none","disabled":false,"locator":"page.getByRole('tab', { name: 'Tab under none' })"},
+    {"tagName":"button","role":"button","inputType":"button","name":"Transparent","text":"Transparent","disabled":false,"locator":"page.getByRole('button', { name: 'Transparent' })"},
+    {"tagName":"input","role":"textbox","inputType":"text","disabled":false,"locator":"page.locator('#in-details')","value":"details","checked":false}
+  ],
+  "requests": [
+    {"request":{"limit":100},"total":8,"returned":8,"offset":0,"limit":100,"truncated":false,"rows":[0,1,2,3,4,5,6,7]},
+    {"request":{},"total":8,"returned":8,"offset":0,"limit":25,"truncated":false,"rows":[0,1,2,3,4,5,6,7]},
+    {"request":{"offset":1,"limit":3},"total":8,"returned":3,"offset":1,"limit":3,"truncated":true,"nextOffset":4,"rows":[1,2,3]},
+    {"request":{"offset":1000,"limit":5},"total":8,"returned":0,"offset":1000,"limit":5,"truncated":false,"rows":[]},
+    {"request":{"filter":{"name":"no-such-control-7f2b"}},"total":0,"returned":0,"offset":0,"limit":25,"truncated":false,"rows":[]},
+    {"request":{"limit":100,"filter":{"name":" VISIBLE  "}},"total":1,"returned":1,"offset":0,"limit":100,"truncated":false,"rows":[1]},
+    {"request":{"limit":100,"filter":{"name":" VISIBLE  "}},"total":1,"returned":1,"offset":0,"limit":100,"truncated":false,"rows":[1]},
+    {"request":{"limit":100,"filter":{"name":" CONTENTS "}},"total":1,"returned":1,"offset":0,"limit":100,"truncated":false,"rows":[2]},
+    {"request":{"limit":100,"filter":{"name":" CONTENTS "}},"total":1,"returned":1,"offset":0,"limit":100,"truncated":false,"rows":[2]},
+    {"request":{"limit":100,"filter":{"name":" TAB UNDE "}},"total":1,"returned":1,"offset":0,"limit":100,"truncated":false,"rows":[5]},
+    {"request":{"limit":100,"filter":{"name":" TAB UNDE "}},"total":1,"returned":1,"offset":0,"limit":100,"truncated":false,"rows":[5]},
+    {"request":{"limit":100,"filter":{"name":" TRANSPAR "}},"total":1,"returned":1,"offset":0,"limit":100,"truncated":false,"rows":[6]},
+    {"request":{"limit":100,"filter":{"name":" TRANSPAR "}},"total":1,"returned":1,"offset":0,"limit":100,"truncated":false,"rows":[6]},
+    {"request":{"limit":100,"filter":{"role":" TEXTBOX "}},"total":4,"returned":4,"offset":0,"limit":100,"truncated":false,"rows":[0,3,4,7]},
+    {"request":{"limit":100,"filter":{"role":" BUTTON "}},"total":3,"returned":3,"offset":0,"limit":100,"truncated":false,"rows":[1,2,6]},
+    {"request":{"limit":100,"filter":{"role":" TAB "}},"total":1,"returned":1,"offset":0,"limit":100,"truncated":false,"rows":[5]},
+    {"request":{"limit":100,"filter":{"inputType":" TEXT "}},"total":4,"returned":4,"offset":0,"limit":100,"truncated":false,"rows":[0,3,4,7]},
+    {"request":{"limit":100,"filter":{"inputType":" BUTTON "}},"total":2,"returned":2,"offset":0,"limit":100,"truncated":false,"rows":[1,6]}
+  ],
+  "inspect": [
+    {"tagName":"input","role":"textbox","value":"shown","attributes":{"id":"visible","value":"shown"}},
+    {"tagName":"button","role":"button","accessibleName":"Visible again","text":"Visible again","attributes":{"type":"button","style":"visibility: visible"}},
+    {"tagName":"div","role":"button","accessibleName":"Contents","text":"Contents","attributes":{"class":"contents","role":"button","id":"contents-button"}},
+    {"tagName":"input","role":"textbox","value":"contents child","attributes":{"id":"in-contents","value":"contents child"}},
+    {"tagName":"input","role":"textbox","value":"under none","attributes":{"id":"under-display-none","value":"under none"}},
+    {"tagName":"div","role":"tab","accessibleName":"Tab under none","text":"Tab under none","attributes":{"role":"tab","id":"tab-under-none"}},
+    {"tagName":"button","role":"button","accessibleName":"Transparent","text":"Transparent","attributes":{"type":"button","class":"faded"}},
+    {"tagName":"input","role":"textbox","value":"details","attributes":{"id":"in-details","value":"details"}}
+  ]
+}

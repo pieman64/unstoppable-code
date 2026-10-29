@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Tracked child</title>
+  </head>
+  <body style="margin: 3px">
+    <input id="cross-revealed" type="password">
+    <label for="cross-plain">Cross name</label>
+    <input id="cross-plain" value="cross plain value">
+    <button type="button" id="cross-button">Cross action</button>
+    <script>
+      (() => {
+        // Seeds are concatenated so the script's own text never contains one.
+        const revealed = document.querySelector('#cross-revealed');
+        revealed.value = 'SEED-TRK-' + 'CROSS-' + 1106;
+        revealed.type = 'text';
+      })();
+    </script>
+  </body>
+</html>

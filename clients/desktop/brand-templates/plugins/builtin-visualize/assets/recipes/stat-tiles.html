@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      /* Headline numbers. No library, no script beyond the sparklines. */
+      .tiles {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        gap: 20px 28px;
+      }
+      .label {
+        color: var(--fg-secondary);
+        font-size: 12px;
+      }
+      .value {
+        font-size: 26px;
+        font-weight: 600;
+        line-height: 1.25;
+      }
+      .delta {
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+      }
+      /* Color says good or bad; the arrow says which way it moved. */
+      .good {
+        color: var(--fg-positive);
+      }
+      .bad {
+        color: var(--fg-destructive);
+      }
+      .flat {
+        color: var(--fg-secondary);
+      }
+      .spark {
+        display: block;
+        width: 100%;
+        height: 28px;
+        margin-top: 8px;
+        overflow: visible;
+      }
+      .spark polyline {
+        fill: none;
+        stroke: var(--categorical-1);
+        stroke-width: 1.5;
+        stroke-linejoin: round;
+        vector-effect: non-scaling-stroke;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="tiles" id="tiles"></div>
+    <script>
+      // `goodWhen` is the direction that counts as an improvement.
+      const metrics = [
+        {
+          label: 'p95 latency',
+          value: '182 ms',
+          change: -12,
+          goodWhen: 'down',
+          trend: [240, 232, 228, 215, 220, 204, 196, 188, 182],
+        },
+        {
+          label: 'Error rate',
+          value: '0.42%',
+          change: 0.08,
+          goodWhen: 'down',
+          trend: [0.31, 0.3, 0.33, 0.34, 0.36, 0.35, 0.39, 0.4, 0.42],
+        },
+        {
+          label: 'Requests / min',
+          value: '48.2k',
+          change: 9,
+          goodWhen: 'up',
+          trend: [40, 41, 43, 42, 44, 45, 47, 47, 48],
+        },
+        {
+          label: 'Deploys this week',
+          value: '14',
+          change: 0,
+          goodWhen: 'up',
+          trend: [2, 3, 2, 1, 2, 2, 2, 0, 0],
+        },
+      ];
+
+      const points = (values) => {
+        const low = Math.min(...values);
+        const span = Math.max(...values) - low || 1;
+        return values
+          .map(
+            (v, i) =>
+              `${(i / (values.length - 1)) * 100},${28 - ((v - low) / span) * 26 - 1}`,
+          )
+          .join(' ');
+      };
+
+      document.getElementById('tiles').innerHTML = metrics
+        .map((m) => {
+          const moved = m.change === 0 ? 'flat' : m.change > 0 ? 'up' : 'down';
+          const tone =
+            moved === 'flat' ? 'flat' : moved === m.goodWhen ? 'good' : 'bad';
+          const arrow = { up: '▲', down: '▼' }[moved];
+          return `<div>
+            <div class="label">${m.label}</div>
+            <div class="value">${m.value}</div>
+            <div class="delta ${tone}">${moved === 'flat' ? 'No change' : `${arrow} ${Math.abs(m.change)}%`} vs last week</div>
+            <svg class="spark" viewBox="0 0 100 28" preserveAspectRatio="none" role="img" aria-label="${m.label} trend">
+              <polyline points="${points(m.trend)}" />
+            </svg>
+          </div>`;
+        })
+        .join('');
+    </script>
+  </body>
+</html>

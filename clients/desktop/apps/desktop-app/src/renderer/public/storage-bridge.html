@@ -1,0 +1,15 @@
+<!doctype html>
+<!--
+  Storage bridge (Settings → Labs → "Open windows faster"). Main loads
+  this script-free page on file:// in a sandboxed, preload-free view to read or
+  replace the renderer's localStorage when the renderer's origin changes. It
+  is never an app window and never trusted for IPC. The renderer scheme serves
+  its own in-memory copy, so keep this page free of scripts and resources.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title></title>
+  </head>
+  <body></body>
+</html>

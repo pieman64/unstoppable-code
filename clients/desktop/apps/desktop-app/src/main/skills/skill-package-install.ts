@@ -1,0 +1,701 @@
+// ---------------------------------------------------------------------------
+// Materialize a shared skill's capability package into local skill folders.
+//
+// A pipeline or automation package stays in the package cache and is overlaid
+// at run time, because it belongs to a run rather than to the user's library.
+// A shared skill is the opposite: the recipient wants the skill itself, with
+// its supporting files, sitting in their Skills tab where they can read it,
+// edit it, and share it onward. So the package is verified into the cache for
+// integrity and blob reuse, and its skill trees are then copied out into real
+// local skills.
+//
+// Two rules are load-bearing:
+//
+//   - Never overwrite. A name already taken gets a deduplicated one and the
+//     caller is told which. An install silently replacing local work is the
+//     worst outcome available here. The one case that reuses an existing
+//     folder — a re-import whose SKILL.md is byte-identical — writes only the
+//     entries that folder does not already have, because "the same skill" does
+//     not imply "every supporting file beside it is ours to replace".
+//   - Never write outside the destination. Manifest paths are validated as
+//     portable relative paths before they travel, and re-checked here against
+//     the resolved destination, because this is the step that turns a manifest
+//     string into a real filesystem write.
+// ---------------------------------------------------------------------------
+
+import { createHash } from 'node:crypto';
+import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
+import {
+  CAPABILITY_PACKAGE_SUBJECT_BINDING_KEY,
+  capabilityPackageBindingKey,
+  isSafeCapabilityPackagePath,
+  type PipelinePackageManifestV1,
+  type PipelinePackageRef,
+  type PipelinePackageResource,
+} from '@canopy/protocol/pipelines';
+import { installPipelinePackageAtomically } from '@canopy/desktop-shared/node';
+import {
+  getPipelinePackageInstallStorePath,
+  getPipelinePackagesDir,
+} from '../lib/paths';
+import { upsertCapabilityPackageInstall } from '../pipelines/pipeline-package-install-store';
+import {
+  getPublicSkillPackage,
+  getPublicSkillPackageBlob,
+  getSkillPackage,
+  getSkillPackageBlob,
+} from '../pipelines/canopy-server-client';
+import type {
+  InstallSkillCapabilityPackageRequest,
+  InstallSkillCapabilityPackageResult,
+  SharedSkillDetail,
+} from '@canopy/desktop-shared/types/skills';
+import type { CapabilityPackageInstallOwner } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelinePackageDownload } from '../pipelines/canopy-server-client';
+import { getSkillDir, getSourceDir } from './paths';
+import { getSharedSkill } from './canopy-server-client';
+import {
+  assertStoredSkillContext,
+  recordSharedSkillInstall,
+  getSharedSkillInstallIds,
+} from './skill-install-context';
+import {
+  assertSkillContextSnapshot,
+  skillContextSnapshot,
+  skillResourceContextEnabled,
+} from './resource-lanes';
+
+/** The only source id a shared-skill install ever writes to. */
+const CUSTOM_SKILL_SOURCE_ID = 'custom:app';
+
+/**
+ * A local skill folder name must be a single portable path segment. Rejecting
+ * anything else here keeps renderer-supplied values from reaching a bare
+ * `path.join` and escaping the skills root.
+ */
+function assertSafeSkillFolderName(value: string, field: string): void {
+  if (
+    value.length === 0 ||
+    value.length > 255 ||
+    value.includes('/') ||
+    value.includes('\\') ||
+    value === '.' ||
+    value === '..' ||
+    !isSafeCapabilityPackagePath(value)
+  ) {
+    throw new Error(`Invalid ${field}`);
+  }
+}
+const MAX_SUFFIX_ATTEMPTS = 100;
+
+export interface InstallSubjectCapabilityPackageRequest {
+  owner: CapabilityPackageInstallOwner;
+  originExternalId?: string;
+  packageRef: PipelinePackageRef;
+  download: PipelinePackageDownload;
+  fetchBlob(sha256: string): Promise<Uint8Array>;
+  localContentHash?: string;
+  /**
+   * Persist subject changes that depend on the final installed skill names.
+   * This runs inside the same rollback boundary as file copies and provenance.
+   */
+  finalizeInstall?(
+    result: InstallSubjectCapabilityPackageResult,
+  ): Promise<string | undefined>;
+  /** Restore the subject if this install fails before provenance is durable. */
+  rollbackFinalization?(): Promise<void>;
+  /** Skill imports already write their primary SKILL.md from the shared definition. */
+  primarySkill?: {
+    localName: string;
+    rootName: string;
+  };
+  /**
+   * Workspace-context provenance for a skill install. Every folder the install
+   * binds is checked against the captured context, and a scoped share records
+   * an install receipt for it.
+   */
+  skillContext?: {
+    snapshot: string;
+    detail?: SharedSkillDetail;
+    reusableIds?: Set<string>;
+  };
+}
+
+export interface InstallSubjectCapabilityPackageResult {
+  supportingFileCount: number;
+  installedSkills: Array<{ name: string; localName: string }>;
+  uninstalledResourceLabels: string[];
+  keptLocalFiles: string[];
+}
+
+export async function installSkillCapabilityPackage(
+  request: InstallSkillCapabilityPackageRequest,
+): Promise<InstallSkillCapabilityPackageResult> {
+  // These arrive from the renderer and reach `getSkillDir()`'s bare
+  // `path.join`. The packaged `tree.rootName` is already constrained by the
+  // manifest validator, but these two are not, so they are checked here.
+  assertSafeSkillFolderName(request.skillName, 'skillName');
+  assertSafeSkillFolderName(request.primaryRootName, 'primaryRootName');
+  const contextEnabled = skillResourceContextEnabled();
+  const snapshot = contextEnabled ? await skillContextSnapshot() : undefined;
+  // A public share ID is not an owned skill ID. Its public package response
+  // verifies the portable source; only scoped installs carry an owner receipt.
+  const detail =
+    contextEnabled && !request.publicShare
+      ? await getSharedSkill(request.remoteId)
+      : undefined;
+  const reusableIds = detail
+    ? await getSharedSkillInstallIds(detail.id)
+    : undefined;
+  const download = request.publicShare
+    ? await getPublicSkillPackage(request.remoteId, request.packageRef.digest)
+    : await getSkillPackage(request.remoteId, request.packageRef.digest);
+  if (download.digest !== request.packageRef.digest) {
+    throw new Error(
+      'The skill capability package changed. Refresh and review it before installing.',
+    );
+  }
+  const installed = await installSubjectCapabilityPackage({
+    owner: { kind: 'skill', localId: request.skillName },
+    originExternalId: request.remoteId,
+    packageRef: request.packageRef,
+    download,
+    fetchBlob: (sha256) =>
+      request.publicShare
+        ? getPublicSkillPackageBlob(
+            request.remoteId,
+            request.packageRef.digest,
+            sha256,
+          )
+        : getSkillPackageBlob(
+            request.remoteId,
+            request.packageRef.digest,
+            sha256,
+          ),
+    primarySkill: {
+      localName: request.skillName,
+      rootName: request.primaryRootName,
+    },
+    ...(snapshot !== undefined
+      ? {
+          skillContext: {
+            snapshot,
+            ...(detail ? { detail } : {}),
+            ...(reusableIds ? { reusableIds } : {}),
+          },
+        }
+      : {}),
+  });
+  return {
+    supportingFileCount: installed.supportingFileCount,
+    installedDependencies: installed.installedSkills,
+    uninstalledResourceLabels: installed.uninstalledResourceLabels,
+    keptLocalFiles: installed.keptLocalFiles,
+  };
+}
+
+/**
+ * Materialize every standalone skill in a subject-bound package. The caller
+ * supplies the authenticated/public transport so Agents, Collections and
+ * Blueprints all share the same verified, no-overwrite, rollback-safe install
+ * implementation.
+ */
+export async function installSubjectCapabilityPackage(
+  request: InstallSubjectCapabilityPackageRequest,
+): Promise<InstallSubjectCapabilityPackageResult> {
+  let primarySkill = request.primarySkill;
+  const download = request.download;
+  const snapshot = request.skillContext?.snapshot;
+  const detail = request.skillContext?.detail;
+  const reusableIds = request.skillContext?.reusableIds;
+  const receiptRollbacks: (() => Promise<void>)[] = [];
+  let bound: PipelinePackageResource[] = [];
+  const result: InstallSubjectCapabilityPackageResult = {
+    supportingFileCount: 0,
+    installedSkills: [],
+    uninstalledResourceLabels: [],
+    keptLocalFiles: [],
+  };
+
+  let primaryResourceIds = new Set<string>();
+
+  // Everything this call creates, so a failure anywhere in the loop can be
+  // undone as a whole. Rolling back only the dependency being copied left
+  // earlier dependencies in the Skills tab and supporting files beside the
+  // imported skill, while the ledger — written only on success — said nothing
+  // was installed. Only what THIS install created is ever removed: a folder or
+  // file the recipient already had is never touched.
+  const undo: InstallUndo = {
+    createdFolders: [],
+    createdSubfolders: [],
+    writtenFiles: [],
+  };
+  let cachedPackagePath = '';
+  try {
+    primarySkill = request.primarySkill;
+    if (primarySkill) {
+      assertSafeSkillFolderName(primarySkill.localName, 'skillName');
+      assertSafeSkillFolderName(primarySkill.rootName, 'primaryRootName');
+    }
+    if (download.digest !== request.packageRef.digest) {
+      throw new Error(
+        'The capability package changed. Refresh and review it before installing.',
+      );
+    }
+    bound = subjectResources(download.manifest);
+    primaryResourceIds = primarySkill
+      ? findPrimaryResourceIds(
+          bound,
+          download.manifest.pipelineContentHash,
+          primarySkill.rootName,
+        )
+      : new Set<string>();
+    if (primarySkill) {
+      // The primary is selected by the raw import boundary. Do not let a direct
+      // package request attach its origin to an unrelated existing local folder.
+      const primaryId = `${CUSTOM_SKILL_SOURCE_ID}/${primarySkill.localName}`;
+      if (reusableIds && !reusableIds.has(primaryId)) {
+        let exists = false;
+        try {
+          await fs.lstat(
+            getSkillDir(CUSTOM_SKILL_SOURCE_ID, primarySkill.localName),
+          );
+          exists = true;
+        } catch (error) {
+          if (!isErrnoCode(error, 'ENOENT')) throw error;
+        }
+        if (exists)
+          throw new Error('Resource install origin cannot be replaced');
+      }
+      await bindSkillOrigin(primarySkill.localName);
+    }
+    cachedPackagePath = await installPipelinePackageAtomically({
+      packagesRoot: getPipelinePackagesDir(),
+      digest: download.digest,
+      manifest: download.manifest,
+      fetchBlob: (sha256) => request.fetchBlob(sha256),
+    });
+    await copyBoundResources();
+    if (snapshot !== undefined) await assertSkillContextSnapshot(snapshot);
+    const localContentHash = request.finalizeInstall
+      ? await request.finalizeInstall(result)
+      : request.localContentHash;
+    await upsertCapabilityPackageInstall(getPipelinePackageInstallStorePath(), {
+      owner: request.owner,
+      ...(request.originExternalId
+        ? { originExternalId: request.originExternalId }
+        : {}),
+      ...(localContentHash ? { localContentHash } : {}),
+      pipelineContentHash: download.manifest.pipelineContentHash,
+      packageDigest: download.digest,
+      installedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    const rollbackResults = await Promise.allSettled([
+      ...(request.rollbackFinalization
+        ? [Promise.resolve().then(() => request.rollbackFinalization?.())]
+        : []),
+      rollBackInstall(undo),
+      rollBackReceipts(),
+    ]);
+    const rollbackErrors: unknown[] = [];
+    for (const result of rollbackResults) {
+      if (result.status === 'rejected') rollbackErrors.push(result.reason);
+    }
+    if (rollbackErrors.length > 0) {
+      const message = error instanceof Error ? error.message : 'Install failed';
+      const rollbackMessage = rollbackErrors
+        .map((rollbackError) =>
+          rollbackError instanceof Error
+            ? rollbackError.message
+            : String(rollbackError),
+        )
+        .join('; ');
+      throw new Error(
+        `${message}; rollback was incomplete: ${rollbackMessage}`,
+      );
+    }
+    throw error;
+  }
+
+  async function bindSkillOrigin(name: string): Promise<void> {
+    if (snapshot === undefined) return;
+    const localId = `${CUSTOM_SKILL_SOURCE_ID}/${name}`;
+    await assertStoredSkillContext(localId);
+    if (detail) {
+      const rollback = await recordSharedSkillInstall(detail, localId);
+      if (rollback) receiptRollbacks.push(rollback);
+      reusableIds?.add(localId);
+    }
+    await assertSkillContextSnapshot(snapshot);
+  }
+
+  async function rollBackReceipts(): Promise<void> {
+    // Each receipt extends the same origin; unwind in reverse to retain aliases
+    // that existed before this package attempt, including earlier imports.
+    for (const rollback of receiptRollbacks.reverse()) await rollback();
+  }
+
+  async function copyBoundResources(): Promise<void> {
+    for (const resource of bound) {
+      if (resource.kind !== 'standalone_skill') {
+        result.uninstalledResourceLabels.push(resource.displayName);
+        continue;
+      }
+      const tree = preferredTree(resource);
+      if (!tree) continue;
+      if (primarySkill && primaryResourceIds.has(resource.id)) {
+        // The import already wrote SKILL.md from the share's raw bytes, which
+        // are the hashed source of truth. Copying it again from the package
+        // would be redundant and, if the two ever disagreed, would silently
+        // replace the content the content hash covers.
+        //
+        // `skipExisting` is unconditional here. On a fresh import the folder
+        // holds only that SKILL.md, so it costs nothing; on a re-import, or for
+        // a recipient who first took the definition-only version, the folder is
+        // theirs and may hold files they wrote or edited.
+        const primary = await copyTreeInto(
+          cachedPackagePath,
+          resource.id,
+          tree,
+          getSkillDir(CUSTOM_SKILL_SOURCE_ID, primarySkill.localName),
+          {
+            skipSkillMd: true,
+            skipExisting: true,
+            writtenFiles: undo.writtenFiles,
+            createdSubfolders: undo.createdSubfolders,
+          },
+        );
+        result.supportingFileCount += primary.copied;
+        result.keptLocalFiles.push(
+          ...primary.kept.map(
+            (entryPath) => `${primarySkill.localName}/${entryPath}`,
+          ),
+        );
+        continue;
+      }
+      const reserved = await reserveSkillName(
+        tree.rootName,
+        tree.entries.find((entry) => entry.path === 'SKILL.md'),
+        reusableIds,
+      );
+      const destination = getSkillDir(CUSTOM_SKILL_SOURCE_ID, reserved.name);
+      // A folder this install created is removed whole on failure; a reused one
+      // is the recipient's, so only the files written into it are.
+      if (!reserved.reused) undo.createdFolders.push(destination);
+      await bindSkillOrigin(reserved.name);
+      const dependency = await copyTreeInto(
+        cachedPackagePath,
+        resource.id,
+        tree,
+        destination,
+        {
+          skipSkillMd: false,
+          // A reused folder already belongs to the recipient. Writing only the
+          // entries it does not have keeps this file's "never overwrite" rule
+          // intact — a byte-identical SKILL.md proves the skill is the same one,
+          // not that every supporting file beside it is the package's to replace.
+          skipExisting: reserved.reused,
+          ...(reserved.reused
+            ? {
+                writtenFiles: undo.writtenFiles,
+                createdSubfolders: undo.createdSubfolders,
+              }
+            : {}),
+        },
+      );
+      result.keptLocalFiles.push(
+        ...dependency.kept.map((entryPath) => `${reserved.name}/${entryPath}`),
+      );
+      result.installedSkills.push({
+        name: tree.rootName,
+        localName: reserved.name,
+      });
+    }
+  }
+
+  return result;
+}
+
+/**
+ * The resources that ARE the shared skill, as opposed to ones it invokes.
+ *
+ * Plural because the analysis emits one resource per provider for the shared
+ * skill itself (a Claude tree and a Codex tree). Picking a single "primary"
+ * left its twin to be installed as a dependency of itself — a duplicate skill
+ * whenever the recipient's folder name differed from the publisher's. Each
+ * twin's supporting files are copied beside the imported skill instead, so a
+ * file only one provider's tree carries still lands; identical files are
+ * no-ops under `skipExisting`.
+ *
+ * Matched by content, not name: a tree's `rootName` is the publisher's LOCAL
+ * folder name, which is suffixed whenever they had imported the skill
+ * themselves (`helper-2`), while the recipient's copy is named from the
+ * frontmatter (`helper`). A skill's package is bound to its content hash, a
+ * bare sha256 over the same SKILL.md bytes every one of these trees records.
+ *
+ * The name is kept only as a fallback for a package whose content hash no
+ * tree matches.
+ */
+function findPrimaryResourceIds(
+  resources: readonly PipelinePackageResource[],
+  contentHash: string,
+  primaryRootName: string,
+): Set<string> {
+  const skills = resources.filter(
+    (resource) => resource.kind === 'standalone_skill',
+  );
+  const byContent = skills.filter((resource) =>
+    resource.trees.some((tree) =>
+      tree.entries.some(
+        (entry) => entry.path === 'SKILL.md' && entry.sha256 === contentHash,
+      ),
+    ),
+  );
+  if (byContent.length > 0) {
+    return new Set(byContent.map((resource) => resource.id));
+  }
+  const byName = skills.find(
+    (resource) => preferredTree(resource)?.rootName === primaryRootName,
+  );
+  return new Set(byName ? [byName.id] : []);
+}
+
+/**
+ * Resources the share bound to itself, plus their dependency closure.
+ *
+ * A skill package binds to the subject rather than to a step, so this is the
+ * whole of what the publisher agreed to send.
+ */
+function subjectResources(
+  manifest: PipelinePackageManifestV1,
+): PipelinePackageResource[] {
+  const byId = new Map(
+    manifest.resources.map((resource) => [resource.id, resource]),
+  );
+  const rootIds =
+    manifest.bindings.find(
+      (binding) =>
+        capabilityPackageBindingKey(binding) ===
+        CAPABILITY_PACKAGE_SUBJECT_BINDING_KEY,
+    )?.resourceIds ?? [];
+  const seen = new Set<string>();
+  const pending = [...rootIds];
+  const resolved: PipelinePackageResource[] = [];
+  while (pending.length > 0) {
+    const id = pending.pop();
+    if (id === undefined || seen.has(id)) continue;
+    seen.add(id);
+    const resource = byId.get(id);
+    if (!resource) continue;
+    resolved.push(resource);
+    pending.push(...resource.dependencyResourceIds);
+  }
+  return resolved;
+}
+
+/**
+ * A resource can carry one tree per provider. A local custom skill is a single
+ * folder, so pick Claude's when present and otherwise the first available —
+ * the two providers' standalone-skill trees are the same SKILL.md folder.
+ */
+function preferredTree(
+  resource: PipelinePackageResource,
+): PipelinePackageResource['trees'][number] | undefined {
+  return (
+    resource.trees.find((tree) => tree.provider === 'claude') ??
+    resource.trees[0]
+  );
+}
+
+async function copyTreeInto(
+  cachedPackagePath: string,
+  resourceId: string,
+  tree: PipelinePackageResource['trees'][number],
+  destinationDir: string,
+  options: {
+    skipSkillMd: boolean;
+    skipExisting?: boolean;
+    /**
+     * Receives each file written into a folder that already existed, as it is
+     * written, so a failure later in the same tree can still be undone.
+     */
+    writtenFiles?: string[];
+    /**
+     * Receives the topmost directory each write had to create inside a folder
+     * that already existed. Everything under it is this install's, so it can be
+     * removed whole on failure instead of leaving empty folders behind.
+     */
+    createdSubfolders?: string[];
+  },
+): Promise<{ copied: number; kept: string[] }> {
+  const resolvedDestination = path.resolve(destinationDir);
+  const treeRoot = path.join(
+    cachedPackagePath,
+    'materialized',
+    resourceId,
+    tree.provider,
+    tree.rootName,
+  );
+  let copied = 0;
+  const kept: string[] = [];
+  for (const entry of tree.entries) {
+    if (options.skipSkillMd && entry.path === 'SKILL.md') continue;
+    // Re-validated here rather than trusted from the manifest: this is the
+    // step that turns a manifest string into a real write. The result is held
+    // as a plain boolean so the guard does not narrow the already-`string`
+    // path to `never` in the failure branch, where it still has to be named.
+    const entryPath = entry.path;
+    const pathIsSafe: boolean = isSafeCapabilityPackagePath(entryPath);
+    if (!pathIsSafe) {
+      throw new Error(`Skill package contains an unsafe path: ${entryPath}`);
+    }
+    const target = path.resolve(resolvedDestination, ...entryPath.split('/'));
+    if (
+      target !== resolvedDestination &&
+      !target.startsWith(`${resolvedDestination}${path.sep}`)
+    ) {
+      throw new Error(`Skill package path escapes its folder: ${entryPath}`);
+    }
+    const bytes = await fs.readFile(
+      path.join(treeRoot, ...entryPath.split('/')),
+    );
+    if (createHash('sha256').update(bytes).digest('hex') !== entry.sha256) {
+      throw new Error(`Skill package file failed verification: ${entryPath}`);
+    }
+    const createdDirectory = await fs.mkdir(path.dirname(target), {
+      recursive: true,
+    });
+    if (createdDirectory !== undefined) {
+      options.createdSubfolders?.push(createdDirectory);
+    }
+    const mode = entry.mode === 'execute' ? 0o700 : 0o600;
+    if (options.skipExisting) {
+      try {
+        // `wx` fails with EEXIST rather than truncating, so the "is it already
+        // there?" question and the write are one atomic operation. A stat-then-
+        // write would leave a window in which the file appears and gets clobbered.
+        await fs.writeFile(target, bytes, { flag: 'wx', mode });
+        options.writtenFiles?.push(target);
+      } catch (error) {
+        if (!isErrnoCode(error, 'EEXIST')) throw error;
+        // Written moments ago by this same install — the shared skill's other
+        // provider tree carries the same path. That is not the recipient's
+        // file, so it is neither kept nor reported.
+        if (options.writtenFiles?.includes(target)) continue;
+        // Theirs is kept either way. It is only worth telling them about when
+        // it differs: an identical file on a re-import is not a conflict.
+        const existing = await fs.readFile(target);
+        if (!existing.equals(bytes)) kept.push(entryPath);
+        continue;
+      }
+    } else {
+      await fs.writeFile(target, bytes, { mode });
+    }
+    copied += 1;
+  }
+  return { copied, kept };
+}
+
+interface InstallUndo {
+  /** Dependency folders this install created; removed whole on failure. */
+  createdFolders: string[];
+  /** Directories this install created inside folders that already existed. */
+  createdSubfolders: string[];
+  /** Files this install added to folders that already existed. */
+  writtenFiles: string[];
+}
+
+/**
+ * Remove what a failed install created, and nothing else. Best-effort: the
+ * original error is what the caller needs to see, so a cleanup failure is not
+ * allowed to replace it.
+ */
+async function rollBackInstall(undo: InstallUndo): Promise<void> {
+  await Promise.allSettled([
+    ...undo.writtenFiles.map((file) => fs.rm(file, { force: true })),
+    ...[...undo.createdSubfolders, ...undo.createdFolders].map((folder) =>
+      fs.rm(folder, { recursive: true, force: true }),
+    ),
+  ]);
+}
+
+/** Narrow an unknown thrown value to a Node errno with the given code. */
+function isErrnoCode(error: unknown, code: string): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === code
+  );
+}
+
+/**
+ * Claim an unused local skill folder, walking the same numeric-suffix scheme
+ * the raw-write import uses. Never returns a name that already exists.
+ *
+ * Known race, accepted: the folder is claimed by an empty `mkdir` before its
+ * SKILL.md is written, so a second install of the same dependency running at
+ * that instant cannot see the first one's SKILL.md yet and takes a suffixed
+ * name instead of reusing it. The result is a duplicate skill, never an
+ * overwrite, and concurrent installs of one dependency are rare enough that
+ * serializing them is not worth the complexity.
+ */
+async function reserveSkillName(
+  baseName: string,
+  expectedSkillMd: { sha256: string } | undefined,
+  reusableIds?: ReadonlySet<string>,
+): Promise<{ name: string; reused: boolean }> {
+  // The source directory has to exist before a non-recursive mkdir can
+  // distinguish "this name is taken" (EEXIST) from "nothing is here yet"
+  // (ENOENT). Installing a dependency skill must not depend on some earlier
+  // write having created it.
+  await fs.mkdir(getSourceDir(CUSTOM_SKILL_SOURCE_ID), { recursive: true });
+  for (let attempt = 0; attempt < MAX_SUFFIX_ATTEMPTS; attempt += 1) {
+    const candidate = attempt === 0 ? baseName : `${baseName}-${attempt + 1}`;
+    const directory = getSkillDir(CUSTOM_SKILL_SOURCE_ID, candidate);
+    try {
+      // Non-recursive on purpose: `recursive: true` succeeds on an existing
+      // directory, which would hand back a name that is already in use and
+      // let the copy overwrite the recipient's own skill.
+      await fs.mkdir(directory, { recursive: false });
+      return { name: candidate, reused: false };
+    } catch (error) {
+      if (isErrnoCode(error, 'EEXIST')) {
+        // Taken — but possibly by a previous install of this very share.
+        // Without this, re-importing (a double-clicked Import, a re-installed
+        // Collection, a Collection naming the same skill twice) would pile up
+        // `helper-2`, `helper-3`, … forever. Scoped imports also require the
+        // same receipt: identical personal content must remain unbound.
+        // The caller is told it was reused, because writing the full tree into
+        // a folder the recipient already owns would overwrite their files.
+        if (
+          (!reusableIds ||
+            reusableIds.has(`${CUSTOM_SKILL_SOURCE_ID}/${candidate}`)) &&
+          (await skillMdMatches(directory, expectedSkillMd))
+        ) {
+          return { name: candidate, reused: true };
+        }
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new Error(
+    `Could not install packaged skill "${baseName}": exhausted ${MAX_SUFFIX_ATTEMPTS} name-suffix attempts.`,
+  );
+}
+
+async function skillMdMatches(
+  directory: string,
+  expected: { sha256: string } | undefined,
+): Promise<boolean> {
+  if (!expected) return false;
+  try {
+    const bytes = await fs.readFile(path.join(directory, 'SKILL.md'));
+    return createHash('sha256').update(bytes).digest('hex') === expected.sha256;
+  } catch {
+    return false;
+  }
+}

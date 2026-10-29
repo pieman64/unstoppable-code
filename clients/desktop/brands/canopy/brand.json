@@ -1,0 +1,104 @@
+{
+  "schemaVersion": 5,
+  "id": "canopy",
+  "displayName": "Canopy",
+  "shortName": "Canopy",
+  "internalName": "canopy",
+  "cliName": "canopy",
+  "appId": "com.canopy.ui",
+  "description": "Canopy - Autonomous multi-agent orchestration framework",
+  "author": "Canopy Team",
+  "serverDisplayName": "Canopy Server",
+  "theme": {
+    "defaultColorMode": "dark",
+    "default": {
+      "id": "default",
+      "label": "Default",
+      "recipe": {
+        "engine": "ui-kit-v1",
+        "base": {
+          "light": "#F2F2ED",
+          "dark": "#0B0B0F"
+        },
+        "accent": "#3DA13D",
+        "contrast": 1,
+        "borderContrast": 0.5,
+        "darkAccentTone": 0.72,
+        "tuning": {
+          "neutralTintScale": 1,
+          "surfaceStepScale": 1,
+          "lineAlpha": 0.64,
+          "maxChroma": 0.4,
+          "accentChromaScale": 2,
+          "semanticContrastRatio": 3,
+          "solidTone": 0.56,
+          "mutedAlpha": 0.16
+        },
+        "radius": "12px"
+      }
+    }
+  },
+  "storage": {
+    "dataDirNames": {
+      "prod": [".canopy", ".unstoppable-code"],
+      "rc": [".canopy-rc", ".unstoppable-code-rc"],
+      "dev": [".canopy-dev", ".unstoppable-code-dev"]
+    },
+    "secureDataDirNames": {
+      "prod": ".canopy-secure",
+      "rc": ".canopy-rc-secure",
+      "internal": ".canopy-internal-secure",
+      "dev": ".canopy-secure-dev"
+    },
+    "configFileNames": ["canopy.json", "unstoppable-code.json"],
+    "projectConfigDirNames": [".canopy", ".unstoppable-code"]
+  },
+  "environment": {
+    "prefixes": ["CANOPY"]
+  },
+  "tools": {
+    "namespace": "canopy"
+  },
+  "desktopIntegration": {
+    "routePrefix": "/canopy",
+    "tokenHeaderName": "X-Canopy-Integration-Token",
+    "tokenEnvVar": "CANOPY_DESKTOP_INTEGRATION_TOKEN"
+  },
+  "dictation": {
+    "binaryName": "canopy-dictate",
+    "bundleId": "com.canopy.dictate",
+    "displayName": "Canopy Dictate"
+  },
+  "web": {
+    "hostnames": [
+      "canopy.dev",
+      "www.canopy.dev",
+      "localhost",
+      "canopy.ud-staging.com",
+      "ud-staging.com",
+      "www.ud-staging.com"
+    ],
+    "apiNamespace": "desktop-app",
+    "wellKnownNamespace": "canopy",
+    "title": "Canopy",
+    "description": "Autonomous multi-agent orchestration framework"
+  },
+  "release": {
+    "enabled": ["internal"],
+    "artifactPrefix": "canopy"
+  },
+  "copilot": {
+    "gitHubAppClientId": "Iv23livJwaJtINWS3jkr"
+  },
+  "assets": {
+    "logoSvg": "./logo.svg",
+    "appIconPng": "./app-icon.png",
+    "macIconIcns": "./icon.icns",
+    "windowsIconIco": "./icon-full.ico",
+    "linuxIconDir": "./icons",
+    "webIconPng": "./web-icon.png"
+  },
+  "linux": {
+    "maintainerEmail": "support@unstoppabledomains.com"
+  }
+}

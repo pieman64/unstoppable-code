@@ -1,0 +1,221 @@
+{
+  "schemaVersion": 5,
+  "id": "unstoppable-code",
+  "displayName": "Unstoppable Code",
+  "shortName": "Unstoppable",
+  "internalName": "unstoppable-code",
+  "cliName": "unstoppable-code",
+  "appId": "com.unstoppable.code.ui",
+  "description": "Unstoppable Code agentic development environment",
+  "author": "Unstoppable Code Team",
+  "serverDisplayName": "Unstoppable Code Server",
+  "theme": {
+    "defaultColorMode": "light",
+    "default": {
+      "id": "default",
+      "label": "Default",
+      "recipe": {
+        "engine": "ui-kit-v1",
+        "base": {
+          "light": "#F2F2ED",
+          "dark": "#0B0B0F"
+        },
+        "accent": "oklch(0.5039 0.4 263.75)",
+        "contrast": 1,
+        "borderContrast": 0.5,
+        "darkAccentTone": 0.72,
+        "tuning": {
+          "neutralTintScale": 1,
+          "surfaceStepScale": 1,
+          "lineAlpha": 0.64,
+          "maxChroma": 0.4,
+          "accentChromaScale": 2,
+          "semanticContrastRatio": 3,
+          "solidTone": 0.56,
+          "mutedAlpha": 0.16
+        },
+        "radius": "12px"
+      }
+    }
+  },
+  "storage": {
+    "dataDirNames": {
+      "prod": [".unstoppable-code", ".canopy"],
+      "rc": [".unstoppable-code-rc", ".canopy-rc"],
+      "dev": [".unstoppable-code-dev", ".canopy-dev"]
+    },
+    "secureDataDirNames": {
+      "prod": ".unstoppable-code-secure",
+      "rc": ".unstoppable-code-rc-secure",
+      "internal": ".unstoppable-code-internal-secure",
+      "dev": ".unstoppable-code-secure-dev"
+    },
+    "configFileNames": ["unstoppable-code.json", "canopy.json"],
+    "projectConfigDirNames": [".unstoppable-code", ".canopy"]
+  },
+  "environment": {
+    "prefixes": ["UNSTOPPABLE_CODE", "CANOPY"]
+  },
+  "tools": {
+    "namespace": "unstoppable-code"
+  },
+  "desktopIntegration": {
+    "routePrefix": "/unstoppable-code",
+    "tokenHeaderName": "X-UnstoppableCode-Integration-Token",
+    "tokenEnvVar": "UNSTOPPABLE_CODE_DESKTOP_INTEGRATION_TOKEN"
+  },
+  "dictation": {
+    "binaryName": "unstoppable-code-dictate",
+    "bundleId": "com.unstoppable.code.dictate",
+    "displayName": "Unstoppable Code Dictate"
+  },
+  "web": {
+    "hostnames": [
+      "unstoppable-code.example.com",
+      "www.unstoppable-code.example.com",
+      "app.unstoppable.ai",
+      "unstoppable.ai",
+      "www.unstoppable.ai",
+      "code.ud-staging.com"
+    ],
+    "apiNamespace": "desktop-app",
+    "wellKnownNamespace": "unstoppable-code",
+    "title": "Unstoppable",
+    "description": "Unstoppable agentic development environment",
+    "mobileApps": {
+      "appStoreUrl": "https://apps.apple.com/us/app/unstoppable-ai/id6786961568",
+      "playStoreUrl": "https://play.google.com/store/apps/details?id=com.unstoppabledomains.canopy"
+    },
+    "marketing": {
+      "demoUrl": "https://calendly.com/camp-unstoppable",
+      "chatUrl": "https://unstoppabledomains.com/chat",
+      "legacySiteOrigin": "https://unstoppabledomains.com",
+      "copyrightHolder": "Unstoppable Domains Inc.",
+      "footerLinkGroups": [
+        {
+          "heading": "Products",
+          "links": [
+            { "label": "Desktop app", "href": "/code" },
+            { "label": "Mobile app", "href": "/products/mobile-app" },
+            { "label": "Work", "href": "/work" },
+            { "label": "Pricing", "href": "/pricing" },
+            { "label": "Web agents", "href": "/chat" },
+            { "label": "Site builder", "href": "/products/ai-site-builder" }
+          ]
+        },
+        {
+          "heading": "Features",
+          "links": []
+        },
+        {
+          "heading": "Company",
+          "links": [
+            {
+              "label": "About",
+              "href": "/about"
+            },
+            { "label": "Blog", "href": "/blog" },
+            {
+              "label": "Partners",
+              "href": "https://unstoppabledomains.com/partners/registration"
+            },
+            {
+              "label": "Contact",
+              "href": "mailto:support@unstoppabledomains.com"
+            },
+            {
+              "label": "GitHub",
+              "href": "https://github.com/unstoppabledomains"
+            },
+            { "label": "Terms", "href": "/terms" },
+            { "label": "Privacy", "href": "/privacy" },
+            {
+              "label": "Support",
+              "href": "/support"
+            }
+          ]
+        }
+      ],
+      "footerUtilityLinks": [
+        {
+          "label": "Report a Bug",
+          "href": "https://support.unstoppabledomains.com/support/tickets/new"
+        },
+        {
+          "label": "Feedback",
+          "href": "https://feedback.unstoppabledomains.com"
+        },
+        {
+          "label": "Registrant Educational Information",
+          "href": "https://www.icann.org/resources/pages/benefits-2013-09-16-en"
+        },
+        {
+          "label": "Registrants Benefits and Responsibilities",
+          "href": "https://www.icann.org/resources/pages/approved-with-specs-2013-09-17-en#registrant"
+        },
+        {
+          "label": "Submit Disclosure Request",
+          "href": "https://support.unstoppabledomains.com/support/solutions/articles/48001278851-request-for-disclosure-of-non-public-registrant-data"
+        },
+        {
+          "label": "Abuse",
+          "href": "https://support.unstoppabledomains.com/support/solutions/articles/48001279126-how-to-report-domain-abuse"
+        }
+      ],
+      "socialLinks": [
+        {
+          "label": "X (Twitter)",
+          "href": "https://twitter.com/unstoppableweb"
+        },
+        {
+          "label": "Instagram",
+          "href": "https://www.instagram.com/unstoppabledomains/"
+        },
+        {
+          "label": "Facebook",
+          "href": "https://www.facebook.com/unstoppableweb/"
+        },
+        {
+          "label": "LinkedIn",
+          "href": "https://www.linkedin.com/company/unstoppable-domains"
+        },
+        {
+          "label": "Reddit",
+          "href": "https://www.reddit.com/r/unstoppabledomains/"
+        },
+        {
+          "label": "Discord",
+          "href": "https://discord.gg/thU89YfnR"
+        },
+        {
+          "label": "YouTube",
+          "href": "https://www.youtube.com/c/UnstoppableDomains/featured"
+        },
+        {
+          "label": "Spotify",
+          "href": "https://open.spotify.com/show/2ZlyOpkkprGKS5KODk1PSS"
+        },
+        { "label": "TikTok", "href": "https://www.tiktok.com/@unstoppableweb" }
+      ]
+    }
+  },
+  "release": {
+    "enabled": ["internal", "rc", "stable"],
+    "artifactPrefix": "unstoppable-code"
+  },
+  "copilot": {
+    "gitHubAppClientId": "Iv23livJwaJtINWS3jkr"
+  },
+  "assets": {
+    "logoSvg": "./logo.svg",
+    "wordmarkSvg": "./wordmark.svg",
+    "appIconPng": "./app-icon.png",
+    "webIconPng": "./web-icon.png",
+    "windowsIconIco": "./icon-full.ico",
+    "linuxIconDir": "./icons",
+    "macIconIcns": "./icon.icns"
+  },
+  "linux": {
+    "maintainerEmail": "support@unstoppabledomains.com"
+  }
+}

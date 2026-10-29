@@ -1,0 +1,177 @@
+'use client';
+
+import type { JSX } from 'react';
+import {
+  DialogModal,
+  RichHoverTooltip,
+  ThinkingSpinner,
+} from '@canopy/ui-shared/components';
+import { WarningIcon } from '@canopy/ui-shared/icons/AppIcons';
+
+/**
+ * Base-branch drift (REG-3025, moved from the desktop `PrStatusBar`): the
+ * worktree tracks one base branch while its pull request targets another.
+ * The header shows a warning beside the base branch; clicking it asks to
+ * align the worktree with the PR. Only the worktree's tracked base changes;
+ * the PR is never modified.
+ */
+export interface BaseBranchDrift {
+  readonly repoId: string;
+  readonly repoName: string;
+  readonly localBaseBranch: string;
+  readonly prBaseBranch: string;
+  readonly prNumber: number;
+}
+
+type BaseBranchDriftList = readonly BaseBranchDrift[];
+
+interface BaseBranchDriftTooltipContentProps {
+  readonly drifts: BaseBranchDriftList;
+}
+
+export function BaseBranchDriftTooltipContent({
+  drifts,
+}: BaseBranchDriftTooltipContentProps): JSX.Element {
+  const singleDrift = drifts.length === 1 ? drifts[0] : null;
+  return (
+    <>
+      <div className="mb-1 font-semibold fg-primary">Base branch drift</div>
+      {singleDrift ? (
+        <p className="fg-secondary">
+          The locally tracked base branch{' '}
+          <span className="font-mono fg-primary">
+            {singleDrift.localBaseBranch}
+          </span>{' '}
+          does not match PR #{singleDrift.prNumber}, which targets{' '}
+          <span className="font-mono fg-primary">
+            {singleDrift.prBaseBranch}
+          </span>
+          .
+        </p>
+      ) : (
+        <div className="flex flex-col gap-1.5 fg-secondary">
+          <p>{drifts.length} repositories differ from their PR base:</p>
+          <ul className="flex flex-col gap-1">
+            {drifts.map((drift) => (
+              <li key={drift.repoId}>
+                <span className="font-medium fg-primary">{drift.repoName}</span>{' '}
+                <span className="font-mono">{drift.localBaseBranch}</span>
+                <span className="px-1 fg-quaternary">→</span>
+                <span className="font-mono fg-primary">
+                  {drift.prBaseBranch}
+                </span>{' '}
+                <span>(PR #{drift.prNumber})</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <p className="mt-1.5 fg-tertiary">Click to align with the PR.</p>
+    </>
+  );
+}
+
+interface AlignBaseBranchConfirmationProps {
+  readonly drifts: BaseBranchDriftList;
+  readonly onConfirm: () => void;
+  readonly onClose: () => void;
+  /** The confirmed metadata update runs to completion before dismissal. */
+  readonly pending?: boolean;
+}
+
+export function AlignBaseBranchConfirmation({
+  drifts,
+  onConfirm,
+  onClose,
+  pending = false,
+}: AlignBaseBranchConfirmationProps): JSX.Element {
+  return (
+    <DialogModal
+      onClose={onClose}
+      title="Align base branch with PR?"
+      maxWidth="sm"
+      dataTestId="pr-status-base-branch-drift-modal"
+      closeOnBackdrop={!pending}
+      closeOnEscape={!pending}
+      showCloseButton={!pending}
+    >
+      <div className="flex flex-col gap-3 p-5 text-s fg-primary">
+        <p className="fg-secondary">
+          Update the locally tracked base branch to match the open pull request?
+          This changes the worktree metadata and does not modify the PR.
+        </p>
+        <ul className="flex flex-col gap-1.5 rounded-md border bg-secondary/30 p-3 text-xs">
+          {drifts.map((drift) => (
+            <li key={drift.repoId} className="min-w-0">
+              {drifts.length > 1 && (
+                <span className="mr-1 font-semibold">{drift.repoName}:</span>
+              )}
+              <span className="font-mono fg-secondary">
+                {drift.localBaseBranch}
+              </span>
+              <span className="px-1.5 fg-quaternary">→</span>
+              <span className="font-mono font-medium">
+                {drift.prBaseBranch}
+              </span>
+              <span className="ml-1 fg-tertiary">PR #{drift.prNumber}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+      <div className="flex items-center justify-end gap-2 border-t p-4">
+        {!pending && (
+          <button
+            type="button"
+            onClick={onClose}
+            className="focus-ring rounded-md border bg-secondary px-3 py-1.5 text-xs font-medium fg-primary transition hover:bg-secondary/80"
+          >
+            Cancel
+          </button>
+        )}
+        <button
+          type="button"
+          data-testid="pr-status-base-branch-drift-confirm"
+          onClick={onConfirm}
+          disabled={pending}
+          aria-busy={pending}
+          className="focus-ring inline-flex items-center gap-2 rounded-md bg-accent px-3 py-1.5 text-xs font-medium fg-emphasis transition hover:bg-accent/90"
+        >
+          {pending && <ThinkingSpinner tone="emphasis" quiet />}
+          {pending ? 'Updating base branch…' : 'Update base branch'}
+        </button>
+      </div>
+    </DialogModal>
+  );
+}
+
+/** The warning beside the base branch; opens the alignment question. */
+export function BaseBranchDriftWarning({
+  drifts,
+  onAlign,
+}: {
+  readonly drifts: BaseBranchDriftList;
+  readonly onAlign: () => void;
+}): JSX.Element {
+  return (
+    <RichHoverTooltip
+      dataTestId="pr-status-base-branch-drift-tooltip"
+      surfaceClassName="min-w-60 max-w-90"
+      surfacePadding="card"
+      content={
+        <div className="text-xs">
+          <BaseBranchDriftTooltipContent drifts={drifts} />
+        </div>
+      }
+    >
+      <button
+        type="button"
+        data-testid="pr-status-base-branch-drift-warning"
+        aria-label="Base branch differs from PR"
+        onClick={onAlign}
+        className="electron-no-drag focus-ring inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md fg-warning transition-colors hover:bg-warning-subtle"
+      >
+        <WarningIcon size={16} aria-hidden="true" />
+      </button>
+    </RichHoverTooltip>
+  );
+}

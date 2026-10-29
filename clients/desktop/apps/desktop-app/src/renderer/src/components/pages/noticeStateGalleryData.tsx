@@ -1,0 +1,964 @@
+import type { ReactNode } from 'react';
+import type {
+  NoticeActionsPlacement,
+  NoticeButtonVariant,
+  NoticeIntent,
+} from '@canopy/ui-shared/components';
+import { NoticeList, NoticeListItem, RetryCountdown } from '@canopy/ui-shared';
+import {
+  AgentAssistantIcon,
+  DocumentIcon,
+  PluginsIcon,
+  RevertIcon,
+  SkillIcon,
+} from '@canopy/ui-shared/icons/AppIcons';
+import {
+  DATA_SHARING_OPT_IN_PERSONAL_COPY,
+  DATA_SHARING_OPT_IN_STATE_COPY,
+  DataSharingOptInScopeSummary,
+  dataSharingOptInActionLabel,
+  dataSharingOptInErrorText,
+  dataSharingOptInHeadline,
+} from '@canopy/ui-shared/components/DataSharingOptInCta';
+import { SPLIT_PR_BLOCKER_COPY } from '@/lib/splitPrEligibilityInputs';
+import { brandText } from '@/lib/brand';
+import { SKILL_SHARE_NUDGE_COPY } from '@/components/chat/SkillShareNudgeBanner';
+import { SKILL_SUGGESTION_COPY } from '@canopy/ui-app';
+import { automationRevealNoticeCopy } from '@/components/automations/automationRevealNotice';
+import { installRevealNotice } from '@/components/share/installRevealNotice';
+import { automationRunsInMessage } from '@canopy/desktop-shared/lib/automation-context-copy';
+import {
+  askOwnerToChoosePlanCopy,
+  CHOOSE_ORG_PLAN_COPY,
+  CHOOSE_ORG_PLAN_LABEL,
+  orgWithoutPlanTitle,
+} from '@/lib/organizationPlan';
+import {
+  CONTACT_ORG_ADMIN_COPY,
+  CONTACT_ORG_ADMIN_LAPSED_COPY,
+} from '@/lib/openBillingPage';
+import {
+  CHAT_STATE_COMMAND_FAILED_NOTICE,
+  CHAT_STATE_COMMAND_FAILED_TITLE,
+  CHAT_STATE_CONFLICT_NOTICE,
+  CHAT_STATE_CONFLICT_TITLE,
+  CHAT_STATE_REFRESH_ERROR_HEADING,
+  CHAT_STATE_REFRESH_ERROR_HELPER,
+  CHAT_STATE_REFRESH_RETRY_LABEL,
+  CHAT_STATE_REFRESHING_TOAST,
+} from '@/stores/chat/revisioned-copy';
+
+/**
+ * Fixtures for the Notice States gallery page
+ * ({@link ../pages/NoticeStateGalleryPage}).
+ *
+ * The composer notices and the other title-first notices, as the props they
+ * hand the shared `Notice`, grouped by the surface they appear on. Static
+ * copy is quoted from the shipping component (or imported where a constant
+ * exists); rows whose copy is built from runtime data (a data-folder path, a
+ * transcript timestamp, a pipeline pause reason) carry a representative
+ * example instead. When a notice's wording changes, update the entry here in
+ * the same change. Fixture facts (org names, counts, times) are examples and
+ * are labelled as such on the page.
+ */
+
+const brand = brandText.appName;
+
+export interface NoticeGalleryAction {
+  label: string;
+  variant?: NoticeButtonVariant;
+  disabled?: boolean;
+}
+
+export interface NoticeGalleryEntry {
+  /** Stable id; also the row's test id suffix. */
+  id: string;
+  /** Row caption: which notice and which of its states this is. */
+  title: string;
+  /** What raises it, or what to look at. */
+  note?: string;
+  intent: NoticeIntent;
+  /** Override the intent glyph; `null` hides the icon column. */
+  icon?: ReactNode | null;
+  heading?: ReactNode;
+  message: ReactNode;
+  detail?: ReactNode;
+  actions?: readonly NoticeGalleryAction[];
+  /** Plain trailing content in the actions slot (a live value, not a button). */
+  aside?: ReactNode;
+  actionsPlacement?: NoticeActionsPlacement;
+  dismissible?: boolean;
+  /** Static prose rendered without a live region. */
+  live?: boolean;
+}
+
+export interface NoticeGallerySection {
+  id: string;
+  title: string;
+  note: string;
+  entries: readonly NoticeGalleryEntry[];
+}
+
+const lower = (copy: string): string =>
+  copy.charAt(0).toLowerCase() + copy.slice(1);
+
+export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
+  {
+    id: 'composer',
+    title: 'Composer',
+    note: 'Stacked above the chat input in one column that collapses when nothing is up. Every one is a short title for the state, then the choice or next step on the same line.',
+    entries: [
+      {
+        id: 'usage-limit-offer',
+        title: 'Usage limit reached: credits available',
+        note: 'Three actions drop to their own row; the accent action is last.',
+        intent: 'attention',
+        heading: 'Claude usage limit reached',
+        message: `Continue on ${brand} credits or wait for your quota to reset around 6:00 PM.`,
+        actions: [
+          { label: 'Use credits now' },
+          { label: 'Resume at 6:00 PM' },
+          { label: 'Always use credits', variant: 'primary' },
+        ],
+        actionsPlacement: 'below',
+        dismissible: true,
+      },
+      {
+        id: 'usage-limit-use-ai-credits',
+        title: 'Usage limit reached: credits unconfirmed',
+        note: 'Coverage is still loading or routing is already on; the accent action routes this chat through credits.',
+        intent: 'attention',
+        heading: 'Claude usage limit reached',
+        message: `Continue on ${brand} credits or wait for your quota to reset.`,
+        actions: [{ label: 'Use AI Credits', variant: 'primary' }],
+        dismissible: true,
+      },
+      {
+        id: 'claude-turn-limit',
+        title: 'Claude chat: turn limit reached',
+        intent: 'destructive',
+        heading: 'Claude turn limit reached',
+        message: 'Resume to continue where Claude left off.',
+        actions: [
+          { label: 'Resume', variant: 'primary' },
+          { label: 'Claude settings' },
+        ],
+      },
+      {
+        id: 'usage-limit-scheduled',
+        title: 'Usage limit reached: resume scheduled',
+        note: 'After "Resume at …" the message states the outcome and the used button is gone.',
+        intent: 'attention',
+        heading: 'Codex usage limit reached',
+        message: `This chat resumes automatically at Tue 9:00 AM, or continue on ${brand} credits now.`,
+        actions: [
+          { label: 'Use credits now' },
+          { label: 'Always use credits', variant: 'primary' },
+        ],
+        dismissible: true,
+      },
+      {
+        id: 'usage-limit-schedule-failed',
+        title: 'Usage limit reached: scheduling failed',
+        note: 'Post-action feedback is the only thing that ever appears under the line.',
+        intent: 'attention',
+        heading: 'Codex usage limit reached',
+        message: `Continue on ${brand} credits or wait for your quota to reset around 6:00 PM.`,
+        detail: "Couldn't schedule the resume. Try again.",
+        actions: [
+          { label: 'Use credits now' },
+          { label: 'Resume at 6:00 PM' },
+          { label: 'Always use credits', variant: 'primary' },
+        ],
+        actionsPlacement: 'below',
+        dismissible: true,
+      },
+      {
+        id: 'usage-limit-pricing',
+        title: 'Usage limit reached: no credits to spend',
+        intent: 'attention',
+        heading: 'Claude usage limit reached',
+        message: `Upgrade your ${brand} plan to keep working when you hit your provider limits.`,
+        actions: [
+          { label: 'Resume at reset' },
+          { label: 'Get credits', variant: 'primary' },
+        ],
+        dismissible: true,
+      },
+      {
+        id: 'usage-limit-contact-admin',
+        title: 'Usage limit reached: org has no headroom',
+        intent: 'attention',
+        heading: 'Claude usage limit reached',
+        message: CONTACT_ORG_ADMIN_COPY,
+        actions: [{ label: 'Resume at reset' }],
+        dismissible: true,
+      },
+      {
+        id: 'no-billing-source',
+        title: 'No billing source: not signed in',
+        note: 'The title names the missing half; the buttons carry both remedies.',
+        intent: 'attention',
+        heading: 'Not signed in to Claude',
+        message: `You have no ${brand} AI Credits to cover this chat either.`,
+        actions: [
+          { label: 'Sign in to Claude' },
+          { label: 'Get AI Credits', variant: 'primary' },
+        ],
+      },
+      {
+        id: 'no-billing-source-runtime',
+        title: 'No billing source: a send already failed',
+        intent: 'attention',
+        heading: 'Message not sent',
+        message: `Your ${brand} AI Credits didn't cover that message.`,
+        actions: [{ label: 'Get AI Credits', variant: 'primary' }],
+      },
+      {
+        id: 'no-billing-source-policy',
+        title: 'No billing source: org policy dead end',
+        note: 'No button can help, so the message carries the next step.',
+        intent: 'attention',
+        heading: 'No model available',
+        message:
+          "Your organization's model policy doesn't allow any model you can run right now, so ask your organization admin to allow a model you can use.",
+      },
+      {
+        id: 'no-billing-source-recovered',
+        title: 'No billing source: credits arrived',
+        intent: 'attention',
+        heading: 'Credits available again',
+        message: 'You can send it now.',
+      },
+      {
+        id: 'org-lapsed',
+        title: 'Organization plan lapsed',
+        intent: 'attention',
+        heading: 'Acme has no active plan',
+        message: `Its paused credit pool is not paying for this chat; ${lower(CONTACT_ORG_ADMIN_LAPSED_COPY)}`,
+        dismissible: true,
+      },
+      {
+        id: 'home-org-without-plan-owner',
+        title: 'Home: selected organization has no plan (owner)',
+        note: 'Home composer is disabled while an organization without an active plan is selected.',
+        intent: 'attention',
+        heading: orgWithoutPlanTitle('Acme'),
+        message: CHOOSE_ORG_PLAN_COPY,
+        actions: [{ label: CHOOSE_ORG_PLAN_LABEL, variant: 'primary' }],
+      },
+      {
+        id: 'home-org-without-plan-member',
+        title: 'Home: selected organization has no plan (admin or member)',
+        note: 'Only an owner can choose a plan, so everyone else is sent to one.',
+        intent: 'attention',
+        heading: orgWithoutPlanTitle('Acme'),
+        message: askOwnerToChoosePlanCopy('Acme'),
+        actions: [{ label: 'Back to Personal' }],
+      },
+      {
+        id: 'transient-retry-counting',
+        title: 'Transient provider error: retrying',
+        note: 'Live countdown from the shared RetryCountdown.',
+        intent: 'attention',
+        heading: 'Temporary provider error',
+        message: (
+          <RetryCountdown
+            attempt={2}
+            maxAttempts={5}
+            nextRetryAt={Date.now() + 90_000}
+            exhausted={false}
+          />
+        ),
+        dismissible: true,
+      },
+      {
+        id: 'transient-retry-exhausted',
+        title: 'Transient provider error: gave up',
+        intent: 'attention',
+        heading: 'Temporary provider error',
+        message: (
+          <RetryCountdown
+            attempt={5}
+            maxAttempts={5}
+            nextRetryAt={null}
+            exhausted
+          />
+        ),
+        dismissible: true,
+      },
+      {
+        id: 'ollama-unreachable',
+        title: 'Ollama unreachable',
+        note: 'Stays until the next send reaches the server; not dismissible.',
+        intent: 'attention',
+        heading: 'Ollama server not reachable',
+        message: 'Start it or check its connection settings.',
+        actions: [{ label: 'Open Ollama settings' }],
+      },
+      {
+        id: 'gateway-key-missing',
+        title: 'Model gateway: key missing',
+        intent: 'attention',
+        heading: 'Gateway key needed',
+        message:
+          'Acme routes your agents through its own model gateway, so add your gateway key to send this.',
+        actions: [{ label: 'Add your gateway key', variant: 'primary' }],
+      },
+      {
+        id: 'gateway-key-stale',
+        title: 'Model gateway: endpoint moved',
+        intent: 'attention',
+        heading: 'Gateway endpoint changed',
+        message:
+          'Acme moved its model gateway, so add a key for the new one to send this.',
+        actions: [{ label: 'Add your gateway key', variant: 'primary' }],
+      },
+      {
+        id: 'gateway-key-rejected',
+        title: 'Model gateway: key rejected',
+        intent: 'attention',
+        heading: 'Gateway key rejected',
+        message:
+          "Acme didn't accept your gateway key, so paste a current one or ask your admin for a new key.",
+        actions: [{ label: 'Add your gateway key', variant: 'primary' }],
+      },
+      {
+        id: 'approvals-upgrade',
+        title: 'Approvals upgrade notice',
+        intent: 'neutral',
+        heading: 'Approval defaults updated',
+        message:
+          'Existing profiles were set to Full access, so review them in Settings.',
+        actions: [{ label: 'Open settings' }],
+        dismissible: true,
+      },
+      {
+        id: 'plan-detected',
+        title: 'Plan document detected',
+        intent: 'neutral',
+        icon: <DocumentIcon size={16} aria-hidden="true" />,
+        heading: 'Plan detected',
+        message: 'Found a plan document in this conversation.',
+        actions: [{ label: 'Import', variant: 'primary' }],
+        dismissible: true,
+      },
+      {
+        id: 'skill-share-nudge-skill',
+        title: 'Share suggestion: skill',
+        note: 'Shown once per skill, after repeated use of one that is not shared anywhere.',
+        intent: 'neutral',
+        icon: <SkillIcon size={16} aria-hidden="true" />,
+        heading: SKILL_SHARE_NUDGE_COPY.title('release-notes'),
+        message: SKILL_SHARE_NUDGE_COPY.skillMessage,
+        actions: [{ label: SKILL_SHARE_NUDGE_COPY.action, variant: 'primary' }],
+        dismissible: true,
+      },
+      {
+        id: 'skill-share-nudge-plugin',
+        title: 'Share suggestion: plugin',
+        note: 'Uses of any skill in the plugin count toward the same suggestion.',
+        intent: 'neutral',
+        icon: <PluginsIcon size={16} aria-hidden="true" />,
+        heading: SKILL_SHARE_NUDGE_COPY.title('Release tools'),
+        message: SKILL_SHARE_NUDGE_COPY.pluginMessage,
+        actions: [{ label: SKILL_SHARE_NUDGE_COPY.action, variant: 'primary' }],
+        dismissible: true,
+      },
+      {
+        id: 'skill-suggestion-prompt',
+        title: 'Skill suggestion: repeated request',
+        note: 'Shown on the next repeat after a scan confirms the user keeps asking for the same kind of task.',
+        intent: 'neutral',
+        icon: <SkillIcon size={16} aria-hidden="true" />,
+        heading: SKILL_SUGGESTION_COPY.title(4),
+        message: SKILL_SUGGESTION_COPY.promptMessage,
+        actions: [
+          { label: SKILL_SUGGESTION_COPY.dismiss, variant: 'secondary' },
+          { label: SKILL_SUGGESTION_COPY.create, variant: 'primary' },
+        ],
+      },
+      {
+        id: 'skill-suggestion-chain',
+        title: 'Skill suggestion: skill chain',
+        note: 'The same skills run in the same order across several chats.',
+        intent: 'neutral',
+        icon: <SkillIcon size={16} aria-hidden="true" />,
+        heading: SKILL_SUGGESTION_COPY.title(3),
+        message: SKILL_SUGGESTION_COPY.chainMessage(3),
+        actions: [
+          { label: SKILL_SUGGESTION_COPY.dismiss, variant: 'secondary' },
+          { label: SKILL_SUGGESTION_COPY.create, variant: 'primary' },
+        ],
+      },
+      {
+        id: 'routing-status-personal',
+        title: 'AI Credits routing: personal balance',
+        note: 'The live value rides in the trailing slot, 20px from the edge: 12px deeper than a button.',
+        intent: 'neutral',
+        heading: 'Using AI Credits',
+        message: 'This session is paid from your credits.',
+        aside: (
+          <span className="shrink-0 pr-3 font-medium tabular-nums">
+            1,240 credits
+          </span>
+        ),
+      },
+      {
+        id: 'routing-status-org',
+        title: 'AI Credits routing: org pool',
+        intent: 'neutral',
+        heading: 'Using AI Credits',
+        message: "Acme's shared credit pool is covering this session.",
+        aside: (
+          <span className="min-w-0 max-w-64 truncate pr-3 font-medium">
+            Covered by Acme
+          </span>
+        ),
+      },
+      {
+        id: 'resource-guard-memory',
+        title: 'Resource guard: memory pressure',
+        intent: 'attention',
+        heading: 'Sending paused',
+        message:
+          'Memory pressure is high, so sends resume when active work finishes.',
+        actions: [{ label: 'Open performance settings' }],
+      },
+      {
+        id: 'resource-guard-concurrency',
+        title: 'Resource guard: concurrency cap',
+        intent: 'attention',
+        heading: 'Sending paused',
+        message: `${brand} is at its limit of 4 concurrent chat turns, so wait for one to finish before sending another.`,
+        actions: [{ label: 'Open performance settings' }],
+      },
+      {
+        id: 'stuck-agent',
+        title: 'Stuck agent',
+        intent: 'attention',
+        heading: 'No response for 6 minutes',
+        message: 'The agent might be stuck.',
+        actions: [{ label: 'Check status' }],
+      },
+    ],
+  },
+  {
+    id: 'transcript',
+    title: 'Transcript',
+    note: 'Notices that belong to a turn rather than to the composer: a title carries the state and the message explains it.',
+    entries: [
+      {
+        id: 'proxy-error-no-response',
+        title: "Proxy error: provider didn't respond",
+        intent: 'attention',
+        heading: "The AI provider didn't respond",
+        message: (
+          <>
+            {brand} tried a few times and couldn&apos;t reach the AI provider.
+            This usually clears up quickly, so send your message again in a
+            moment.{' '}
+            <span className="whitespace-nowrap">
+              Error id{' '}
+              <span className="font-mono select-all">req_8f3a2c9e1b</span>
+            </span>
+          </>
+        ),
+        actions: [{ label: 'Copy id' }, { label: 'Retry', variant: 'primary' }],
+      },
+      {
+        id: 'proxy-error-credits',
+        title: 'Proxy error: message needed credits',
+        intent: 'attention',
+        heading: 'This message needed AI Credits',
+        message: (
+          <>
+            Your {brand} AI Credits didn&apos;t cover this message. Add credits,
+            then send it again.{' '}
+            <span className="whitespace-nowrap">
+              Error id{' '}
+              <span className="font-mono select-all">req_8f3a2c9e1b</span>
+            </span>
+          </>
+        ),
+        actions: [
+          { label: 'Copy id' },
+          { label: 'Get AI Credits', variant: 'primary' },
+        ],
+      },
+      {
+        id: 'chat-state-refreshing',
+        title: 'Chat state: refreshing',
+        note: 'No glyph, no live region: a quiet status line.',
+        intent: 'neutral',
+        icon: null,
+        message: CHAT_STATE_REFRESHING_TOAST,
+        live: false,
+      },
+      {
+        id: 'chat-state-refresh-error',
+        title: 'Chat state: refresh failed',
+        intent: 'destructive',
+        heading: CHAT_STATE_REFRESH_ERROR_HEADING,
+        message: CHAT_STATE_REFRESH_ERROR_HELPER,
+        actions: [
+          { label: CHAT_STATE_REFRESH_RETRY_LABEL, variant: 'primary' },
+        ],
+      },
+      {
+        id: 'chat-state-conflict',
+        title: 'Chat state: changed elsewhere',
+        intent: 'attention',
+        heading: CHAT_STATE_CONFLICT_TITLE,
+        message: CHAT_STATE_CONFLICT_NOTICE,
+        dismissible: true,
+      },
+      {
+        id: 'chat-state-command-failed',
+        title: 'Chat state: change not saved',
+        intent: 'attention',
+        heading: CHAT_STATE_COMMAND_FAILED_TITLE,
+        message: CHAT_STATE_COMMAND_FAILED_NOTICE,
+        dismissible: true,
+      },
+      {
+        id: 'transcript-sync-failed',
+        title: 'Claude Code transcript sync failed',
+        intent: 'attention',
+        heading: 'Claude Code transcript sync failed at 10:11 AM',
+        message:
+          'The terminal session kept running, but this transcript may be missing its latest turns.',
+        live: false,
+      },
+      {
+        id: 'transcript-reverted',
+        title: 'Reverted prior turn',
+        intent: 'attention',
+        icon: <RevertIcon size={16} aria-hidden="true" />,
+        heading: 'Reverted prior turn at 10:14 AM',
+        message: 'The files changed in that turn were restored.',
+        live: false,
+      },
+    ],
+  },
+  {
+    id: 'pipelines',
+    title: 'Pipelines',
+    note: 'Run detail and the editor.',
+    entries: [
+      {
+        id: 'pipeline-paused',
+        title: 'Run paused on a usage limit',
+        intent: 'attention',
+        heading: 'Run paused',
+        message:
+          'Claude usage limit reached. Steps on Claude wait until the quota resets. 2 paused steps need attention.',
+        actions: [
+          { label: 'Schedule resume' },
+          { label: 'Resume run', variant: 'primary' },
+        ],
+      },
+      {
+        id: 'terminal-mode',
+        title: 'Step running in terminal mode',
+        note: 'Operational status ink on the glyph, not an intent.',
+        intent: 'neutral',
+        icon: (
+          <AgentAssistantIcon
+            size={16}
+            aria-hidden="true"
+            className="fg-info"
+          />
+        ),
+        heading: 'Running in terminal mode',
+        message: 'This step runs as a managed Claude Code worker.',
+        actions: [{ label: 'View worker' }],
+      },
+      {
+        id: 'terminal-mode-queued',
+        title: 'Step queued for a worker',
+        intent: 'neutral',
+        icon: (
+          <AgentAssistantIcon
+            size={16}
+            aria-hidden="true"
+            className="fg-info"
+          />
+        ),
+        heading: 'Queued',
+        message: 'Waiting for an available Claude Code worker slot.',
+      },
+      {
+        id: 'editor-read-only',
+        title: 'Read-only pipeline',
+        intent: 'attention',
+        heading: 'Read-only pipeline',
+        message: 'Duplicate this shared pipeline to make local changes.',
+        live: false,
+      },
+      {
+        id: 'editor-validation',
+        title: 'Validation errors',
+        intent: 'destructive',
+        heading: '2 validation issues',
+        message: (
+          <NoticeList>
+            <NoticeListItem>
+              jobs.build.steps[1]: `run` or `uses` is required.
+            </NoticeListItem>
+            <NoticeListItem>
+              on.dispatch.inputs.branch: unknown input type `text`.
+            </NoticeListItem>
+          </NoticeList>
+        ),
+      },
+    ],
+  },
+  {
+    id: 'settings',
+    title: 'Settings and pages',
+    note: 'The same primitive on settings tabs, panels, and dialogs.',
+    entries: [
+      {
+        id: 'data-sharing-opt-in-offer',
+        title: 'Data-sharing opt-in: offer',
+        note: 'Organization memory settings. Quiet and static; dismissal hides it on this device.',
+        intent: 'neutral',
+        icon: null,
+        message: (
+          <>
+            <p className="font-medium fg-primary">
+              {dataSharingOptInHeadline('organization-memory')}
+            </p>
+            <DataSharingOptInScopeSummary
+              organizationName="Acme"
+              productName={brand}
+              allowedScopes={['metadata', 'transcripts']}
+              additionalScopes={['summaries']}
+            />
+          </>
+        ),
+        actions: [
+          { label: dataSharingOptInActionLabel('Acme'), variant: 'primary' },
+        ],
+        actionsPlacement: 'below',
+        dismissible: true,
+        live: false,
+      },
+      {
+        id: 'data-sharing-opt-in-partial',
+        title: 'Data-sharing opt-in: partly restricted by policy',
+        intent: 'neutral',
+        icon: null,
+        message: (
+          <>
+            <p className="font-medium fg-primary">
+              {dataSharingOptInHeadline('leaderboards')}
+            </p>
+            <DataSharingOptInScopeSummary
+              organizationName="Acme"
+              productName={brand}
+              allowedScopes={['metadata']}
+              skippedScopes={['plans']}
+            />
+          </>
+        ),
+        detail: dataSharingOptInErrorText('application-failed'),
+        actions: [{ label: 'Try again', variant: 'primary' }],
+        actionsPlacement: 'below',
+      },
+      {
+        id: 'data-sharing-opt-in-personal',
+        title: 'Data-sharing opt-in: personal project',
+        note: 'Invite modal for personal work with work stats Off. Only the viewer sees what it saves.',
+        intent: 'neutral',
+        icon: null,
+        message: (
+          <>
+            <p className="font-medium fg-primary">
+              {dataSharingOptInHeadline('shared-projects')}
+            </p>
+            <ul className="flex flex-col gap-0.5 break-words fg-tertiary">
+              <li>
+                {DATA_SHARING_OPT_IN_PERSONAL_COPY.saves(['metadata'], brand)}
+              </li>
+              <li>{DATA_SHARING_OPT_IN_PERSONAL_COPY.audience}</li>
+            </ul>
+          </>
+        ),
+        actions: [
+          {
+            label: DATA_SHARING_OPT_IN_PERSONAL_COPY.actionLabel,
+            variant: 'primary',
+          },
+        ],
+        actionsPlacement: 'below',
+        live: false,
+      },
+      {
+        id: 'data-sharing-opt-in-saved',
+        title: 'Data-sharing opt-in: saved',
+        intent: 'neutral',
+        icon: null,
+        heading: DATA_SHARING_OPT_IN_STATE_COPY.savedTitle,
+        message: DATA_SHARING_OPT_IN_STATE_COPY.savedDetail,
+      },
+      {
+        id: 'data-sharing-opt-in-managed',
+        title: 'Data-sharing opt-in: managed by the organization',
+        intent: 'neutral',
+        icon: null,
+        message: DATA_SHARING_OPT_IN_STATE_COPY.managed('Acme'),
+        live: false,
+      },
+      {
+        id: 'data-dir-fallback',
+        title: `${brand}: data folder fallback`,
+        intent: 'attention',
+        heading: 'Using an existing data folder from a previous install.',
+        message: `${brand} is storing its data in ~/.${brand.toLowerCase()}-legacy.`,
+        detail:
+          'Switching to the primary folder moves nothing; restart after switching.',
+        actions: [{ label: 'Use primary folder', variant: 'primary' }],
+      },
+      {
+        id: 'ollama-unsupported',
+        title: 'Ollama: unsupported server',
+        intent: 'attention',
+        heading: 'Ollama server not supported',
+        message: 'Update Ollama 0.3.2 to 0.6.0 or newer to use local models.',
+        actions: [
+          { label: 'Detect again' },
+          { label: 'Download Ollama', variant: 'primary' },
+        ],
+      },
+      {
+        id: 'ollama-install-failed',
+        title: 'Ollama: install failed',
+        intent: 'destructive',
+        heading: 'Install failed',
+        message: 'The Ollama install failed.',
+        actions: [
+          { label: 'Browse…' },
+          { label: 'Detect again' },
+          { label: 'Install Ollama', variant: 'primary' },
+        ],
+        actionsPlacement: 'below',
+      },
+      {
+        id: 'mcp-oauth-note',
+        title: 'MCP server: OAuth note',
+        intent: 'attention',
+        heading: 'OAuth covers proxied sessions',
+        message: 'The static token is kept only for non-OAuth use.',
+        live: false,
+      },
+      {
+        id: 'usage-fetch-error',
+        title: 'Usage: fetch failed',
+        intent: 'attention',
+        heading: 'Usage not loaded',
+        message: 'Try again to load Claude usage.',
+        note: 'The raw error opens under the message from a secondary action, never a text link.',
+        actions: [
+          { label: 'Show details' },
+          { label: 'Try again', variant: 'primary' },
+        ],
+      },
+      {
+        id: 'cloud-account-recovery',
+        title: 'Account: saved sign-in unreadable',
+        note: 'The reset is destructive, so it stays secondary; the confirmation dialog carries the weight.',
+        intent: 'attention',
+        heading: 'Saved sign-in can’t be read',
+        message: `Another desktop build may have used the same ${brand} Cloud secure storage; reset it to sign in again.`,
+        actions: [{ label: 'Reset saved sign-in' }],
+      },
+      {
+        id: 'split-preflight-blockers',
+        title: 'Split PR: not ready',
+        intent: 'destructive',
+        heading: 'Not ready to start',
+        message: `${SPLIT_PR_BLOCKER_COPY.uncommitted_changes}. ${SPLIT_PR_BLOCKER_COPY.active_chats}.`,
+        live: false,
+      },
+      {
+        id: 'import-privacy',
+        title: 'Import session: privacy note',
+        intent: 'attention',
+        heading: 'Exports are not redacted',
+        message:
+          'They hold the full transcript and uncommitted repository changes, are private to your account, and leave out unpushed commits.',
+        live: false,
+      },
+      {
+        id: 'pr-merge-conflict',
+        title: 'Pull request: merge conflict',
+        intent: 'attention',
+        heading: 'Merge conflict',
+        message: 'Resolve it on the branch before this pull request can merge.',
+      },
+      {
+        id: 'archived-truncation',
+        title: 'Archive: changed-files list truncated',
+        intent: 'attention',
+        heading: 'List truncated',
+        message: 'Showing the first 50,000 of 61,204 changed files.',
+        live: false,
+      },
+      {
+        id: 'bg-process-output-unreadable',
+        title: 'Background process: output file unreadable',
+        note: 'The detail modal fell back to the output captured while the task ran.',
+        intent: 'attention',
+        heading: 'Showing captured output only',
+        message: "The output file couldn't be read.",
+      },
+      {
+        id: 'bg-process-output-truncated',
+        title: 'Background process: output truncated',
+        note: 'No title: the whole notice is the one thing it has to say.',
+        intent: 'attention',
+        message: 'Showing the latest output only.',
+      },
+      {
+        id: 'error-banner',
+        title: 'ErrorBanner (shared)',
+        note: 'The shared destructive notice used by list pages and the web app.',
+        intent: 'destructive',
+        heading: "Couldn't load skills.",
+        message: 'Try again.',
+      },
+      {
+        id: 'automation-installed-off',
+        title: 'Automations: installed from a share link, off',
+        note: 'Shown on Workflows → Library after a share-link install. A fresh install is always off.',
+        intent: 'positive',
+        heading: automationRevealNoticeCopy('installed', {
+          kind: 'shown',
+          enabled: false,
+          runsInLabel: null,
+        }).title,
+        message: automationRevealNoticeCopy('installed', {
+          kind: 'shown',
+          enabled: false,
+          runsInLabel: null,
+        }).message,
+        dismissible: true,
+      },
+      {
+        id: 'automation-installed-on',
+        title: 'Automations: installed, turned on since',
+        note: 'The message follows the live enabled state.',
+        intent: 'positive',
+        heading: automationRevealNoticeCopy('installed', {
+          kind: 'shown',
+          enabled: true,
+          runsInLabel: null,
+        }).title,
+        message: automationRevealNoticeCopy('installed', {
+          kind: 'shown',
+          enabled: true,
+          runsInLabel: null,
+        }).message,
+        dismissible: true,
+      },
+      {
+        id: 'automation-updated-on',
+        title: 'Automations: updated, still on',
+        note: 'A shared update kept the schedule, so the copy stayed on.',
+        intent: 'positive',
+        heading: automationRevealNoticeCopy('updated', {
+          kind: 'shown',
+          enabled: true,
+          runsInLabel: null,
+        }).title,
+        message: automationRevealNoticeCopy('updated', {
+          kind: 'shown',
+          enabled: true,
+          runsInLabel: null,
+        }).message,
+        dismissible: true,
+      },
+      {
+        id: 'automation-updated-off',
+        title: 'Automations: updated, off',
+        note: 'A shared update changed the schedule, or the copy was already off.',
+        intent: 'positive',
+        heading: automationRevealNoticeCopy('updated', {
+          kind: 'shown',
+          enabled: false,
+          runsInLabel: null,
+        }).title,
+        message: automationRevealNoticeCopy('updated', {
+          kind: 'shown',
+          enabled: false,
+          runsInLabel: null,
+        }).message,
+        dismissible: true,
+      },
+      {
+        id: 'automation-installed-other-context',
+        title: 'Automations: installed outside the selected context',
+        note: 'An organization is selected, so the row stays hidden and the notice names where it runs.',
+        intent: 'positive',
+        heading: automationRevealNoticeCopy('installed', {
+          kind: 'shown',
+          enabled: true,
+          runsInLabel: automationRunsInMessage('Personal'),
+        }).title,
+        message: automationRevealNoticeCopy('installed', {
+          kind: 'shown',
+          enabled: true,
+          runsInLabel: automationRunsInMessage('Personal'),
+        }).message,
+        dismissible: true,
+      },
+      {
+        id: 'automation-installed-unavailable',
+        title: 'Automations: installed, row not found',
+        note: 'The install succeeded, but a refresh still did not return the row.',
+        intent: 'positive',
+        heading: automationRevealNoticeCopy('installed', {
+          kind: 'unavailable',
+        }).title,
+        message: automationRevealNoticeCopy('installed', {
+          kind: 'unavailable',
+        }).message,
+        dismissible: true,
+      },
+      {
+        id: 'share-install-skill',
+        title: 'Install review: skill installed',
+        note: 'Toast after the install review closes and the skill opens under Installed › Skills (CAN-3710). Plugin, pipeline and agent read the same way.',
+        intent: 'positive',
+        message: installRevealNotice('skill', 'installed'),
+      },
+      {
+        id: 'share-install-pipeline-updated',
+        title: 'Install review: pipeline updated',
+        note: 'An update lands on the same Library row, marked.',
+        intent: 'positive',
+        message: installRevealNotice('pipeline', 'updated'),
+      },
+      {
+        id: 'share-install-project',
+        title: 'Install review: project added',
+        note: 'A project template opens the new project.',
+        intent: 'positive',
+        message: installRevealNotice('workspace', 'installed'),
+      },
+      {
+        id: 'share-install-collection-partial',
+        title: 'Install review: collection with unavailable items',
+        note: "The install's own status replaces the default, so a partial install is never reported as complete.",
+        intent: 'positive',
+        message: installRevealNotice(
+          'collection',
+          'installed',
+          'Collection installed with 2 items unavailable.',
+        ),
+      },
+    ],
+  },
+];
